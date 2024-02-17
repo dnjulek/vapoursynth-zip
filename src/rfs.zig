@@ -94,9 +94,8 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         }
     }
 
-    var i: u32 = 0;
-    while (i < d.replace.len) : (i += 1) {
-        d.replace[i] = false;
+    for (d.replace) |*b| {
+        b.* = false;
     }
 
     ci = 0;
