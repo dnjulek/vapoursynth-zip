@@ -64,7 +64,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
         ci = 0;
         while (ci < ne) : (ci += 1) {
-            const e: u32 = vsh.mapGetN(u32, in, "planes", ci, vsapi).?;
+            const e: i32 = vsh.mapGetN(i32, in, "planes", ci, vsapi).?;
             if ((e < 0) or (e >= np)) {
                 vsapi.?.mapSetError.?(out, filter_name ++ ": plane index out of range.");
                 vsapi.?.freeNode.?(d.node1);
@@ -72,8 +72,9 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
                 return;
             }
 
-            process[e] = true;
-            nodes[e] = d.node2;
+            const ue: u32 = @intCast(e);
+            process[ue] = true;
+            nodes[ue] = d.node2;
         }
 
         if (!(process[0] and process[1] and process[2])) {
