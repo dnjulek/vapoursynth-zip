@@ -8,6 +8,10 @@ pub const DataType = enum(c_int) {
     F32 = 4,
 };
 
+pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
+    return if (x > y) (x - y) else (y - x);
+}
+
 pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: [*]const u8, vsapi: ?*const vs.API) !void {
     const num_e = vsapi.?.mapNumElements.?(in, "planes");
     if (num_e < 1) {

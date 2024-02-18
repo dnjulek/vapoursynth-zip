@@ -33,11 +33,13 @@ const Stats = struct {
     diff: f64,
 };
 
-fn absDiff(comptime T: type, x: anytype, y: anytype) T {
-    if (@typeInfo(T) == .Float) {
-        return @abs(x - y);
+fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
+    if (total == 0) {
+        return 0.0;
+    } else if (@typeInfo(T) == .Float) {
+        return acc / total;
     } else {
-        return if (x > y) (x - y) else (y - x);
+        return @as(f64, @floatFromInt(acc)) / total / peak;
     }
 }
 
@@ -49,31 +51,21 @@ fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usiz
     var acc: if (@typeInfo(T) == .Float) f64 else u64 = 0;
 
     for (0..h) |_| {
-        for (srcp[0..w]) |x| {
+        for (srcp[0..w]) |v| {
             const found: bool = for (exclude) |e| {
-                if (x == e) break true;
+                if (v == e) break true;
             } else false;
 
             if (found) {
                 total -= 1;
             } else {
-                acc += x;
+                acc += v;
             }
         }
         srcp += stride;
     }
 
     return result(T, acc, @floatFromInt(total), peak);
-}
-
-fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
-    if (total == 0) {
-        return 0.0;
-    } else if (@typeInfo(T) == .Float) {
-        return acc / total;
-    } else {
-        return @as(f64, @floatFromInt(acc)) / total / peak;
-    }
 }
 
 fn average_ref(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
@@ -99,7 +91,7 @@ fn average_ref(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: us
                 acc += v;
             }
 
-            diffacc += absDiff(T, v, j);
+            diffacc += helper.absDiff(v, j);
         }
         srcp += stride;
         refp += stride;
