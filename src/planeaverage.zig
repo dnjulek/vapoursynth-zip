@@ -159,10 +159,10 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: ar, instance_data: ?
                     .U16 => average_ref(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
                     .F32 => average_ref(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
                 };
-                _ = vsapi.?.mapSetFloat.?(props, "__AVGDIFF", stats.diff, ma.Append);
+                _ = vsapi.?.mapSetFloat.?(props, "psmDiff", stats.diff, ma.Append);
                 avg = stats.avg;
             }
-            _ = vsapi.?.mapSetFloat.?(props, "__AVG", avg, ma.Append);
+            _ = vsapi.?.mapSetFloat.?(props, "psmAvg", avg, ma.Append);
         }
 
         return dst;
