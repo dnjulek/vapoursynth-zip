@@ -218,12 +218,27 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     const data: *PlaneAverageData = allocator.create(PlaneAverageData) catch unreachable;
     data.* = d;
 
-    var deps = [_]vs.FilterDependency{
+    var deps1 = [_]vs.FilterDependency{
         vs.FilterDependency{
             .source = d.node,
             .requestPattern = rp.StrictSpatial,
         },
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, vi, planeAverageGetFrame, planeAverageFree, fm.Parallel, &deps, deps.len, data, core);
+    var deps_len: c_int = deps1.len;
+    var deps: [*]const vs.FilterDependency = &deps1;
+    if (d.node2 != null) {
+        var deps2 = [_]vs.FilterDependency{
+            deps1[0],
+            vs.FilterDependency{
+                .source = d.node2,
+                .requestPattern = if (vi.numFrames <= vsapi.?.getVideoInfo.?(d.node2).numFrames) rp.StrictSpatial else rp.General,
+            },
+        };
+
+        deps_len = deps2.len;
+        deps = &deps2;
+    }
+
+    vsapi.?.createVideoFilter.?(out, filter_name, vi, planeAverageGetFrame, planeAverageFree, fm.Parallel, deps, deps_len, data, core);
 }
