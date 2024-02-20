@@ -24,8 +24,8 @@ const PlaneAverageData = struct {
 };
 
 const Exclude = union(enum) {
-    FLOAT: []const f32,
-    INT: []const i32,
+    f: []const f32,
+    i: []const i32,
 };
 
 const Stats = struct {
@@ -46,7 +46,7 @@ fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
 fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) f64 {
     var srcp: [*]const T = @ptrCast(@alignCast(src));
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
-    const exclude = if (@typeInfo(T) == .Float) exclude_union.FLOAT else exclude_union.INT;
+    const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
     var total: i64 = @intCast(w * h);
     var acc: if (@typeInfo(T) == .Float) f64 else u64 = 0;
 
@@ -68,11 +68,11 @@ fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usiz
     return result(T, acc, @floatFromInt(total), peak);
 }
 
-fn average_ref(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
+fn averageRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
     var srcp: [*]const T = @ptrCast(@alignCast(src));
     var refp: [*]const T = @ptrCast(@alignCast(ref));
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
-    const exclude = if (@typeInfo(T) == .Float) exclude_union.FLOAT else exclude_union.INT;
+    const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
     const _total: i64 = @intCast(w * h);
     var total = _total;
     const T2 = if (@typeInfo(T) == .Float) f64 else u64;
@@ -147,9 +147,9 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: ar, instance_data: ?
             } else {
                 const refp: [*]const u8 = vsapi.?.getReadPtr.?(ref, plane);
                 const stats = switch (d.dt) {
-                    .U8 => average_ref(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
-                    .U16 => average_ref(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
-                    .F32 => average_ref(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .U8 => averageRef(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .U16 => averageRef(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .F32 => averageRef(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
                 };
                 _ = vsapi.?.mapSetFloat.?(props, "psmDiff", stats.diff, ma.Append);
                 avg = stats.avg;
@@ -167,8 +167,8 @@ export fn planeAverageFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?
     _ = core;
     const d: *PlaneAverageData = @ptrCast(@alignCast(instance_data));
     switch (d.exclude) {
-        .INT => allocator.free(d.exclude.INT),
-        .FLOAT => allocator.free(d.exclude.FLOAT),
+        .i => allocator.free(d.exclude.i),
+        .f => allocator.free(d.exclude.f),
     }
 
     if (d.node2) |node| {
@@ -205,14 +205,14 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
             buff[i] = @floatFromInt(exclude_in[i]);
         }
 
-        d.exclude = Exclude{ .FLOAT = buff };
+        d.exclude = Exclude{ .f = buff };
     } else {
         const buff = allocator.alloc(i32, ne) catch unreachable;
         for (0..ne) |i| {
             buff[i] = math.lossyCast(i32, exclude_in[i]);
         }
 
-        d.exclude = Exclude{ .INT = buff };
+        d.exclude = Exclude{ .i = buff };
     }
 
     const data: *PlaneAverageData = allocator.create(PlaneAverageData) catch unreachable;
