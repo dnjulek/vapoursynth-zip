@@ -48,8 +48,8 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     var d: RFSData = undefined;
     var node_err: pe = undefined;
 
-    d.node1 = vsapi.?.mapGetNode.?(in, "clip_a", 0, &node_err).?;
-    d.node2 = vsapi.?.mapGetNode.?(in, "clip_b", 0, &node_err).?;
+    d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
+    d.node2 = vsapi.?.mapGetNode.?(in, "clipb", 0, &node_err).?;
     var vi = vsapi.?.getVideoInfo.?(d.node1).*;
     const mismatch = vsh.mapGetN(bool, in, "mismatch", 0, vsapi) orelse false;
     rfsValidateInput(out.?, d.node1, d.node2, &vi, mismatch, vsapi.?) catch return;
