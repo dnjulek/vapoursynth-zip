@@ -1,0 +1,36 @@
+name: VapourSynth plugin tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  vapoursynth:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.11"
+
+    - name: Install VapourSynth
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/vapoursynth/vapoursynth/releases/download/R65/VapourSynth64-Portable-R65.7z" -OutFile vs.7z
+        7z x -y vs.7z -o"C:\hostedtoolcache\windows\Python\3.11.8\x64"
+        cd C:\hostedtoolcache\windows\Python\3.11.8\x64 && .\vs-detect-python.bat
+
+    - name: build dll
+      run: cd .\test\ && .\build.ps1
+
+    - name: Run test.vpy
+      run: |
+        vspipe test\test.vpy . -o 0
