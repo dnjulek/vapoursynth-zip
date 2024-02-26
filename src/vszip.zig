@@ -1,7 +1,7 @@
 const vapoursynth = @import("vapoursynth");
-const rfs = @import("rfs.zig");
-const pavg = @import("planeaverage.zig");
-const pmm = @import("planeminmax.zig");
+const rfs = @import("filters/rfs.zig");
+const pavg = @import("filters/planeaverage.zig");
+const pmm = @import("filters/planeminmax.zig");
 
 pub const vs = vapoursynth.vapoursynth4;
 pub const vsh = vapoursynth.vshelper;

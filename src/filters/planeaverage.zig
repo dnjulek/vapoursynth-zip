@@ -1,6 +1,7 @@
 const std = @import("std");
-const vszip = @import("vszip.zig");
-const helper = @import("helper.zig");
+const vszip = @import("../vszip.zig");
+const helper = @import("../helper.zig");
+const process = @import("process/planeaverage.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
@@ -17,92 +18,11 @@ pub const filter_name = "PlaneAverage";
 const PlaneAverageData = struct {
     node: *vs.Node,
     node2: ?*vs.Node,
-    exclude: Exclude,
+    exclude: process.Exclude,
     dt: helper.DataType,
     peak: f32,
-    process: [3]bool,
+    planes: [3]bool,
 };
-
-const Exclude = union(enum) {
-    f: []const f32,
-    i: []const i32,
-};
-
-const Stats = struct {
-    avg: f64,
-    diff: f64,
-};
-
-fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
-    if (total == 0) {
-        return 0.0;
-    } else if (@typeInfo(T) == .Float) {
-        return acc / total;
-    } else {
-        return @as(f64, @floatFromInt(acc)) / total / peak;
-    }
-}
-
-fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) f64 {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
-    const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
-    var total: i64 = @intCast(w * h);
-    var acc: if (@typeInfo(T) == .Float) f64 else u64 = 0;
-
-    for (0..h) |_| {
-        for (srcp[0..w]) |v| {
-            const found: bool = for (exclude) |e| {
-                if (v == e) break true;
-            } else false;
-
-            if (found) {
-                total -= 1;
-            } else {
-                acc += v;
-            }
-        }
-        srcp += stride;
-    }
-
-    return result(T, acc, @floatFromInt(total), peak);
-}
-
-fn averageRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
-    var refp: [*]const T = @ptrCast(@alignCast(ref));
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
-    const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
-    const _total: i64 = @intCast(w * h);
-    var total = _total;
-    const T2 = if (@typeInfo(T) == .Float) f64 else u64;
-    var acc: T2 = 0;
-    var diffacc: T2 = 0;
-
-    for (0..h) |_| {
-        for (srcp[0..w], refp[0..w]) |v, j| {
-            const found: bool = for (exclude) |e| {
-                if (v == e) break true;
-            } else false;
-
-            if (found) {
-                total -= 1;
-            } else {
-                acc += v;
-            }
-
-            diffacc += helper.absDiff(v, j);
-        }
-        srcp += stride;
-        refp += stride;
-    }
-
-    const _totalf: f64 = @floatFromInt(_total);
-    return .{
-        .avg = result(T, acc, @floatFromInt(total), peak),
-        .diff = if (@typeInfo(T) == .Float) (diffacc / _totalf) else @as(f64, @floatFromInt(diffacc)) / _totalf / peak,
-    };
-}
 
 export fn planeAverageGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     _ = frame_data;
@@ -128,7 +48,7 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: ar, instance_data: ?
 
         var plane: c_int = 0;
         while (plane < fi.numPlanes) : (plane += 1) {
-            if (!(d.process[@intCast(plane)])) {
+            if (!(d.planes[@intCast(plane)])) {
                 continue;
             }
 
@@ -140,16 +60,16 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: ar, instance_data: ?
 
             if (ref == null) {
                 avg = switch (d.dt) {
-                    .U8 => average(u8, srcp, stride, w, h, d.exclude, d.peak),
-                    .U16 => average(u16, srcp, stride, w, h, d.exclude, d.peak),
-                    .F32 => average(f32, srcp, stride, w, h, d.exclude, d.peak),
+                    .U8 => process.average(u8, srcp, stride, w, h, d.exclude, d.peak),
+                    .U16 => process.average(u16, srcp, stride, w, h, d.exclude, d.peak),
+                    .F32 => process.average(f32, srcp, stride, w, h, d.exclude, d.peak),
                 };
             } else {
                 const refp: [*]const u8 = vsapi.?.getReadPtr.?(ref, plane);
                 const stats = switch (d.dt) {
-                    .U8 => averageRef(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
-                    .U16 => averageRef(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
-                    .F32 => averageRef(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .U8 => process.averageRef(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .U16 => process.averageRef(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .F32 => process.averageRef(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
                 };
                 _ = vsapi.?.mapSetFloat.?(props, "psmDiff", stats.diff, ma.Append);
                 avg = stats.avg;
@@ -192,9 +112,9 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     d.dt = @enumFromInt(vi.format.bytesPerSample);
     d.peak = @floatFromInt(math.shl(i32, 1, vi.format.bitsPerSample) - 1);
     var nodes = [_]?*vs.Node{ d.node, d.node2 };
-    var process = [3]bool{ true, false, false };
-    helper.mapGetPlanes(in, out, &nodes, &process, vi.format.numPlanes, filter_name, vsapi) catch return;
-    d.process = process;
+    var planes = [3]bool{ true, false, false };
+    helper.mapGetPlanes(in, out, &nodes, &planes, vi.format.numPlanes, filter_name, vsapi) catch return;
+    d.planes = planes;
 
     const ne: usize = @intCast(vsapi.?.mapNumElements.?(in, "exclude"));
     const exclude_in = vsapi.?.mapGetIntArray.?(in, "exclude", &err);
@@ -205,14 +125,14 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
             buff[i] = @floatFromInt(exclude_in[i]);
         }
 
-        d.exclude = Exclude{ .f = buff };
+        d.exclude = process.Exclude{ .f = buff };
     } else {
         const buff = allocator.alloc(i32, ne) catch unreachable;
         for (0..ne) |i| {
             buff[i] = math.lossyCast(i32, exclude_in[i]);
         }
 
-        d.exclude = Exclude{ .i = buff };
+        d.exclude = process.Exclude{ .i = buff };
     }
 
     const data: *PlaneAverageData = allocator.create(PlaneAverageData) catch unreachable;
