@@ -17,4 +17,4 @@ if (-not (Test-Path $zigPath)){
 }
 
 Write-Host "Building vszip.dll..." -ForegroundColor Green
-& $zigPath build
+& $zigPath build -Doptimize=ReleaseFast
