@@ -137,6 +137,17 @@ export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
     _ = core;
     const d: *BilateralData = @ptrCast(@alignCast(instance_data));
 
+    var i: u32 = 0;
+    while (i < 3) : (i += 1) {
+        if (d.planes[i]) {
+            allocator.free(d.gr_lut[i]);
+
+            if (d.algorithm[i] == 2) {
+                allocator.free(d.gs_lut[i]);
+            }
+        }
+    }
+
     vsapi.?.freeNode.?(d.node1);
     vsapi.?.freeNode.?(d.node2);
     allocator.destroy(d);
