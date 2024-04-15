@@ -304,8 +304,10 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     while (i < 3) : (i += 1) {
-        if (d.algorithm[i] <= 0) {
-            d.algorithm[i] = if (d.step[i] == 1) 2 else (if ((d.sigmaR[i] < 0.08) and (d.samples[i] < 5)) 2 else (if (4 * d.samples[i] * d.samples[i] <= 15 * d.PBFICnum[i]) 2 else 1));
+        if (d.process[i]) {
+            if (d.algorithm[i] <= 0) {
+                d.algorithm[i] = if (d.step[i] == 1) 2 else (if ((d.sigmaR[i] < 0.08) and (d.samples[i] < 5)) 2 else (if (4 * d.samples[i] * d.samples[i] <= 15 * d.PBFICnum[i]) 2 else 1));
+            }
         }
     }
 
