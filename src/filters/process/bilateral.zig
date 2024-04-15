@@ -5,22 +5,22 @@ const BilateralData = @import("../bilateral.zig").BilateralData;
 
 const allocator = std.heap.c_allocator;
 
-pub fn gaussianFunctionSpatialLUTGeneration(gs_lut: [*]f32, upper: usize, sigmaS: f64) void {
-    var y: usize = 0;
+pub fn gaussianFunctionSpatialLUTGeneration(gs_lut: []f32, upper: u32, sigmaS: f64) void {
+    var y: u32 = 0;
     while (y < upper) : (y += 1) {
-        var x: usize = 0;
+        var x: u32 = 0;
         while (x < upper) : (x += 1) {
             gs_lut[y * upper + x] = math.lossyCast(f32, @exp(@as(f64, @floatFromInt(x * x + y * y)) / (sigmaS * sigmaS * -2.0)));
         }
     }
 }
 
-pub fn gaussianFunctionRangeLUTGeneration(gr_lut: [*]f32, range: usize, sigmaR: f64) void {
-    const levels: usize = range + 1;
+pub fn gaussianFunctionRangeLUTGeneration(gr_lut: []f32, range: u32, sigmaR: f64) void {
+    const levels: u32 = range + 1;
     const range_f: f64 = @floatFromInt(range);
-    const upper: usize = @intFromFloat(@min(range_f, (sigmaR * 8.0 * range_f + 0.5)));
+    const upper: u32 = @intFromFloat(@min(range_f, (sigmaR * 8.0 * range_f + 0.5)));
 
-    var i: usize = 0;
+    var i: u32 = 0;
     while (i <= upper) : (i += 1) {
         const j: f64 = @as(f64, @floatFromInt(i)) / range_f;
         gr_lut[i] = math.lossyCast(f32, normalizedGaussianFunction(j, sigmaR));
@@ -39,26 +39,26 @@ fn normalizedGaussianFunction(y: f64, sigma: f64) f64 {
     return @exp(x * x / -2) / (math.sqrt(2.0 * math.pi) * sigma);
 }
 
-fn stride_cal(comptime T: type, width: usize) usize {
-    const alignment: usize = 32 / @sizeOf(T);
+fn strideCal(comptime T: type, width: u32) u32 {
+    const alignment: u32 = 32 / @sizeOf(T);
     return if (width % alignment == 0) width else (width / alignment + 1) * alignment;
 }
 
-fn data2buff(comptime T: type, dst: [*]T, src: [*]const T, radius: usize, bufheight: usize, bufwidth: usize, bufstride: usize, height: usize, width: usize, stride: usize) void {
+fn data2buff(comptime T: type, dst: []T, src: []const T, radius: u32, bufheight: u32, bufwidth: u32, bufstride: u32, height: u32, width: u32, stride: u32) void {
     var srcp = src;
     var dstp = dst;
 
-    var y: usize = 0;
+    var y: u32 = 0;
     while (y < height) : (y += 1) {
-        dstp = dst + (radius + y) * bufstride;
-        srcp = src + y * stride;
+        dstp = dst[(radius + y) * bufstride ..];
+        srcp = src[y * stride ..];
 
-        var x: usize = 0;
+        var x: u32 = 0;
         while (x < radius) : (x += 1) {
             dstp[x] = srcp[0];
         }
-        var tmpp = dstp + radius;
-        @memcpy(tmpp[0..width], srcp);
+        var tmpp = dstp[radius..];
+        @memcpy(tmpp[0..width], srcp[0..width]);
 
         x = radius + width;
         while (x < bufwidth) : (x += 1) {
@@ -66,19 +66,19 @@ fn data2buff(comptime T: type, dst: [*]T, src: [*]const T, radius: usize, bufhei
         }
     }
 
-    srcp = dst + radius * bufstride;
+    srcp = dst[radius * bufstride ..];
     y = 0;
     while (y < radius) : (y += 1) {
-        dstp = dst + y * bufstride;
-        @memcpy(dstp[0..bufwidth], srcp);
+        dstp = dst[y * bufstride ..];
+        @memcpy(dstp[0..bufwidth], srcp[0..bufwidth]);
     }
 
-    srcp = dst + (radius + height - 1) * bufstride;
+    srcp = dst[(radius + height - 1) * bufstride ..];
     y = radius + height;
 
     while (y < bufheight) : (y += 1) {
-        dstp = dst + y * bufstride;
-        @memcpy(dstp[0..bufwidth], srcp);
+        dstp = dst[y * bufstride ..];
+        @memcpy(dstp[0..bufwidth], srcp[0..bufwidth]);
     }
 }
 
@@ -96,9 +96,9 @@ fn recursiveGaussianParameters(sigma: f64, B: *f32, B1: *f32, B2: *f32, B3: *f32
     B3.* = @floatCast(b3 / b0);
 }
 
-fn recursiveGaussian2DVertical(output: [*]f32, input: [*]const f32, height: u32, width: u32, stride: usize, B: f32, B1: f32, B2: f32, B3: f32) void {
-    if (output != input) {
-        @memcpy(output[0..width], input);
+fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, width: u32, stride: u32, B: f32, B1: f32, B2: f32, B3: f32) void {
+    if (output.ptr != input.ptr) {
+        @memcpy(output[0..width], input[0..width]);
     }
 
     for (0..height) |j| {
@@ -124,16 +124,16 @@ fn recursiveGaussian2DVertical(output: [*]f32, input: [*]const f32, height: u32,
         }
     }
 
-    var i: i32 = @intCast(height - 1);
+    var i: i32 = @bitCast(height - 1);
     while (i >= 0) : (i -= 1) {
-        const j: usize = @intCast(i);
-        const lower: usize = stride * j;
-        const upper: usize = lower + width;
+        const j: u32 = @bitCast(i);
+        const lower: u32 = stride * j;
+        const upper: u32 = lower + width;
 
-        var x0: usize = lower;
-        var x1: usize = if (j >= height - 1) x0 else (x0 + stride);
-        var x2: usize = if (j >= height - 2) x1 else (x1 + stride);
-        var x3: usize = if (j >= height - 3) x2 else (x2 + stride);
+        var x0: u32 = lower;
+        var x1: u32 = if (j >= height - 1) x0 else (x0 + stride);
+        var x2: u32 = if (j >= height - 2) x1 else (x1 + stride);
+        var x3: u32 = if (j >= height - 3) x2 else (x2 + stride);
 
         while (x0 < upper) : ({
             x0 += 1;
@@ -150,47 +150,47 @@ fn recursiveGaussian2DVertical(output: [*]f32, input: [*]const f32, height: u32,
     }
 }
 
-fn recursiveGaussian2DHorizontal(output: [*]f32, input: [*]const f32, height: u32, width: u32, stride: usize, B: f32, B1: f32, B2: f32, B3: f32) void {
+fn recursiveGaussian2DHorizontal(output: []f32, input: []const f32, height: u32, width: u32, stride: u32, B: f32, B1: f32, B2: f32, B3: f32) void {
     for (0..height) |j| {
         const lower: usize = stride * j;
         const upper: usize = lower + width;
 
-        var i: i32 = @intCast(lower);
+        var i: isize = @bitCast(lower);
         var P0: f32 = undefined;
-        var P1: f32 = input[@intCast(i)];
+        var P1: f32 = input[@bitCast(i)];
         var P2: f32 = P1;
         var P3: f32 = P2;
-        output[@intCast(i)] = P3;
+        output[@bitCast(i)] = P3;
         i += 1;
 
         while (i < upper) : (i += 1) {
-            P0 = B * input[@intCast(i)] + B1 * P1 + B2 * P2 + B3 * P3;
+            P0 = B * input[@bitCast(i)] + B1 * P1 + B2 * P2 + B3 * P3;
             P3 = P2;
             P2 = P1;
             P1 = P0;
-            output[@intCast(i)] = P0;
+            output[@bitCast(i)] = P0;
         }
 
         i -= 1;
 
-        P1 = output[@intCast(i)];
+        P1 = output[@bitCast(i)];
         P2 = P1;
         P3 = P2;
         i -= 1;
         while (i >= lower) : (i -= 1) {
-            P0 = B * output[@intCast(i)] + B1 * P1 + B2 * P2 + B3 * P3;
+            P0 = B * output[@bitCast(i)] + B1 * P1 + B2 * P2 + B3 * P3;
             P3 = P2;
             P2 = P1;
             P1 = P0;
-            output[@intCast(i)] = P0;
+            output[@bitCast(i)] = P0;
         }
     }
 }
 
-pub fn Bilateral2D_1(comptime T: type, srcp: [*]const T, dstp: [*]T, refp: [*]const T, stride: usize, width: u32, height: u32, plane: u32, d: *BilateralData) void {
+pub fn bilateralAlg1(comptime T: type, srcp: []const T, dstp: []T, refp: []const T, stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
     const sigma: f64 = d.sigmaS[plane];
     const PBFICnum = d.PBFICnum[plane];
-    const pcount: usize = stride * height;
+    const pcount: u32 = stride * height;
     const gr_lut: []f32 = d.gr_lut[plane];
     const PBFICk: []T = allocator.alloc(T, PBFICnum) catch unreachable;
     defer allocator.free(PBFICk);
@@ -224,10 +224,10 @@ pub fn Bilateral2D_1(comptime T: type, srcp: [*]const T, dstp: [*]T, refp: [*]co
             }
         }
 
-        recursiveGaussian2DHorizontal(wk.ptr, wk.ptr, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DVertical(wk.ptr, wk.ptr, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DHorizontal(jk.ptr, jk.ptr, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DVertical(jk.ptr, jk.ptr, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DHorizontal(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DHorizontal(jk, jk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(jk, jk, height, width, stride, B, B1, B2, B3);
 
         for (0..height) |j| {
             var i = stride * j;
@@ -264,17 +264,16 @@ pub fn Bilateral2D_1(comptime T: type, srcp: [*]const T, dstp: [*]T, refp: [*]co
     allocator.free(PBFIC);
 }
 
-pub fn Bilateral2D_2(comptime T: type, dst: [*]T, src: [*]const T, gs_lut: [*]f32, gr_lut: [*]f32, stride: usize, width: u32, height: u32, radius: u32, samplestep: u32, peak: f32) void {
-    var srcp: [*]const T = src;
-    var dstp: [*]T = dst;
-    const radius2: usize = radius + 1;
-    const bufheight: usize = height + radius * 2;
-    const bufwidth: usize = width + radius * 2;
-    const bufstride: usize = stride_cal(T, bufwidth);
+pub fn bilateralAlg2(comptime T: type, dst: []T, src: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
+    var srcp: []const T = src;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
 
-    const srcbuff_arr = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    defer allocator.free(srcbuff_arr);
-    const srcbuff: [*]T = srcbuff_arr.ptr;
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
 
     data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
 
@@ -286,23 +285,23 @@ pub fn Bilateral2D_2(comptime T: type, dst: [*]T, src: [*]const T, gs_lut: [*]f3
     var weight_sum: f32 = undefined;
     var sum: f32 = undefined;
 
-    var y: usize = 0;
+    var y: u32 = 0;
     while (y < height) : (y += 1) {
-        const tmp1: usize = (radius + y) * bufstride;
-        var x: usize = 0;
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
         while (x < width) : (x += 1) {
-            const tmp2: usize = radius + x + tmp1;
+            const tmp2: u32 = radius + x + tmp1;
             const cx: T = srcp[x];
 
             weight_sum = gs_lut[0] * gr_lut[0];
             sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
 
-            var yy: usize = 1;
-            while (yy < radius2) : (yy += samplestep) {
-                const tmp3: usize = yy * bufstride;
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
 
-                var xx: usize = 1;
-                while (xx < radius2) : (xx += samplestep) {
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
                     const cxx1: T = srcbuff[tmp2 + tmp3 + xx];
                     const cxx2: T = srcbuff[tmp2 + tmp3 - xx];
                     const cxx3: T = srcbuff[tmp2 - tmp3 - xx];
@@ -323,46 +322,44 @@ pub fn Bilateral2D_2(comptime T: type, dst: [*]T, src: [*]const T, gs_lut: [*]f3
             }
             dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
         }
-        srcp += stride;
-        dstp += stride;
+        srcp = srcp[stride..];
+        dstp = dstp[stride..];
     }
 }
 
-pub fn Bilateral2D_2ref(comptime T: type, dst: [*]T, src: [*]const T, ref: [*]const T, gs_lut: [*]f32, gr_lut: [*]f32, stride: usize, width: u32, height: u32, radius: u32, samplestep: u32, peak: f32) void {
-    var srcp: [*]const T = src;
-    var refp: [*]const T = ref;
-    var dstp: [*]T = dst;
-    const radius2: usize = radius + 1;
-    const bufheight: usize = height + radius * 2;
-    const bufwidth: usize = width + radius * 2;
-    const bufstride: usize = stride_cal(T, bufwidth);
+pub fn bilateralAlg2Ref(comptime T: type, dst: []T, src: []const T, ref: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
 
-    const srcbuff_arr = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    const refbuff_arr = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    defer allocator.free(srcbuff_arr);
-    defer allocator.free(refbuff_arr);
-    const srcbuff: [*]T = srcbuff_arr.ptr;
-    const refbuff: [*]T = refbuff_arr.ptr;
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    const refbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
+    defer allocator.free(refbuff);
 
     data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
     data2buff(T, refbuff, refp, radius, bufheight, bufwidth, bufstride, height, width, stride);
 
-    var y: usize = 0;
+    var y: u32 = 0;
     while (y < height) : (y += 1) {
-        const tmp1: usize = (radius + y) * bufstride;
-        var x: usize = 0;
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
         while (x < width) : (x += 1) {
-            const tmp2: usize = radius + x + tmp1;
+            const tmp2: u32 = radius + x + tmp1;
             const cx: T = refp[x];
             var weight_sum = gs_lut[0] * gr_lut[0];
             var sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
 
-            var yy: usize = 1;
-            while (yy < radius2) : (yy += samplestep) {
-                const tmp3: usize = yy * bufstride;
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
 
-                var xx: usize = 1;
-                while (xx < radius2) : (xx += samplestep) {
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
                     const cxx1: T = refbuff[tmp2 + tmp3 + xx];
                     const cxx2: T = refbuff[tmp2 + tmp3 - xx];
                     const cxx3: T = refbuff[tmp2 - tmp3 - xx];
@@ -383,8 +380,8 @@ pub fn Bilateral2D_2ref(comptime T: type, dst: [*]T, src: [*]const T, ref: [*]co
             }
             dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
         }
-        srcp += stride;
-        refp += stride;
-        dstp += stride;
+        srcp = srcp[stride..];
+        refp = refp[stride..];
+        dstp = dstp[stride..];
     }
 }

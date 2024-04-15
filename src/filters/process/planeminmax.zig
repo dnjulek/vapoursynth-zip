@@ -23,8 +23,8 @@ pub const Stats = union(enum) {
     i: StatsInt,
 };
 
-pub fn minMaxInt(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
+pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
 
@@ -39,7 +39,7 @@ pub fn minMaxInt(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h
         for (srcp[0..w]) |v| {
             accum_buf[v] += 1;
         }
-        srcp += stride;
+        srcp = srcp[stride..];
     }
 
     const totalmin: u32 = @intFromFloat(total * d.minthr);
@@ -63,8 +63,8 @@ pub fn minMaxInt(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = undefined } };
 }
 
-pub fn minMaxFloat(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
+pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
 
@@ -79,7 +79,7 @@ pub fn minMaxFloat(comptime T: type, src: [*]const u8, _stride: usize, w: usize,
         for (srcp[0..w]) |v| {
             accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
         }
-        srcp += stride;
+        srcp = srcp[stride..];
     }
 
     const totalmin: u32 = @intFromFloat(total * d.minthr);
@@ -105,9 +105,9 @@ pub fn minMaxFloat(comptime T: type, src: [*]const u8, _stride: usize, w: usize,
     return .{ .f = .{ .max = retvalmaxf, .min = retvalminf, .diff = undefined } };
 }
 
-pub fn minMaxIntRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
-    var refp: [*]const T = @ptrCast(@alignCast(ref));
+pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
     var diffacc: u64 = 0;
@@ -124,8 +124,8 @@ pub fn minMaxIntRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _strid
             accum_buf[v] += 1;
             diffacc += helper.absDiff(v, j);
         }
-        srcp += stride;
-        refp += stride;
+        srcp = srcp[stride..];
+        refp = refp[stride..];
     }
 
     const diff: f64 = @as(f64, @floatFromInt(diffacc)) / total / @as(f64, @floatFromInt(d.peak));
@@ -150,9 +150,9 @@ pub fn minMaxIntRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _strid
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = diff } };
 }
 
-pub fn minMaxFloatRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
-    var refp: [*]const T = @ptrCast(@alignCast(ref));
+pub fn minMaxFloatRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
@@ -169,8 +169,8 @@ pub fn minMaxFloatRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _str
             accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
             diffacc += helper.absDiff(v, j);
         }
-        srcp += stride;
-        refp += stride;
+        srcp = srcp[stride..];
+        refp = refp[stride..];
     }
 
     const totalmin: u32 = @intFromFloat(total * d.minthr);

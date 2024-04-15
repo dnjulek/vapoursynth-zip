@@ -3,7 +3,7 @@
 const std = @import("std");
 const allocator = std.heap.c_allocator;
 
-inline fn hBlurInt(comptime T: type, srcp: [*]T, dstp: [*]T, w: u32, comptime ksize: u32, comptime inv: u32) void {
+inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u32) void {
     const radius: u32 = ksize >> 1;
     var sum: u32 = srcp[radius];
 
@@ -33,7 +33,7 @@ inline fn hBlurInt(comptime T: type, srcp: [*]T, dstp: [*]T, w: u32, comptime ks
     }
 }
 
-fn hBlurFloat(comptime T: type, srcp: [*]T, dstp: [*]T, w: u32, comptime ksize: u32, comptime div: T) void {
+fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksize: u32, comptime div: T) void {
     const radius: u32 = ksize >> 1;
 
     var j: u32 = 0;
@@ -86,7 +86,7 @@ fn hBlurFloat(comptime T: type, srcp: [*]T, dstp: [*]T, w: u32, comptime ksize: 
     }
 }
 
-fn vBlurInt(comptime T: type, src: [][*]const T, dstp: [*]T, w: u32, comptime ksize: u32, comptime inv: u32) void {
+fn vBlurInt(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u32) void {
     var j: u32 = 0;
     while (j < w) : (j += 1) {
         var sum: u32 = 0;
@@ -100,7 +100,7 @@ fn vBlurInt(comptime T: type, src: [][*]const T, dstp: [*]T, w: u32, comptime ks
     }
 }
 
-fn vBlurFloat(comptime T: type, src: [][*]const T, dstp: [*]T, w: u32, comptime ksize: u32, comptime div: T) void {
+fn vBlurFloat(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime div: T) void {
     var j: u32 = 0;
     while (j < w) : (j += 1) {
         var sum: T = 0.0;
@@ -113,32 +113,36 @@ fn vBlurFloat(comptime T: type, src: [][*]const T, dstp: [*]T, w: u32, comptime 
     }
 }
 
-fn hvBlurCT(comptime T: type, comptime radius: u32, _src: [*]const u8, _dst: [*]u8, _stride: usize, w: u32, h: u32) void {
-    const src: [*]const T = @ptrCast(@alignCast(_src));
-    const dst: [*]T = @ptrCast(@alignCast(_dst));
-    const stride = _stride >> (@sizeOf(T) >> 1);
+fn hvBlurCT(comptime T: type, comptime radius: u32, _src: []const u8, _dst: []u8, _stride: u32, w: u32, h: u32) void {
+    const src: []const T = @as([*]const T, @ptrCast(@alignCast(_src)))[0.._src.len];
+    const dst: []T = @as([*]T, @ptrCast(@alignCast(_dst)))[0.._dst.len];
+    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
     const ksize: u32 = (radius << 1) + 1;
+    const iradius: i32 = @bitCast(radius);
+    const ih: i32 = @bitCast(h);
 
-    var i: u32 = 0;
+    var i: i32 = 0;
     while (i < h) : (i += 1) {
-        var srcp: [ksize][*]const T = undefined;
-        const dstp: [*]T = dst + i * stride;
-        const dist_from_bottom: u32 = h - 1 - i;
+        const ui: u32 = @bitCast(i);
+        var srcp: [ksize][]const T = undefined;
+        const dstp: []T = dst[ui * stride ..];
+        const dist_from_bottom: i32 = ih - 1 - i;
 
-        const tmp_arr = allocator.alloc(T, w) catch unreachable;
-        defer allocator.free(tmp_arr);
-        const tmp: [*]T = tmp_arr.ptr;
+        const tmp = allocator.alloc(T, w) catch unreachable;
+        defer allocator.free(tmp);
 
-        var k: u32 = 0;
-        while (k < radius) : (k += 1) {
-            const row: u32 = if (i < radius - k) (@min(radius - k - i, h - 1)) else (i - radius + k);
-            srcp[k] = src + row * stride;
+        var k: i32 = 0;
+        while (k < iradius) : (k += 1) {
+            const row: i32 = if (i < iradius - k) @min(iradius - k - i, ih - 1) else (i - iradius + k);
+            const urow: u32 = @bitCast(row);
+            srcp[@intCast(k)] = src[urow * stride ..];
         }
 
-        k = radius;
+        k = iradius;
         while (k < ksize) : (k += 1) {
-            const row: u32 = if (dist_from_bottom < k - radius) (i - @min(k - radius - dist_from_bottom, i)) else (i - radius + k);
-            srcp[k] = src + row * stride;
+            const row: i32 = if (dist_from_bottom < k - iradius) (i - @min(k - iradius - dist_from_bottom, i)) else (i - iradius + k);
+            const urow: u32 = @bitCast(row);
+            srcp[@intCast(k)] = src[urow * stride ..];
         }
 
         if (@typeInfo(T) == .Int) {
@@ -153,7 +157,7 @@ fn hvBlurCT(comptime T: type, comptime radius: u32, _src: [*]const u8, _dst: [*]
     }
 }
 
-pub fn hvBlur(comptime T: type, src: [*]const u8, dst: [*]u8, stride: usize, w: u32, h: u32, radius: u32) void {
+pub fn hvBlur(comptime T: type, src: []const u8, dst: []u8, stride: u32, w: u32, h: u32, radius: u32) void {
     switch (radius) {
         1 => hvBlurCT(T, 1, src, dst, stride, w, h),
         2 => hvBlurCT(T, 2, src, dst, stride, w, h),

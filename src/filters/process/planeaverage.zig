@@ -4,8 +4,8 @@ const helper = @import("../../helper.zig");
 const allocator = std.heap.c_allocator;
 
 pub const Exclude = union(enum) {
-    f: []const f32,
-    i: []const i32,
+    f: []f32,
+    i: []i32,
 };
 
 const Stats = struct {
@@ -23,8 +23,8 @@ fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
     }
 }
 
-pub fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) f64 {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
+pub fn average(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) f64 {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
     var total: i64 = @intCast(w * h);
@@ -42,15 +42,15 @@ pub fn average(comptime T: type, src: [*]const u8, _stride: usize, w: usize, h: 
                 acc += v;
             }
         }
-        srcp += stride;
+        srcp = srcp[stride..];
     }
 
     return result(T, acc, @floatFromInt(total), peak);
 }
 
-pub fn averageRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
-    var srcp: [*]const T = @ptrCast(@alignCast(src));
-    var refp: [*]const T = @ptrCast(@alignCast(ref));
+pub fn averageRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const exclude = if (@typeInfo(T) == .Float) exclude_union.f else exclude_union.i;
     const _total: i64 = @intCast(w * h);
@@ -73,8 +73,8 @@ pub fn averageRef(comptime T: type, src: [*]const u8, ref: [*]const u8, _stride:
 
             diffacc += helper.absDiff(v, j);
         }
-        srcp += stride;
-        refp += stride;
+        srcp = srcp[stride..];
+        refp = refp[stride..];
     }
 
     const _totalf: f64 = @floatFromInt(_total);

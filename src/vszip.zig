@@ -7,6 +7,7 @@ const pmm = @import("filters/planeminmax.zig");
 
 pub const vs = vapoursynth.vapoursynth4;
 pub const vsh = vapoursynth.vshelper;
+pub const zapi = vapoursynth.zigapi;
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     _ = vspapi.configPlugin.?("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", vs.makeVersion(1, 0), vs.VAPOURSYNTH_API_VERSION, 0, plugin);

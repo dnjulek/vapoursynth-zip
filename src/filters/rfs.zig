@@ -3,13 +3,7 @@ const vszip = @import("../vszip.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
-const ar = vs.ActivationReason;
-const rp = vs.RequestPattern;
-const fm = vs.FilterMode;
-const st = vs.SampleType;
-const cf = vs.ColorFamily;
-const ma = vs.MapAppendMode;
-const pe = vs.MapPropertyError;
+const zapi = vszip.zapi;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "RFS";
@@ -20,14 +14,14 @@ const RFSData = struct {
     replace: []bool,
 };
 
-export fn rfsGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+export fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     _ = core;
     _ = frame_data;
     const d: *RFSData = @ptrCast(@alignCast(instance_data));
 
-    if (activation_reason == ar.Initial) {
+    if (activation_reason == .Initial) {
         vsapi.?.requestFrameFilter.?(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
-    } else if (activation_reason == ar.AllFramesReady) {
+    } else if (activation_reason == .AllFramesReady) {
         return vsapi.?.getFrameFilter.?(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
     }
 
@@ -46,7 +40,7 @@ export fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs
 pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: RFSData = undefined;
-    var node_err: pe = undefined;
+    var node_err: vs.MapPropertyError = undefined;
 
     d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
     d.node2 = vsapi.?.mapGetNode.?(in, "clipb", 0, &node_err).?;
@@ -80,11 +74,11 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         if (!(process[0] and process[1] and process[2])) {
             const pl = [3]i64{ 0, 1, 2 };
             const args = vsapi.?.createMap.?();
-            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[0], ma.Append);
-            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[1], ma.Append);
-            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[2], ma.Append);
+            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[0], .Append);
+            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[1], .Append);
+            _ = vsapi.?.mapSetNode.?(args, "clips", nodes[2], .Append);
             _ = vsapi.?.mapSetIntArray.?(args, "planes", &pl, 3);
-            _ = vsapi.?.mapSetInt.?(args, "colorfamily", @intFromEnum(vi.format.colorFamily), ma.Replace);
+            _ = vsapi.?.mapSetInt.?(args, "colorfamily", @intFromEnum(vi.format.colorFamily), .Replace);
 
             const stdplugin = vsapi.?.getPluginByID.?(vsh.STD_PLUGIN_ID, core);
             const ret = vsapi.?.invoke.?(stdplugin, "ShufflePlanes", args);
@@ -95,9 +89,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         }
     }
 
-    for (d.replace) |*b| {
-        b.* = false;
-    }
+    @memset(d.replace, false);
 
     ci = 0;
     while (ci < vsapi.?.mapNumElements.?(in, "frames")) : (ci += 1) {
@@ -110,15 +102,15 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     var deps = [_]vs.FilterDependency{
         vs.FilterDependency{
             .source = d.node1,
-            .requestPattern = rp.General,
+            .requestPattern = .General,
         },
         vs.FilterDependency{
             .source = d.node2,
-            .requestPattern = rp.General,
+            .requestPattern = .General,
         },
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, &vi, rfsGetFrame, rfsFree, fm.Parallel, &deps, deps.len, data, core);
+    vsapi.?.createVideoFilter.?(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, deps.len, data, core);
 }
 
 const rfsInputError = error{
@@ -149,7 +141,7 @@ fn rfsValidateInput(out: *vs.Map, node1: *vs.Node, node2: *vs.Node, outvi: *vs.V
 
     if (!vsh.isSameVideoFormat(&outvi.format, &vi2.format)) {
         if (mismatch) {
-            outvi.format.colorFamily = cf.Undefined;
+            outvi.format.colorFamily = .Undefined;
         } else {
             err_msg = filter_name ++ ": Clip formats don't match, enable mismatch if you want variable format.";
             return rfsInputError.Format;

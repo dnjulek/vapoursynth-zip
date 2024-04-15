@@ -5,13 +5,8 @@ const process = @import("process/bilateral.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
+const zapi = vszip.zapi;
 const math = std.math;
-const ar = vs.ActivationReason;
-const rp = vs.RequestPattern;
-const fm = vs.FilterMode;
-const pe = vs.MapPropertyError;
-const ma = vs.MapAppendMode;
-const st = vs.SampleType;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Bilateral";
@@ -23,7 +18,7 @@ pub const BilateralData = struct {
     dt: helper.DataType,
     sigmaS: [3]f64,
     sigmaR: [3]f64,
-    planes: [3]bool,
+    process: [3]bool,
     algorithm: [3]i32,
     PBFICnum: [3]u32,
     radius: [3]u32,
@@ -36,98 +31,45 @@ pub const BilateralData = struct {
     join: bool,
 };
 
-fn bilateral2D(comptime T: type, src: [*]const u8, ref: [*]const u8, dst: [*]u8, _stride: usize, width: u32, height: u32, plane: u32, d: *BilateralData) void {
-    const srcp: [*]const T = @as([*]const T, @ptrCast(@alignCast(src)));
-    const refp: [*]const T = @as([*]const T, @ptrCast(@alignCast(ref)));
-    const dstp: [*]T = @as([*]T, @ptrCast(@alignCast(dst)));
-    const stride: usize = _stride >> (@sizeOf(T) >> 1);
-
-    if (d.algorithm[plane] == 1) {
-        process.Bilateral2D_1(
-            T,
-            srcp,
-            dstp,
-            refp,
-            stride,
-            width,
-            height,
-            plane,
-            d,
-        );
-    } else {
-        if (d.join) {
-            process.Bilateral2D_2ref(
-                T,
-                dstp,
-                srcp,
-                refp,
-                d.gs_lut[plane].ptr,
-                d.gr_lut[plane].ptr,
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-                d.peak,
-            );
-        } else {
-            process.Bilateral2D_2(
-                T,
-                dstp,
-                srcp,
-                d.gs_lut[plane].ptr,
-                d.gr_lut[plane].ptr,
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-                d.peak,
-            );
-        }
-    }
-}
-
-export fn bilateralGetFrame(n: c_int, activation_reason: ar, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+export fn bilateralGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     _ = frame_data;
     const d: *BilateralData = @ptrCast(@alignCast(instance_data));
 
-    if (activation_reason == ar.Initial) {
+    if (activation_reason == .Initial) {
         vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
         if (d.join) {
             vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
         }
-    } else if (activation_reason == ar.AllFramesReady) {
-        const src = vsapi.?.getFrameFilter.?(n, d.node1, frame_ctx);
-        defer vsapi.?.freeFrame.?(src);
+    } else if (activation_reason == .AllFramesReady) {
+        var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
+        defer src.deinit();
+
         var ref = src;
         if (d.join) {
-            ref = vsapi.?.getFrameFilter.?(n, d.node2, frame_ctx);
-            defer vsapi.?.freeFrame.?(ref);
+            ref = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+            defer ref.deinit();
         }
 
-        const dst = helper.newVideoFrame2(src, &d.planes, core, vsapi);
-        var plane: c_int = 0;
+        const dst = src.newVideoFrame2(d.process);
+        var plane: u32 = 0;
         while (plane < d.vi.format.numPlanes) : (plane += 1) {
-            const uplane: u32 = @intCast(plane);
-            if (!(d.planes[uplane])) {
+            if (!(d.process[plane])) {
                 continue;
             }
 
-            const srcp: [*]const u8 = vsapi.?.getReadPtr.?(src, plane);
-            const refp: [*]const u8 = vsapi.?.getReadPtr.?(ref, plane);
-            const dstp: [*]u8 = vsapi.?.getWritePtr.?(dst, plane);
-            const stride: usize = @intCast(vsapi.?.getStride.?(src, plane));
-            const h: u32 = @intCast(vsapi.?.getFrameHeight.?(src, plane));
-            const w: u32 = @intCast(vsapi.?.getFrameWidth.?(src, plane));
+            const srcp = src.getReadPtr(plane);
+            const refp = ref.getReadPtr(plane);
+            const dstp = dst.getWritePtr(plane);
+            const w, const h, const stride = src.getDimensions(plane);
+
             switch (d.dt) {
-                .U8 => bilateral2D(u8, srcp, refp, dstp, stride, w, h, uplane, d),
-                .U16 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, uplane, d),
-                .F32 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, uplane, d),
+                .U8 => bilateral2D(u8, srcp, refp, dstp, stride, w, h, plane, d),
+                .U16 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
+                .F32 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
             }
         }
 
-        return dst;
+        return dst.frame;
     }
 
     return null;
@@ -139,7 +81,7 @@ export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
 
     var i: u32 = 0;
     while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
+        if (d.process[i]) {
             allocator.free(d.gr_lut[i]);
 
             if (d.algorithm[i] == 2) {
@@ -156,7 +98,7 @@ export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
 pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: BilateralData = undefined;
-    var err: pe = undefined;
+    var err: vs.MapPropertyError = undefined;
 
     d.node1 = vsapi.?.mapGetNode.?(in, "clip", 0, &err).?;
     d.vi = vsapi.?.getVideoInfo.?(d.node1);
@@ -167,13 +109,13 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     const peak: u32 = math.shl(u32, 1, bps);
     d.peak = @floatFromInt(peak);
 
-    if ((d.vi.format.sampleType != st.Integer) or ((d.vi.format.bytesPerSample != 1) and (d.vi.format.bytesPerSample != 2))) {
+    if ((d.vi.format.sampleType != .Integer) or ((d.vi.format.bytesPerSample != 1) and (d.vi.format.bytesPerSample != 2))) {
         vsapi.?.mapSetError.?(out, "Bilateral: Invalid input clip, Only 8-16 bit int formats supported");
         vsapi.?.freeNode.?(d.node1);
         return;
     }
 
-    var i: usize = 0;
+    var i: u32 = 0;
     var m: i32 = vsapi.?.mapNumElements.?(in, "sigmaS");
     while (i < 3) : (i += 1) {
         const ssw: i32 = d.vi.format.subSamplingW;
@@ -219,32 +161,32 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     m = vsapi.?.mapNumElements.?(in, "planes");
     while (i < 3) : (i += 1) {
         if ((i > 0) and (yuv)) {
-            d.planes[i] = false;
+            d.process[i] = false;
         } else {
-            d.planes[i] = m <= 0;
+            d.process[i] = m <= 0;
         }
     }
 
     i = 0;
     while (i < m) : (i += 1) {
-        const o: usize = @intCast(vsapi.?.mapGetInt.?(in, "planes", @as(c_int, @intCast(i)), &err));
+        const o: u32 = @intCast(vsapi.?.mapGetInt.?(in, "planes", @as(c_int, @intCast(i)), &err));
         if ((o < 0) or (o >= n)) {
             vsapi.?.mapSetError.?(out, "Bilateral: plane index out of range");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
-        if (d.planes[o]) {
+        if (d.process[o]) {
             vsapi.?.mapSetError.?(out, "Bilateral: plane specified twice");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
-        d.planes[o] = true;
+        d.process[o] = true;
     }
 
     i = 0;
     while (i < 3) : (i += 1) {
         if ((d.sigmaS[i] == 0.0) or (d.sigmaR[i] == 0.0)) {
-            d.planes[i] = false;
+            d.process[i] = false;
         }
     }
 
@@ -317,7 +259,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     while (i < 3) : (i += 1) {
-        if ((d.planes[i]) and (d.PBFICnum[i] == 0)) {
+        if ((d.process[i]) and (d.PBFICnum[i] == 0)) {
             if (d.sigmaR[i] >= 0.08) {
                 d.PBFICnum[i] = 4;
             } else if (d.sigmaR[i] >= 0.015) {
@@ -335,7 +277,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     i = 0;
     var orad = [_]i32{ 0, 0, 0 };
     while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
+        if (d.process[i]) {
             orad[i] = @max(@as(i32, @intFromFloat(d.sigmaS[i] * 2.0 + 0.5)), 1);
             if (orad[i] < 4) {
                 d.step[i] = 1;
@@ -369,18 +311,18 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     while (i < 3) : (i += 1) {
-        if ((d.planes[i]) and (d.algorithm[i] == 2)) {
-            const upper: usize = d.radius[i] + 1;
+        if ((d.process[i]) and (d.algorithm[i] == 2)) {
+            const upper: u32 = d.radius[i] + 1;
             d.gs_lut[i] = allocator.alloc(f32, upper * upper) catch unreachable;
-            process.gaussianFunctionSpatialLUTGeneration(d.gs_lut[i].ptr, upper, d.sigmaS[i]);
+            process.gaussianFunctionSpatialLUTGeneration(d.gs_lut[i], upper, d.sigmaS[i]);
         }
     }
 
     i = 0;
     while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
+        if (d.process[i]) {
             d.gr_lut[i] = allocator.alloc(f32, peak + 1) catch unreachable;
-            process.gaussianFunctionRangeLUTGeneration(d.gr_lut[i].ptr, peak, d.sigmaR[i]);
+            process.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], peak, d.sigmaR[i]);
         }
     }
 
@@ -390,7 +332,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     var deps1 = [_]vs.FilterDependency{
         vs.FilterDependency{
             .source = d.node1,
-            .requestPattern = rp.StrictSpatial,
+            .requestPattern = .StrictSpatial,
         },
     };
 
@@ -401,7 +343,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
             deps1[0],
             vs.FilterDependency{
                 .source = d.node2,
-                .requestPattern = if (d.vi.numFrames <= vsapi.?.getVideoInfo.?(d.node2).numFrames) rp.StrictSpatial else rp.General,
+                .requestPattern = if (d.vi.numFrames <= vsapi.?.getVideoInfo.?(d.node2).numFrames) .StrictSpatial else .General,
             },
         };
 
@@ -409,5 +351,57 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         deps = &deps2;
     }
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, bilateralGetFrame, bilateralFree, fm.Parallel, deps, deps_len, data, core);
+    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, bilateralGetFrame, bilateralFree, .Parallel, deps, deps_len, data, core);
+}
+
+fn bilateral2D(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
+    const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    const refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
+    const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
+    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
+
+    if (d.algorithm[plane] == 1) {
+        process.bilateralAlg1(
+            T,
+            srcp,
+            dstp,
+            refp,
+            stride,
+            width,
+            height,
+            plane,
+            d,
+        );
+    } else {
+        if (d.join) {
+            process.bilateralAlg2Ref(
+                T,
+                dstp,
+                srcp,
+                refp,
+                d.gs_lut[plane],
+                d.gr_lut[plane],
+                stride,
+                width,
+                height,
+                d.radius[plane],
+                d.step[plane],
+                d.peak,
+            );
+        } else {
+            process.bilateralAlg2(
+                T,
+                dstp,
+                srcp,
+                d.gs_lut[plane],
+                d.gr_lut[plane],
+                stride,
+                width,
+                height,
+                d.radius[plane],
+                d.step[plane],
+                d.peak,
+            );
+        }
+    }
 }

@@ -12,15 +12,13 @@ pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);
 }
 
-pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: [*]const u8, vsapi: ?*const vs.API) !void {
+pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
     const num_e = vsapi.?.mapNumElements.?(in, "planes");
     if (num_e < 1) {
         return;
     }
 
-    for (process) |*p| {
-        p.* = false;
-    }
+    @memset(process, false);
 
     var err_msg: ?[*]const u8 = null;
     errdefer {
@@ -48,7 +46,7 @@ pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, proce
     }
 }
 
-pub fn compareNodes(out: ?*vs.Map, node1: *vs.Node, node2: ?*vs.Node, comptime name: [*]const u8, vsapi: ?*const vs.API) !void {
+pub fn compareNodes(out: ?*vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *const vs.VideoInfo, vi2: *const vs.VideoInfo, comptime name: []const u8, vsapi: ?*const vs.API) !void {
     if (node2 == null) {
         return;
     }
@@ -60,8 +58,6 @@ pub fn compareNodes(out: ?*vs.Map, node1: *vs.Node, node2: ?*vs.Node, comptime n
         vsapi.?.freeNode.?(node2);
     }
 
-    const vi1 = vsapi.?.getVideoInfo.?(node1);
-    const vi2 = vsapi.?.getVideoInfo.?(node2);
     if (!vsh.isSameVideoInfo(vi1, vi2) or !vsh.isConstantVideoFormat(vi2)) {
         err_msg = name ++ ": both input clips must have the same format.";
         return error.node;
@@ -90,8 +86,8 @@ pub fn newVideoFrame2(src: ?*const vs.Frame, process: []bool, core: ?*vs.Core, v
         vsapi.?.getVideoFrameFormat.?(src),
         vsapi.?.getFrameWidth.?(src, 0),
         vsapi.?.getFrameHeight.?(src, 0),
-        &cp_planes[0],
-        &planes[0],
+        &cp_planes,
+        &planes,
         src,
         core,
     );
