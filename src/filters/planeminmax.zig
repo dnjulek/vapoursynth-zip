@@ -21,6 +21,14 @@ pub const PlaneMinMaxData = struct {
     hist_size: u32,
     planes: [3]bool,
     dt: helper.DataType,
+    prop_buff: ?[]u8,
+    prop: ?StringProp,
+};
+
+const StringProp = struct {
+    d: []u8,
+    ma: []u8,
+    mi: []u8,
 };
 
 export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
@@ -29,9 +37,7 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
 
     if (activation_reason == .Initial) {
         vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
-        if (d.node2) |node| {
-            vsapi.?.requestFrameFilter.?(n, node, frame_ctx);
-        }
+        if (d.node2) |node| vsapi.?.requestFrameFilter.?(n, node, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
         var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
         defer src.deinit();
@@ -69,19 +75,19 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
                 };
 
                 _ = switch (stats) {
-                    .i => vsapi.?.mapSetFloat.?(props, "psmDiff", stats.i.diff, .Append),
-                    .f => vsapi.?.mapSetFloat.?(props, "psmDiff", stats.f.diff, .Append),
+                    .i => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.i.diff, .Append),
+                    .f => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.f.diff, .Append),
                 };
             }
 
             switch (stats) {
                 .i => {
-                    _ = vsapi.?.mapSetInt.?(props, "psmMax", stats.i.max, .Append);
-                    _ = vsapi.?.mapSetInt.?(props, "psmMin", stats.i.min, .Append);
+                    _ = vsapi.?.mapSetInt.?(props, if (d.prop != null) d.prop.?.ma.ptr else "psmMax", stats.i.max, .Append);
+                    _ = vsapi.?.mapSetInt.?(props, if (d.prop != null) d.prop.?.mi.ptr else "psmMin", stats.i.min, .Append);
                 },
                 .f => {
-                    _ = vsapi.?.mapSetFloat.?(props, "psmMax", stats.f.max, .Append);
-                    _ = vsapi.?.mapSetFloat.?(props, "psmMin", stats.f.min, .Append);
+                    _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.ma.ptr else "psmMax", stats.f.max, .Append);
+                    _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.mi.ptr else "psmMin", stats.f.min, .Append);
                 },
             }
         }
@@ -96,10 +102,8 @@ export fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*
     _ = core;
     const d: *PlaneMinMaxData = @ptrCast(@alignCast(instance_data));
 
-    if (d.node2) |node| {
-        vsapi.?.freeNode.?(node);
-    }
-
+    if (d.node2) |node| vsapi.?.freeNode.?(node);
+    if (d.prop_buff) |buff| allocator.free(buff);
     vsapi.?.freeNode.?(d.node1);
     allocator.destroy(d);
 }
@@ -123,6 +127,7 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     d.peak = @intCast(d.hist_size - 1);
     d.maxthr = getThr(in, out, &nodes, "maxthr", vsapi) catch return;
     d.minthr = getThr(in, out, &nodes, "minthr", vsapi) catch return;
+    d.prop = getPropData(map, "prop", allocator, &d.prop_buff);
 
     const data: *PlaneMinMaxData = allocator.create(PlaneMinMaxData) catch unreachable;
     data.* = d;
@@ -156,9 +161,7 @@ pub fn getThr(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, comptime ke
     var err_msg: ?[*]const u8 = null;
     errdefer {
         vsapi.?.mapSetError.?(out, err_msg.?);
-        for (nodes) |node| {
-            vsapi.?.freeNode.?(node);
-        }
+        for (nodes) |node| vsapi.?.freeNode.?(node);
     }
 
     const thr = vsh.mapGetN(f32, in, key.ptr, 0, vsapi) orelse 0;
@@ -168,4 +171,30 @@ pub fn getThr(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, comptime ke
     }
 
     return thr;
+}
+
+pub fn getPropData(self: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
+    var err: vs.MapPropertyError = undefined;
+    data_buff.* = null;
+    const data_ptr = self.vsapi.?.mapGetData.?(self.in, key.ptr, 0, &err);
+    if (err != .Success) {
+        return null;
+    }
+
+    const data_len = self.vsapi.?.mapGetDataSize.?(self.in, key.ptr, 0, &err);
+    if ((err != .Success) or (data_len < 1)) {
+        return null;
+    }
+
+    const udata_len: u32 = @bitCast(data_len);
+    const diff_len = udata_len + 5;
+    const max_len = udata_len + 4;
+    const min_len = udata_len + 4;
+    const data = data_ptr[0..udata_len];
+    data_buff.* = data_allocator.alloc(u8, diff_len + max_len + min_len) catch unreachable;
+    return .{
+        .d = std.fmt.bufPrint(data_buff.*.?[0..diff_len], "{s}Diff\x00", .{data}) catch unreachable,
+        .ma = std.fmt.bufPrint(data_buff.*.?[diff_len..], "{s}Max\x00", .{data}) catch unreachable,
+        .mi = std.fmt.bufPrint(data_buff.*.?[(diff_len + max_len)..], "{s}Min\x00", .{data}) catch unreachable,
+    };
 }

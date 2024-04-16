@@ -1,6 +1,8 @@
+const std = @import("std");
 const vszip = @import("vszip.zig");
 const vs = vszip.vs;
 const vsh = vszip.vsh;
+const zapi = vszip.zapi;
 
 pub const DataType = enum(c_int) {
     U8 = 1,
@@ -23,9 +25,7 @@ pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, proce
     var err_msg: ?[*]const u8 = null;
     errdefer {
         vsapi.?.mapSetError.?(out, err_msg.?);
-        for (nodes) |node| {
-            vsapi.?.freeNode.?(node);
-        }
+        for (nodes) |node| vsapi.?.freeNode.?(node);
     }
 
     var i: c_int = 0;
@@ -62,33 +62,4 @@ pub fn compareNodes(out: ?*vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *con
         err_msg = name ++ ": both input clips must have the same format.";
         return error.node;
     }
-}
-
-pub fn newVideoFrame(src: ?*const vs.Frame, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Frame {
-    return vsapi.?.newVideoFrame.?(
-        vsapi.?.getVideoFrameFormat.?(src),
-        vsapi.?.getFrameWidth.?(src, 0),
-        vsapi.?.getFrameHeight.?(src, 0),
-        src,
-        core,
-    );
-}
-
-pub fn newVideoFrame2(src: ?*const vs.Frame, process: []bool, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Frame {
-    var planes = [_]c_int{ 0, 1, 2 };
-    var cp_planes = [_]?*const vs.Frame{
-        if (process[0]) null else src,
-        if (process[1]) null else src,
-        if (process[2]) null else src,
-    };
-
-    return vsapi.?.newVideoFrame2.?(
-        vsapi.?.getVideoFrameFormat.?(src),
-        vsapi.?.getFrameWidth.?(src, 0),
-        vsapi.?.getFrameHeight.?(src, 0),
-        &cp_planes,
-        &planes,
-        src,
-        core,
-    );
 }
