@@ -65,7 +65,7 @@ export fn bilateralGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
             switch (d.dt) {
                 .U8 => bilateral2D(u8, srcp, refp, dstp, stride, w, h, plane, d),
                 .U16 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
-                .F32 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
+                .F32 => bilateral2DFloat(f32, srcp, refp, dstp, stride, w, h, plane, d),
             }
         }
 
@@ -106,14 +106,8 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
     const bps = d.vi.format.bitsPerSample;
-    const peak: u32 = math.shl(u32, 1, bps);
+    const peak: u32 = if (d.vi.format.sampleType == .Integer) math.shl(u32, 1, bps) else 65535;
     d.peak = @floatFromInt(peak);
-
-    if ((d.vi.format.sampleType != .Integer) or ((d.vi.format.bytesPerSample != 1) and (d.vi.format.bytesPerSample != 2))) {
-        vsapi.?.mapSetError.?(out, "Bilateral: Invalid input clip, Only 8-16 bit int formats supported");
-        vsapi.?.freeNode.?(d.node1);
-        return;
-    }
 
     var i: u32 = 0;
     var m: i32 = vsapi.?.mapNumElements.?(in, "sigmaS");
@@ -403,6 +397,56 @@ fn bilateral2D(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _s
                 d.radius[plane],
                 d.step[plane],
                 d.peak,
+            );
+        }
+    }
+}
+
+fn bilateral2DFloat(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
+    const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    const refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
+    const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
+    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
+
+    if (d.algorithm[plane] == 1) {
+        process.bilateralAlg1Float(
+            T,
+            srcp,
+            dstp,
+            refp,
+            stride,
+            width,
+            height,
+            plane,
+            d,
+        );
+    } else {
+        if (d.join) {
+            process.bilateralAlg2RefFloat(
+                T,
+                dstp,
+                srcp,
+                refp,
+                d.gs_lut[plane],
+                d.gr_lut[plane],
+                stride,
+                width,
+                height,
+                d.radius[plane],
+                d.step[plane],
+            );
+        } else {
+            process.bilateralAlg2Float(
+                T,
+                dstp,
+                srcp,
+                d.gs_lut[plane],
+                d.gr_lut[plane],
+                stride,
+                width,
+                height,
+                d.radius[plane],
+                d.step[plane],
             );
         }
     }

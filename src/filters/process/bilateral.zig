@@ -5,6 +5,378 @@ const BilateralData = @import("../bilateral.zig").BilateralData;
 
 const allocator = std.heap.c_allocator;
 
+pub fn bilateralAlg1(comptime T: type, srcp: []const T, dstp: []T, refp: []const T, stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
+    const sigma: f64 = d.sigmaS[plane];
+    const PBFICnum = d.PBFICnum[plane];
+    const pcount: u32 = stride * height;
+    const gr_lut: []f32 = d.gr_lut[plane];
+    const PBFICk: []T = allocator.alloc(T, PBFICnum) catch unreachable;
+    defer allocator.free(PBFICk);
+
+    const PBFICnumF: f32 = @floatFromInt(PBFICnum);
+    for (PBFICk, 0..) |*i, k| {
+        const kF: f32 = @floatFromInt(k);
+        i.* = math.lossyCast(T, d.peak * kF / (PBFICnumF - 1) + 0.5);
+    }
+
+    var B: f32 = undefined;
+    var B1: f32 = undefined;
+    var B2: f32 = undefined;
+    var B3: f32 = undefined;
+    recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
+
+    const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
+    const wk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+    const jk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+    defer allocator.free(wk);
+    defer allocator.free(jk);
+
+    for (0..PBFICnum) |k| {
+        PBFIC[k] = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+        for (0..height) |j| {
+            var i = stride * j;
+            const upper = i + width;
+            while (i < upper) : (i += 1) {
+                wk[i] = gr_lut[helper.absDiff(PBFICk[k], refp[i])];
+                jk[i] = wk[i] * @as(f32, @floatFromInt(srcp[i]));
+            }
+        }
+
+        recursiveGaussian2DHorizontal(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DHorizontal(jk, jk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(jk, jk, height, width, stride, B, B1, B2, B3);
+
+        for (0..height) |j| {
+            var i = stride * j;
+            const upper = i + width;
+            while (i < upper) : (i += 1) {
+                PBFIC[k][i] = if (wk[i] == 0) 0 else (jk[i] / wk[i]);
+            }
+        }
+    }
+
+    for (0..height) |j| {
+        var i = stride * j;
+        const upper = i + width;
+        while (i < upper) : (i += 1) {
+            var k: u32 = 0;
+            while (k < (PBFICnum - 2)) : (k += 1) {
+                if ((refp[i] < PBFICk[k + 1]) and (refp[i] >= PBFICk[k])) {
+                    break;
+                }
+            }
+
+            const iF: f32 = @floatFromInt(refp[i]);
+            const PBFICk0F: f32 = @floatFromInt(PBFICk[k]);
+            const PBFICk1F: f32 = @floatFromInt(PBFICk[k + 1]);
+            const vf: f32 = ((PBFICk1F - iF) * PBFIC[k][i] + (iF - PBFICk0F) * PBFIC[k + 1][i]) / (PBFICk1F - PBFICk0F);
+            dstp[i] = @intFromFloat(math.clamp(vf + 0.5, 0, d.peak));
+        }
+    }
+
+    for (PBFIC) |i| {
+        allocator.free(i);
+    }
+
+    allocator.free(PBFIC);
+}
+
+pub fn bilateralAlg2(comptime T: type, dst: []T, src: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
+    var srcp: []const T = src;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
+
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
+    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const tmp2: u32 = radius + x + tmp1;
+            const cx: T = srcp[x];
+            var weight_sum = gs_lut[0] * gr_lut[0];
+            var sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
+
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
+
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
+                    const cxx1r: T = srcbuff[tmp2 + tmp3 + xx];
+                    const cxx2r: T = srcbuff[tmp2 + tmp3 - xx];
+                    const cxx3r: T = srcbuff[tmp2 - tmp3 - xx];
+                    const cxx4r: T = srcbuff[tmp2 - tmp3 + xx];
+                    const cxx1f: f32 = @floatFromInt(cxx1r);
+                    const cxx2f: f32 = @floatFromInt(cxx2r);
+                    const cxx3f: f32 = @floatFromInt(cxx3r);
+                    const cxx4f: f32 = @floatFromInt(cxx4r);
+
+                    const swei = gs_lut[yy * radius2 + xx];
+                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1r)];
+                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2r)];
+                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3r)];
+                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4r)];
+                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
+                    sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
+                }
+            }
+            dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
+        }
+        srcp = srcp[stride..];
+        dstp = dstp[stride..];
+    }
+}
+
+pub fn bilateralAlg2Ref(comptime T: type, dst: []T, src: []const T, ref: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
+
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    const refbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
+    defer allocator.free(refbuff);
+
+    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+    data2buff(T, refbuff, refp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const tmp2: u32 = radius + x + tmp1;
+            const cx: T = refp[x];
+            var weight_sum = gs_lut[0] * gr_lut[0];
+            var sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
+
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
+
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
+                    const cxx1r: T = refbuff[tmp2 + tmp3 + xx];
+                    const cxx2r: T = refbuff[tmp2 + tmp3 - xx];
+                    const cxx3r: T = refbuff[tmp2 - tmp3 - xx];
+                    const cxx4r: T = refbuff[tmp2 - tmp3 + xx];
+                    const cxx1f: f32 = @floatFromInt(srcbuff[tmp2 + tmp3 + xx]);
+                    const cxx2f: f32 = @floatFromInt(srcbuff[tmp2 + tmp3 - xx]);
+                    const cxx3f: f32 = @floatFromInt(srcbuff[tmp2 - tmp3 - xx]);
+                    const cxx4f: f32 = @floatFromInt(srcbuff[tmp2 - tmp3 + xx]);
+
+                    const swei = gs_lut[yy * radius2 + xx];
+                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1r)];
+                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2r)];
+                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3r)];
+                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4r)];
+                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
+                    sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
+                }
+            }
+            dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
+        }
+        srcp = srcp[stride..];
+        refp = refp[stride..];
+        dstp = dstp[stride..];
+    }
+}
+
+pub fn bilateralAlg1Float(comptime T: type, srcp: []const T, dstp: []T, refp: []const T, stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
+    const sigma: f64 = d.sigmaS[plane];
+    const PBFICnum = d.PBFICnum[plane];
+    const pcount: u32 = stride * height;
+    const gr_lut: []f32 = d.gr_lut[plane];
+    const PBFICk: []T = allocator.alloc(T, PBFICnum) catch unreachable;
+    defer allocator.free(PBFICk);
+
+    const PBFICnumF: T = @floatFromInt(PBFICnum - 1);
+    for (PBFICk, 0..) |*i, k| {
+        const kF: T = @floatFromInt(k);
+        i.* = kF / PBFICnumF;
+    }
+
+    var B: f32 = undefined;
+    var B1: f32 = undefined;
+    var B2: f32 = undefined;
+    var B3: f32 = undefined;
+    recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
+
+    const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
+    const wk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+    const jk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+    defer allocator.free(wk);
+    defer allocator.free(jk);
+
+    for (0..PBFICnum) |k| {
+        PBFIC[k] = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
+        for (0..height) |j| {
+            var i = stride * j;
+            const upper = i + width;
+            while (i < upper) : (i += 1) {
+                wk[i] = gr_lut[@intFromFloat(@abs(PBFICk[k] - refp[i]) * 65535 + 0.5)];
+                jk[i] = wk[i] * srcp[i];
+            }
+        }
+
+        recursiveGaussian2DHorizontal(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(wk, wk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DHorizontal(jk, jk, height, width, stride, B, B1, B2, B3);
+        recursiveGaussian2DVertical(jk, jk, height, width, stride, B, B1, B2, B3);
+
+        for (0..height) |j| {
+            var i = stride * j;
+            const upper = i + width;
+            while (i < upper) : (i += 1) {
+                PBFIC[k][i] = if (wk[i] == 0) 0 else (jk[i] / wk[i]);
+            }
+        }
+    }
+
+    for (0..height) |j| {
+        var i = stride * j;
+        const upper = i + width;
+        while (i < upper) : (i += 1) {
+            var k: u32 = 0;
+            while (k < (PBFICnum - 2)) : (k += 1) {
+                if ((refp[i] < PBFICk[k + 1]) and (refp[i] >= PBFICk[k])) {
+                    break;
+                }
+            }
+
+            dstp[i] = ((PBFICk[k + 1] - refp[i]) * PBFIC[k][i] + (refp[i] - PBFICk[k]) * PBFIC[k + 1][i]) / (PBFICk[k + 1] - PBFICk[k]);
+        }
+    }
+
+    for (PBFIC) |i| {
+        allocator.free(i);
+    }
+
+    allocator.free(PBFIC);
+}
+
+pub fn bilateralAlg2Float(comptime T: type, dst: []T, src: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32) void {
+    var srcp: []const T = src;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
+
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
+    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const tmp2: u32 = radius + x + tmp1;
+            const cx: T = srcp[x];
+            var weight_sum = gs_lut[0] * gr_lut[0];
+            var sum = srcp[x] * weight_sum;
+
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
+
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
+                    const cxx1: T = srcbuff[tmp2 + tmp3 + xx];
+                    const cxx2: T = srcbuff[tmp2 + tmp3 - xx];
+                    const cxx3: T = srcbuff[tmp2 - tmp3 - xx];
+                    const cxx4: T = srcbuff[tmp2 - tmp3 + xx];
+
+                    const swei = gs_lut[yy * radius2 + xx];
+                    const rwei1 = gr_lut[@intFromFloat(@abs(cx - cxx1) * 65535 + 0.5)];
+                    const rwei2 = gr_lut[@intFromFloat(@abs(cx - cxx2) * 65535 + 0.5)];
+                    const rwei3 = gr_lut[@intFromFloat(@abs(cx - cxx3) * 65535 + 0.5)];
+                    const rwei4 = gr_lut[@intFromFloat(@abs(cx - cxx4) * 65535 + 0.5)];
+                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
+                    sum += swei * (cxx1 * rwei1 + cxx2 * rwei2 + cxx3 * rwei3 + cxx4 * rwei4);
+                }
+            }
+
+            dstp[x] = sum / weight_sum;
+        }
+        srcp = srcp[stride..];
+        dstp = dstp[stride..];
+    }
+}
+
+pub fn bilateralAlg2RefFloat(comptime T: type, dst: []T, src: []const T, ref: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32) void {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
+    var dstp: []T = dst;
+    const radius2: u32 = radius + 1;
+    const bufheight: u32 = height + radius * 2;
+    const bufwidth: u32 = width + radius * 2;
+    const bufstride: u32 = strideCal(T, bufwidth);
+
+    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    const refbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
+    defer allocator.free(srcbuff);
+    defer allocator.free(refbuff);
+
+    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+    data2buff(T, refbuff, refp, radius, bufheight, bufwidth, bufstride, height, width, stride);
+
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        const tmp1: u32 = (radius + y) * bufstride;
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const tmp2: u32 = radius + x + tmp1;
+            const cx: T = refp[x];
+            var weight_sum = gs_lut[0] * gr_lut[0];
+            var sum = srcp[x] * weight_sum;
+
+            var yy: u32 = 1;
+            while (yy < radius2) : (yy += step) {
+                const tmp3: u32 = yy * bufstride;
+
+                var xx: u32 = 1;
+                while (xx < radius2) : (xx += step) {
+                    const cxx1r: T = refbuff[tmp2 + tmp3 + xx];
+                    const cxx2r: T = refbuff[tmp2 + tmp3 - xx];
+                    const cxx3r: T = refbuff[tmp2 - tmp3 - xx];
+                    const cxx4r: T = refbuff[tmp2 - tmp3 + xx];
+                    const cxx1f: f32 = srcbuff[tmp2 + tmp3 + xx];
+                    const cxx2f: f32 = srcbuff[tmp2 + tmp3 - xx];
+                    const cxx3f: f32 = srcbuff[tmp2 - tmp3 - xx];
+                    const cxx4f: f32 = srcbuff[tmp2 - tmp3 + xx];
+
+                    const swei = gs_lut[yy * radius2 + xx];
+                    const rwei1 = gr_lut[@intFromFloat(@abs(cx - cxx1r) * 65535 + 0.5)];
+                    const rwei2 = gr_lut[@intFromFloat(@abs(cx - cxx2r) * 65535 + 0.5)];
+                    const rwei3 = gr_lut[@intFromFloat(@abs(cx - cxx3r) * 65535 + 0.5)];
+                    const rwei4 = gr_lut[@intFromFloat(@abs(cx - cxx4r) * 65535 + 0.5)];
+                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
+                    sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
+                }
+            }
+
+            dstp[x] = sum / weight_sum;
+        }
+        srcp = srcp[stride..];
+        refp = refp[stride..];
+        dstp = dstp[stride..];
+    }
+}
+
 pub fn gaussianFunctionSpatialLUTGeneration(gs_lut: []f32, upper: u32, sigmaS: f64) void {
     var y: u32 = 0;
     while (y < upper) : (y += 1) {
@@ -184,204 +556,5 @@ fn recursiveGaussian2DHorizontal(output: []f32, input: []const f32, height: u32,
             P1 = P0;
             output[@bitCast(i)] = P0;
         }
-    }
-}
-
-pub fn bilateralAlg1(comptime T: type, srcp: []const T, dstp: []T, refp: []const T, stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
-    const sigma: f64 = d.sigmaS[plane];
-    const PBFICnum = d.PBFICnum[plane];
-    const pcount: u32 = stride * height;
-    const gr_lut: []f32 = d.gr_lut[plane];
-    const PBFICk: []T = allocator.alloc(T, PBFICnum) catch unreachable;
-    defer allocator.free(PBFICk);
-
-    const PBFICnumF: f32 = @floatFromInt(PBFICnum);
-    for (PBFICk, 0..) |*i, k| {
-        const kF: f32 = @floatFromInt(k);
-        i.* = @intFromFloat(d.peak * kF / (PBFICnumF - 1) + 0.5);
-    }
-
-    var B: f32 = undefined;
-    var B1: f32 = undefined;
-    var B2: f32 = undefined;
-    var B3: f32 = undefined;
-    recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
-
-    const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
-    const wk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
-    const jk: []f32 = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
-    defer allocator.free(wk);
-    defer allocator.free(jk);
-
-    for (0..PBFICnum) |k| {
-        PBFIC[k] = allocator.alignedAlloc(f32, 32, pcount) catch unreachable;
-        for (0..height) |j| {
-            var i = stride * j;
-            const upper = i + width;
-            while (i < upper) : (i += 1) {
-                wk[i] = gr_lut[helper.absDiff(PBFICk[k], refp[i])];
-                jk[i] = wk[i] * @as(f32, @floatFromInt(srcp[i]));
-            }
-        }
-
-        recursiveGaussian2DHorizontal(wk, wk, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DVertical(wk, wk, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DHorizontal(jk, jk, height, width, stride, B, B1, B2, B3);
-        recursiveGaussian2DVertical(jk, jk, height, width, stride, B, B1, B2, B3);
-
-        for (0..height) |j| {
-            var i = stride * j;
-            const upper = i + width;
-            while (i < upper) : (i += 1) {
-                PBFIC[k][i] = if (wk[i] == 0) 0 else (jk[i] / wk[i]);
-            }
-        }
-    }
-
-    for (0..height) |j| {
-        var i = stride * j;
-        const upper = i + width;
-        while (i < upper) : (i += 1) {
-            var k: u32 = 0;
-            while (k < (PBFICnum - 2)) : (k += 1) {
-                if ((refp[i] < PBFICk[k + 1]) and (refp[i] >= PBFICk[k])) {
-                    break;
-                }
-            }
-
-            const refF: f32 = @floatFromInt(refp[i]);
-            const PBFICk0F: f32 = @floatFromInt(PBFICk[k]);
-            const PBFICk1F: f32 = @floatFromInt(PBFICk[k + 1]);
-            const vf: f32 = ((PBFICk1F - refF) * PBFIC[k][i] + (refF - PBFICk0F) * PBFIC[k + 1][i]) / (PBFICk1F - PBFICk0F);
-            dstp[i] = @intFromFloat(math.clamp(vf + 0.5, 0, d.peak));
-        }
-    }
-
-    for (PBFIC) |i| {
-        allocator.free(i);
-    }
-
-    allocator.free(PBFIC);
-}
-
-pub fn bilateralAlg2(comptime T: type, dst: []T, src: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
-    var srcp: []const T = src;
-    var dstp: []T = dst;
-    const radius2: u32 = radius + 1;
-    const bufheight: u32 = height + radius * 2;
-    const bufwidth: u32 = width + radius * 2;
-    const bufstride: u32 = strideCal(T, bufwidth);
-
-    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    defer allocator.free(srcbuff);
-
-    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
-
-    var swei: f32 = undefined;
-    var rwei1: f32 = undefined;
-    var rwei2: f32 = undefined;
-    var rwei3: f32 = undefined;
-    var rwei4: f32 = undefined;
-    var weight_sum: f32 = undefined;
-    var sum: f32 = undefined;
-
-    var y: u32 = 0;
-    while (y < height) : (y += 1) {
-        const tmp1: u32 = (radius + y) * bufstride;
-        var x: u32 = 0;
-        while (x < width) : (x += 1) {
-            const tmp2: u32 = radius + x + tmp1;
-            const cx: T = srcp[x];
-
-            weight_sum = gs_lut[0] * gr_lut[0];
-            sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
-
-            var yy: u32 = 1;
-            while (yy < radius2) : (yy += step) {
-                const tmp3: u32 = yy * bufstride;
-
-                var xx: u32 = 1;
-                while (xx < radius2) : (xx += step) {
-                    const cxx1: T = srcbuff[tmp2 + tmp3 + xx];
-                    const cxx2: T = srcbuff[tmp2 + tmp3 - xx];
-                    const cxx3: T = srcbuff[tmp2 - tmp3 - xx];
-                    const cxx4: T = srcbuff[tmp2 - tmp3 + xx];
-                    const cxx1f: f32 = @floatFromInt(cxx1);
-                    const cxx2f: f32 = @floatFromInt(cxx2);
-                    const cxx3f: f32 = @floatFromInt(cxx3);
-                    const cxx4f: f32 = @floatFromInt(cxx4);
-
-                    swei = gs_lut[yy * radius2 + xx];
-                    rwei1 = gr_lut[helper.absDiff(cx, cxx1)];
-                    rwei2 = gr_lut[helper.absDiff(cx, cxx2)];
-                    rwei3 = gr_lut[helper.absDiff(cx, cxx3)];
-                    rwei4 = gr_lut[helper.absDiff(cx, cxx4)];
-                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
-                    sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
-                }
-            }
-            dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
-        }
-        srcp = srcp[stride..];
-        dstp = dstp[stride..];
-    }
-}
-
-pub fn bilateralAlg2Ref(comptime T: type, dst: []T, src: []const T, ref: []const T, gs_lut: []f32, gr_lut: []f32, stride: u32, width: u32, height: u32, radius: u32, step: u32, peak: f32) void {
-    var srcp: []const T = src;
-    var refp: []const T = ref;
-    var dstp: []T = dst;
-    const radius2: u32 = radius + 1;
-    const bufheight: u32 = height + radius * 2;
-    const bufwidth: u32 = width + radius * 2;
-    const bufstride: u32 = strideCal(T, bufwidth);
-
-    const srcbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    const refbuff = allocator.alignedAlloc(T, 32, bufheight * bufstride) catch unreachable;
-    defer allocator.free(srcbuff);
-    defer allocator.free(refbuff);
-
-    data2buff(T, srcbuff, srcp, radius, bufheight, bufwidth, bufstride, height, width, stride);
-    data2buff(T, refbuff, refp, radius, bufheight, bufwidth, bufstride, height, width, stride);
-
-    var y: u32 = 0;
-    while (y < height) : (y += 1) {
-        const tmp1: u32 = (radius + y) * bufstride;
-        var x: u32 = 0;
-        while (x < width) : (x += 1) {
-            const tmp2: u32 = radius + x + tmp1;
-            const cx: T = refp[x];
-            var weight_sum = gs_lut[0] * gr_lut[0];
-            var sum = @as(f32, @floatFromInt(srcp[x])) * weight_sum;
-
-            var yy: u32 = 1;
-            while (yy < radius2) : (yy += step) {
-                const tmp3: u32 = yy * bufstride;
-
-                var xx: u32 = 1;
-                while (xx < radius2) : (xx += step) {
-                    const cxx1: T = refbuff[tmp2 + tmp3 + xx];
-                    const cxx2: T = refbuff[tmp2 + tmp3 - xx];
-                    const cxx3: T = refbuff[tmp2 - tmp3 - xx];
-                    const cxx4: T = refbuff[tmp2 - tmp3 + xx];
-                    const cxx1f: f32 = @floatFromInt(srcbuff[tmp2 + tmp3 + xx]);
-                    const cxx2f: f32 = @floatFromInt(srcbuff[tmp2 + tmp3 - xx]);
-                    const cxx3f: f32 = @floatFromInt(srcbuff[tmp2 - tmp3 - xx]);
-                    const cxx4f: f32 = @floatFromInt(srcbuff[tmp2 - tmp3 + xx]);
-
-                    const swei = gs_lut[yy * radius2 + xx];
-                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1)];
-                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2)];
-                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3)];
-                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4)];
-                    weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
-                    sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
-                }
-            }
-            dstp[x] = @intFromFloat(math.clamp(sum / weight_sum + 0.5, 0.0, peak));
-        }
-        srcp = srcp[stride..];
-        refp = refp[stride..];
-        dstp = dstp[stride..];
     }
 }
