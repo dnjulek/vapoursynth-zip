@@ -62,6 +62,7 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: vs.ActivationReason,
                 avg = switch (d.dt) {
                     .U8 => process.average(u8, srcp, stride, w, h, d.exclude, d.peak),
                     .U16 => process.average(u16, srcp, stride, w, h, d.exclude, d.peak),
+                    .F16 => process.average(f16, srcp, stride, w, h, d.exclude, d.peak),
                     .F32 => process.average(f32, srcp, stride, w, h, d.exclude, d.peak),
                 };
             } else {
@@ -69,6 +70,7 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: vs.ActivationReason,
                 const stats = switch (d.dt) {
                     .U8 => process.averageRef(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
                     .U16 => process.averageRef(u16, srcp, refp, stride, w, h, d.exclude, d.peak),
+                    .F16 => process.averageRef(f16, srcp, refp, stride, w, h, d.exclude, d.peak),
                     .F32 => process.averageRef(f32, srcp, refp, stride, w, h, d.exclude, d.peak),
                 };
                 _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.diff, .Append);
@@ -103,10 +105,11 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
 
     var map = zapi.Map.init(in, out, vsapi);
     d.node1, d.vi = map.getNodeVi("clipa");
+    d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+
     d.node2, const vi2 = map.getNodeVi("clipb");
     helper.compareNodes(out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
 
-    d.dt = @enumFromInt(d.vi.format.bytesPerSample);
     d.peak = @floatFromInt(math.shl(i32, 1, d.vi.format.bitsPerSample) - 1);
     var nodes = [_]?*vs.Node{ d.node1, d.node2 };
     var planes = [3]bool{ true, false, false };
@@ -116,7 +119,7 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     d.prop = getPropData(map, "prop", allocator, &d.prop_buff);
     const exclude_in = map.getIntArray("exclude");
     if (exclude_in) |ein| {
-        if (d.dt == .F32) {
+        if (d.vi.format.sampleType == .Float) {
             d.exclude = process.Exclude{ .f = allocator.alloc(f32, ein.len) catch unreachable };
             for (d.exclude.f, ein) |*df, *ei| {
                 df.* = @floatFromInt(ei.*);
@@ -157,15 +160,15 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     vsapi.?.createVideoFilter.?(out, filter_name, d.vi, planeAverageGetFrame, planeAverageFree, .Parallel, deps, deps_len, data, core);
 }
 
-pub fn getPropData(self: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
+pub fn getPropData(map: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
     var err: vs.MapPropertyError = undefined;
     data_buff.* = null;
-    const data_ptr = self.vsapi.?.mapGetData.?(self.in, key.ptr, 0, &err);
+    const data_ptr = map.vsapi.?.mapGetData.?(map.in, key.ptr, 0, &err);
     if (err != .Success) {
         return null;
     }
 
-    const data_len = self.vsapi.?.mapGetDataSize.?(self.in, key.ptr, 0, &err);
+    const data_len = map.vsapi.?.mapGetDataSize.?(map.in, key.ptr, 0, &err);
     if ((err != .Success) or (data_len < 1)) {
         return null;
     }

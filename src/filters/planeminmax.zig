@@ -64,6 +64,7 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
                 stats = switch (d.dt) {
                     .U8 => process.minMaxInt(u8, srcp, stride, w, h, d),
                     .U16 => process.minMaxInt(u16, srcp, stride, w, h, d),
+                    .F16 => process.minMaxFloat(f16, srcp, stride, w, h, d),
                     .F32 => process.minMaxFloat(f32, srcp, stride, w, h, d),
                 };
             } else {
@@ -71,6 +72,7 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
                 stats = switch (d.dt) {
                     .U8 => process.minMaxIntRef(u8, srcp, refp, stride, w, h, d),
                     .U16 => process.minMaxIntRef(u16, srcp, refp, stride, w, h, d),
+                    .F16 => process.minMaxFloatRef(f16, srcp, refp, stride, w, h, d),
                     .F32 => process.minMaxFloatRef(f32, srcp, refp, stride, w, h, d),
                 };
 
@@ -114,16 +116,17 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
 
     var map = zapi.Map.init(in, out, vsapi);
     d.node1, d.vi = map.getNodeVi("clipa");
+    d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+
     d.node2, const vi2 = map.getNodeVi("clipb");
     helper.compareNodes(out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
 
-    d.dt = @enumFromInt(d.vi.format.bytesPerSample);
     var nodes = [_]?*vs.Node{ d.node1, d.node2 };
     var planes = [3]bool{ true, false, false };
     helper.mapGetPlanes(in, out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
     d.planes = planes;
 
-    d.hist_size = if (d.dt == .F32) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
+    d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
     d.peak = @intCast(d.hist_size - 1);
     d.maxthr = getThr(in, out, &nodes, "maxthr", vsapi) catch return;
     d.minthr = getThr(in, out, &nodes, "minthr", vsapi) catch return;
@@ -173,15 +176,15 @@ pub fn getThr(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, comptime ke
     return thr;
 }
 
-pub fn getPropData(self: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
+pub fn getPropData(map: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
     var err: vs.MapPropertyError = undefined;
     data_buff.* = null;
-    const data_ptr = self.vsapi.?.mapGetData.?(self.in, key.ptr, 0, &err);
+    const data_ptr = map.vsapi.?.mapGetData.?(map.in, key.ptr, 0, &err);
     if (err != .Success) {
         return null;
     }
 
-    const data_len = self.vsapi.?.mapGetDataSize.?(self.in, key.ptr, 0, &err);
+    const data_len = map.vsapi.?.mapGetDataSize.?(map.in, key.ptr, 0, &err);
     if ((err != .Success) or (data_len < 1)) {
         return null;
     }

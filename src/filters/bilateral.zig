@@ -12,7 +12,7 @@ const allocator = std.heap.c_allocator;
 pub const filter_name = "Bilateral";
 
 pub const BilateralData = struct {
-    node1: *vs.Node,
+    node1: ?*vs.Node,
     node2: ?*vs.Node,
     vi: *const vs.VideoInfo,
     dt: helper.DataType,
@@ -65,6 +65,7 @@ export fn bilateralGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
             switch (d.dt) {
                 .U8 => bilateral2D(u8, srcp, refp, dstp, stride, w, h, plane, d),
                 .U16 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
+                .F16 => bilateral2DFloat(f16, srcp, refp, dstp, stride, w, h, plane, d),
                 .F32 => bilateral2DFloat(f32, srcp, refp, dstp, stride, w, h, plane, d),
             }
         }
@@ -100,13 +101,12 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     var d: BilateralData = undefined;
     var err: vs.MapPropertyError = undefined;
 
-    d.node1 = vsapi.?.mapGetNode.?(in, "clip", 0, &err).?;
-    d.vi = vsapi.?.getVideoInfo.?(d.node1);
-    d.dt = @enumFromInt(d.vi.format.bytesPerSample);
+    const map = zapi.Map.init(in, out, vsapi);
+    d.node1, d.vi = map.getNodeVi("clip");
+    d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
-    const bps = d.vi.format.bitsPerSample;
-    const peak: u32 = if (d.vi.format.sampleType == .Integer) math.shl(u32, 1, bps) else 65535;
+    const peak: u32 = if (d.vi.format.sampleType == .Integer) math.shl(u32, 1, d.vi.format.bitsPerSample) else 65535;
     d.peak = @floatFromInt(peak);
 
     var i: u32 = 0;

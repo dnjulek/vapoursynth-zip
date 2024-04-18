@@ -38,6 +38,7 @@ export fn boxBlurRTGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
         switch (d.dt) {
             .U8 => hvBlurRT(u8, src, dst, d),
             .U16 => hvBlurRT(u16, src, dst, d),
+            .F16 => hvBlurRT(f16, src, dst, d),
             .F32 => hvBlurRT(f32, src, dst, d),
         }
 
@@ -71,6 +72,7 @@ export fn boxBlurCTGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
             switch (d.dt) {
                 .U8 => process_ct.hvBlur(u8, srcp, dstp, stride, w, h, d.vradius),
                 .U16 => process_ct.hvBlur(u16, srcp, dstp, stride, w, h, d.vradius),
+                .F16 => process_ct.hvBlur(f16, srcp, dstp, stride, w, h, d.vradius),
                 .F32 => process_ct.hvBlur(f32, srcp, dstp, stride, w, h, d.vradius),
             }
         }
@@ -96,7 +98,7 @@ pub export fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     var map = zapi.Map.init(in, out, vsapi);
     d.node, d.vi = map.getNodeVi("clip");
 
-    d.dt = @enumFromInt(d.vi.format.bytesPerSample);
+    d.dt = helper.DataType.select(map, d.node, d.vi, filter_name) catch return;
     d.tmp_size = @intCast(@max(d.vi.width, d.vi.height));
 
     var nodes = [_]?*vs.Node{d.node};

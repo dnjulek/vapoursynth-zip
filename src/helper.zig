@@ -4,10 +4,39 @@ const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;
 
-pub const DataType = enum(c_int) {
-    U8 = 1,
-    U16 = 2,
-    F32 = 4,
+pub const DataType = enum {
+    U8,
+    U16,
+    F16,
+    F32,
+
+    pub fn select(map: zapi.Map, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
+        var err_msg: ?[*]const u8 = null;
+        errdefer {
+            map.vsapi.?.mapSetError.?(map.out, err_msg.?);
+            map.vsapi.?.freeNode.?(node);
+        }
+
+        if (vi.format.sampleType == .Integer) {
+            switch (vi.format.bytesPerSample) {
+                1 => return .U8,
+                2 => return .U16,
+                else => return {
+                    err_msg = name ++ ": not supported Int format.";
+                    return error.format;
+                },
+            }
+        } else {
+            switch (vi.format.bytesPerSample) {
+                2 => return .F16,
+                4 => return .F32,
+                else => return {
+                    err_msg = name ++ ": not supported Float format.";
+                    return error.format;
+                },
+            }
+        }
+    }
 };
 
 pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
