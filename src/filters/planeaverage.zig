@@ -110,7 +110,7 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     d.node2, const vi2 = map.getNodeVi("clipb");
     helper.compareNodes(out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
 
-    d.peak = @floatFromInt(math.shl(i32, 1, d.vi.format.bitsPerSample) - 1);
+    d.peak = @floatFromInt(helper.getPeak(d.vi));
     var nodes = [_]?*vs.Node{ d.node1, d.node2 };
     var planes = [3]bool{ true, false, false };
     helper.mapGetPlanes(in, out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;

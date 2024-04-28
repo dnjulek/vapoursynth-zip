@@ -1,5 +1,6 @@
 const std = @import("std");
 const vszip = @import("vszip.zig");
+const math = std.math;
 const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;
@@ -90,5 +91,13 @@ pub fn compareNodes(out: ?*vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *con
     if (!vsh.isSameVideoInfo(vi1, vi2) or !vsh.isConstantVideoFormat(vi2)) {
         err_msg = name ++ ": both input clips must have the same format.";
         return error.node;
+    }
+}
+
+pub fn getPeak(vi: *const vs.VideoInfo) u16 {
+    if (vi.format.sampleType == .Integer) {
+        return @intCast(math.shl(u32, 1, vi.format.bitsPerSample) - 1);
+    } else {
+        return math.maxInt(u16);
     }
 }

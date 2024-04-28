@@ -106,7 +106,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
-    const peak: u32 = if (d.vi.format.sampleType == .Integer) math.shl(u32, 1, d.vi.format.bitsPerSample) else 65535;
+    const peak: u16 = helper.getPeak(d.vi);
     d.peak = @floatFromInt(peak);
 
     var i: u32 = 0;
