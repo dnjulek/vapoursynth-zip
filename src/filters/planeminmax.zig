@@ -57,7 +57,7 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
                 continue;
             }
 
-            const srcp = src.getReadPtr(plane);
+            const srcp = src.getReadSlice(plane);
             const w, const h, const stride = src.getDimensions(plane);
             var stats: process.Stats = undefined;
             if (ref == null) {
@@ -68,7 +68,7 @@ export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, 
                     .F32 => process.minMaxFloat(f32, srcp, stride, w, h, d),
                 };
             } else {
-                const refp = ref.?.getReadPtr(plane);
+                const refp = ref.?.getReadSlice(plane);
                 stats = switch (d.dt) {
                     .U8 => process.minMaxIntRef(u8, srcp, refp, stride, w, h, d),
                     .U16 => process.minMaxIntRef(u16, srcp, refp, stride, w, h, d),

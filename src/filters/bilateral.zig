@@ -57,9 +57,9 @@ export fn bilateralGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
                 continue;
             }
 
-            const srcp = src.getReadPtr(plane);
-            const refp = ref.getReadPtr(plane);
-            const dstp = dst.getWritePtr(plane);
+            const srcp = src.getReadSlice(plane);
+            const refp = ref.getReadSlice(plane);
+            const dstp = dst.getWriteSlice(plane);
             const w, const h, const stride = src.getDimensions(plane);
 
             switch (d.dt) {

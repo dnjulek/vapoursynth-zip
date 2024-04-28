@@ -54,7 +54,7 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: vs.ActivationReason,
                 continue;
             }
 
-            const srcp = src.getReadPtr(plane);
+            const srcp = src.getReadSlice(plane);
             const w, const h, const stride = src.getDimensions(plane);
             var avg: f64 = undefined;
 
@@ -66,7 +66,7 @@ export fn planeAverageGetFrame(n: c_int, activation_reason: vs.ActivationReason,
                     .F32 => process.average(f32, srcp, stride, w, h, d.exclude, d.peak),
                 };
             } else {
-                const refp = ref.?.getReadPtr(plane);
+                const refp = ref.?.getReadSlice(plane);
                 const stats = switch (d.dt) {
                     .U8 => process.averageRef(u8, srcp, refp, stride, w, h, d.exclude, d.peak),
                     .U16 => process.averageRef(u16, srcp, refp, stride, w, h, d.exclude, d.peak),

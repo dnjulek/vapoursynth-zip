@@ -51,14 +51,14 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
 
     const np = vi.format.numPlanes;
     const ne = vsapi.?.mapNumElements.?(in, "planes");
-    var ci: c_int = 0;
+    var i: u32 = 0;
 
     if ((ne > 0) and (np > 1)) {
         var process = [3]bool{ false, false, false };
         var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
-        ci = 0;
-        while (ci < ne) : (ci += 1) {
-            const e: i32 = vsh.mapGetN(i32, in, "planes", ci, vsapi).?;
+        i = 0;
+        while (i < ne) : (i += 1) {
+            const e: i32 = vsh.mapGetN(i32, in, "planes", i, vsapi).?;
             if ((e < 0) or (e >= np)) {
                 vsapi.?.mapSetError.?(out, filter_name ++ ": plane index out of range.");
                 vsapi.?.freeNode.?(d.node1);
@@ -91,9 +91,9 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
 
     @memset(d.replace, false);
 
-    ci = 0;
-    while (ci < vsapi.?.mapNumElements.?(in, "frames")) : (ci += 1) {
-        d.replace[vsh.mapGetN(usize, in, "frames", ci, vsapi).?] = true;
+    i = 0;
+    while (i < vsapi.?.mapNumElements.?(in, "frames")) : (i += 1) {
+        d.replace[vsh.mapGetN(usize, in, "frames", i, vsapi).?] = true;
     }
 
     const data: *RFSData = allocator.create(RFSData) catch unreachable;

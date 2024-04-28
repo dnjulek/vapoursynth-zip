@@ -65,8 +65,8 @@ export fn boxBlurCTGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
                 continue;
             }
 
-            const srcp = src.getReadPtr(plane);
-            const dstp = dst.getWritePtr(plane);
+            const srcp = src.getReadSlice(plane);
+            const dstp = dst.getWriteSlice(plane);
             const w, const h, const stride = src.getDimensions(plane);
 
             switch (d.dt) {
@@ -146,8 +146,8 @@ fn hvBlurRT(comptime T: type, src: zapi.Frame, dst: zapi.Frame, d: *BoxblurData)
             continue;
         }
 
-        const src8 = src.getReadPtr(plane);
-        const dst8 = dst.getWritePtr(plane);
+        const src8 = src.getReadSlice(plane);
+        const dst8 = dst.getWriteSlice(plane);
         const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src8)))[0..src8.len];
         const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst8)))[0..dst8.len];
         const w, const h, var stride = src.getDimensions(plane);

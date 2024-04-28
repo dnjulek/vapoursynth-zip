@@ -57,7 +57,7 @@ pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, proce
         for (nodes) |node| vsapi.?.freeNode.?(node);
     }
 
-    var i: c_int = 0;
+    var i: u32 = 0;
     while (i < num_e) : (i += 1) {
         const e: i32 = vsh.mapGetN(i32, in, "planes", i, vsapi).?;
         if ((e < 0) or (e >= num_planes)) {
