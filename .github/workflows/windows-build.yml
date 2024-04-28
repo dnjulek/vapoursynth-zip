@@ -34,4 +34,4 @@ jobs:
       - name: build
         run: |
           zig build -Doptimize=ReleaseFast
-          ls zig-out\lib
+          ls zig-out\bin
