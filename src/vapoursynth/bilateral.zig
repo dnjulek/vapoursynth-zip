@@ -1,7 +1,7 @@
 const std = @import("std");
 const vszip = @import("../vszip.zig");
 const helper = @import("../helper.zig");
-const process = @import("../filters/bilateral.zig");
+const filter = @import("../filters/bilateral.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
@@ -11,11 +11,10 @@ const math = std.math;
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Bilateral";
 
-pub const BilateralData = struct {
+pub const Data = struct {
     node1: ?*vs.Node,
     node2: ?*vs.Node,
     vi: *const vs.VideoInfo,
-    dt: helper.DataType,
     sigmaS: [3]f64,
     sigmaR: [3]f64,
     process: [3]bool,
@@ -31,54 +30,52 @@ pub const BilateralData = struct {
     join: bool,
 };
 
-export fn bilateralGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
-    _ = frame_data;
-    const d: *BilateralData = @ptrCast(@alignCast(instance_data));
+fn Bilateral(comptime T: type, comptime join: bool) type {
+    return struct {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+            _ = frame_data;
+            const d: *Data = @ptrCast(@alignCast(instance_data));
 
-    if (activation_reason == .Initial) {
-        vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
-        if (d.join) {
-            vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
-        }
-    } else if (activation_reason == .AllFramesReady) {
-        var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
-        defer src.deinit();
+            if (activation_reason == .Initial) {
+                vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
+                if (join) {
+                    vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
+                }
+            } else if (activation_reason == .AllFramesReady) {
+                var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
+                defer src.deinit();
 
-        var ref = src;
-        if (d.join) {
-            ref = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
-            defer ref.deinit();
-        }
+                var ref = src;
+                if (join) {
+                    ref = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+                    defer ref.deinit();
+                }
 
-        const dst = src.newVideoFrame2(d.process);
-        var plane: u32 = 0;
-        while (plane < d.vi.format.numPlanes) : (plane += 1) {
-            if (!(d.process[plane])) {
-                continue;
+                const dst = src.newVideoFrame2(d.process);
+                var plane: u32 = 0;
+                while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    if (!(d.process[plane])) {
+                        continue;
+                    }
+
+                    const srcp = src.getReadSlice(plane);
+                    const refp = if (join) ref.getReadSlice(plane) else srcp;
+                    const dstp = dst.getWriteSlice(plane);
+                    const w, const h, const stride = src.getDimensions(plane);
+                    filter.bilateral(T, srcp, refp, dstp, stride, w, h, plane, join, d);
+                }
+
+                return dst.frame;
             }
 
-            const srcp = src.getReadSlice(plane);
-            const refp = ref.getReadSlice(plane);
-            const dstp = dst.getWriteSlice(plane);
-            const w, const h, const stride = src.getDimensions(plane);
-
-            switch (d.dt) {
-                .U8 => bilateral2D(u8, srcp, refp, dstp, stride, w, h, plane, d),
-                .U16 => bilateral2D(u16, srcp, refp, dstp, stride, w, h, plane, d),
-                .F16 => bilateral2DFloat(f16, srcp, refp, dstp, stride, w, h, plane, d),
-                .F32 => bilateral2DFloat(f32, srcp, refp, dstp, stride, w, h, plane, d),
-            }
+            return null;
         }
-
-        return dst.frame;
-    }
-
-    return null;
+    };
 }
 
 export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = core;
-    const d: *BilateralData = @ptrCast(@alignCast(instance_data));
+    const d: *Data = @ptrCast(@alignCast(instance_data));
 
     var i: u32 = 0;
     while (i < 3) : (i += 1) {
@@ -98,12 +95,12 @@ export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
 
 pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
-    var d: BilateralData = undefined;
+    var d: Data = undefined;
     var err: vs.MapPropertyError = undefined;
 
     const map = zapi.Map.init(in, out, vsapi);
     d.node1, d.vi = map.getNodeVi("clip");
-    d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+    const dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
     const peak: u32 = helper.getPeak(d.vi);
@@ -310,7 +307,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         if ((d.process[i]) and (d.algorithm[i] == 2)) {
             const upper: u32 = d.radius[i] + 1;
             d.gs_lut[i] = allocator.alloc(f32, upper * upper) catch unreachable;
-            process.gaussianFunctionSpatialLUTGeneration(d.gs_lut[i], upper, d.sigmaS[i]);
+            filter.gaussianFunctionSpatialLUTGeneration(d.gs_lut[i], upper, d.sigmaS[i]);
         }
     }
 
@@ -318,11 +315,11 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     while (i < 3) : (i += 1) {
         if (d.process[i]) {
             d.gr_lut[i] = allocator.alloc(f32, peak + 1) catch unreachable;
-            process.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], peak, d.sigmaR[i]);
+            filter.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], peak, d.sigmaR[i]);
         }
     }
 
-    const data: *BilateralData = allocator.create(BilateralData) catch unreachable;
+    const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
     var deps1 = [_]vs.FilterDependency{
@@ -347,107 +344,12 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         deps = &deps2;
     }
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, bilateralGetFrame, bilateralFree, .Parallel, deps, deps_len, data, core);
-}
+    const getFrame = switch (dt) {
+        .U8 => if (d.join) &Bilateral(u8, true).getFrame else &Bilateral(u8, false).getFrame,
+        .U16 => if (d.join) &Bilateral(u16, true).getFrame else &Bilateral(u16, false).getFrame,
+        .F16 => if (d.join) &Bilateral(f16, true).getFrame else &Bilateral(f16, false).getFrame,
+        .F32 => if (d.join) &Bilateral(f32, true).getFrame else &Bilateral(f32, false).getFrame,
+    };
 
-fn bilateral2D(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
-    const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
-    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
-
-    if (d.algorithm[plane] == 1) {
-        process.bilateralAlg1(
-            T,
-            srcp,
-            dstp,
-            refp,
-            stride,
-            width,
-            height,
-            plane,
-            d,
-        );
-    } else {
-        if (d.join) {
-            process.bilateralAlg2Ref(
-                T,
-                dstp,
-                srcp,
-                refp,
-                d.gs_lut[plane],
-                d.gr_lut[plane],
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-                d.peak,
-            );
-        } else {
-            process.bilateralAlg2(
-                T,
-                dstp,
-                srcp,
-                d.gs_lut[plane],
-                d.gr_lut[plane],
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-                d.peak,
-            );
-        }
-    }
-}
-
-fn bilateral2DFloat(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _stride: u32, width: u32, height: u32, plane: u32, d: *BilateralData) void {
-    const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
-    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
-
-    if (d.algorithm[plane] == 1) {
-        process.bilateralAlg1Float(
-            T,
-            srcp,
-            dstp,
-            refp,
-            stride,
-            width,
-            height,
-            plane,
-            d,
-        );
-    } else {
-        if (d.join) {
-            process.bilateralAlg2RefFloat(
-                T,
-                dstp,
-                srcp,
-                refp,
-                d.gs_lut[plane],
-                d.gr_lut[plane],
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-            );
-        } else {
-            process.bilateralAlg2Float(
-                T,
-                dstp,
-                srcp,
-                d.gs_lut[plane],
-                d.gr_lut[plane],
-                stride,
-                width,
-                height,
-                d.radius[plane],
-                d.step[plane],
-            );
-        }
-    }
+    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, bilateralFree, .Parallel, deps, deps_len, data, core);
 }

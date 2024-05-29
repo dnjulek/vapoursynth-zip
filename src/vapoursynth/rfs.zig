@@ -8,7 +8,7 @@ const zapi = vszip.zapi;
 const allocator = std.heap.c_allocator;
 pub const filter_name = "RFS";
 
-const RFSData = struct {
+const Data = struct {
     node1: *vs.Node,
     node2: *vs.Node,
     replace: []bool,
@@ -17,7 +17,7 @@ const RFSData = struct {
 export fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     _ = core;
     _ = frame_data;
-    const d: *RFSData = @ptrCast(@alignCast(instance_data));
+    const d: *Data = @ptrCast(@alignCast(instance_data));
 
     if (activation_reason == .Initial) {
         vsapi.?.requestFrameFilter.?(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
@@ -30,7 +30,7 @@ export fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance
 
 export fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = core;
-    const d: *RFSData = @ptrCast(@alignCast(instance_data));
+    const d: *Data = @ptrCast(@alignCast(instance_data));
     vsapi.?.freeNode.?(d.node1);
     vsapi.?.freeNode.?(d.node2);
     allocator.free(d.replace);
@@ -39,7 +39,7 @@ export fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs
 
 pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
-    var d: RFSData = undefined;
+    var d: Data = undefined;
     var node_err: vs.MapPropertyError = undefined;
 
     d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
@@ -96,7 +96,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         d.replace[vsh.mapGetN(usize, in, "frames", i, vsapi).?] = true;
     }
 
-    const data: *RFSData = allocator.create(RFSData) catch unreachable;
+    const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
     var deps = [_]vs.FilterDependency{

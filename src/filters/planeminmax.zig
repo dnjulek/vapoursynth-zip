@@ -1,6 +1,6 @@
 const std = @import("std");
 const helper = @import("../helper.zig");
-const PlaneMinMaxData = @import("../vapoursynth/planeminmax.zig").PlaneMinMaxData;
+const Data = @import("../vapoursynth/planeminmax.zig").Data;
 
 const math = std.math;
 const allocator = std.heap.c_allocator;
@@ -23,7 +23,7 @@ pub const Stats = union(enum) {
     i: StatsInt,
 };
 
-pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
     var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
@@ -63,7 +63,7 @@ pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h:
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = undefined } };
 }
 
-pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
     var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
     const total: f64 = @floatFromInt(w * h);
@@ -105,7 +105,7 @@ pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, 
     return .{ .f = .{ .max = retvalmaxf, .min = retvalminf, .diff = undefined } };
 }
 
-pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
     var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
@@ -150,7 +150,7 @@ pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride:
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = diff } };
 }
 
-pub fn minMaxFloatRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+pub fn minMaxFloatRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
     var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
     var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
     const stride: usize = @divTrunc(_stride, @sizeOf(T));
