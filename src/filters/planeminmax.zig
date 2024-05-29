@@ -1,203 +1,197 @@
 const std = @import("std");
-const vszip = @import("../vszip.zig");
 const helper = @import("../helper.zig");
-const process = @import("process/planeminmax.zig");
+const PlaneMinMaxData = @import("../vapoursynth/planeminmax.zig").PlaneMinMaxData;
 
-const vs = vszip.vs;
-const vsh = vszip.vsh;
-const zapi = vszip.zapi;
 const math = std.math;
-
 const allocator = std.heap.c_allocator;
 pub const filter_name = "PlaneMinMax";
 
-pub const PlaneMinMaxData = struct {
-    node1: ?*vs.Node,
-    node2: ?*vs.Node,
-    vi: *const vs.VideoInfo,
-    peak: u16,
-    minthr: f32,
-    maxthr: f32,
-    hist_size: u32,
-    planes: [3]bool,
-    dt: helper.DataType,
-    prop_buff: ?[]u8,
-    prop: ?StringProp,
+const StatsFloat = struct {
+    max: f32,
+    min: f32,
+    diff: f64,
 };
 
-const StringProp = struct {
-    d: []u8,
-    ma: []u8,
-    mi: []u8,
+const StatsInt = struct {
+    max: u16,
+    min: u16,
+    diff: f64,
 };
 
-export fn planeMinMaxGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
-    _ = frame_data;
-    const d: *PlaneMinMaxData = @ptrCast(@alignCast(instance_data));
+pub const Stats = union(enum) {
+    f: StatsFloat,
+    i: StatsInt,
+};
 
-    if (activation_reason == .Initial) {
-        vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
-        if (d.node2) |node| vsapi.?.requestFrameFilter.?(n, node, frame_ctx);
-    } else if (activation_reason == .AllFramesReady) {
-        var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
-        defer src.deinit();
+pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+    const total: f64 = @floatFromInt(w * h);
 
-        var ref: ?zapi.Frame = null;
-        if (d.node2) |node| {
-            ref = zapi.Frame.init(node, n, frame_ctx, core, vsapi);
-            defer ref.?.deinit();
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
+    defer allocator.free(accum_buf);
+
+    for (accum_buf) |*i| {
+        i.* = 0;
+    }
+
+    for (0..h) |_| {
+        for (srcp[0..w]) |v| {
+            accum_buf[v] += 1;
         }
+        srcp = srcp[stride..];
+    }
 
-        const dst = src.copyFrame();
-        const props = dst.getPropertiesRW();
+    const totalmin: u32 = @intFromFloat(total * d.minthr);
+    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    var count: u32 = 0;
 
-        var plane: u32 = 0;
-        while (plane < d.vi.format.numPlanes) : (plane += 1) {
-            if (!(d.planes[plane])) {
-                continue;
-            }
+    var u: u16 = 0;
+    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
+        count += accum_buf[u];
+        if (count > totalmin) break u;
+    } else d.peak;
 
-            const srcp = src.getReadSlice(plane);
-            const w, const h, const stride = src.getDimensions(plane);
-            var stats: process.Stats = undefined;
-            if (ref == null) {
-                stats = switch (d.dt) {
-                    .U8 => process.minMaxInt(u8, srcp, stride, w, h, d),
-                    .U16 => process.minMaxInt(u16, srcp, stride, w, h, d),
-                    .F16 => process.minMaxFloat(f16, srcp, stride, w, h, d),
-                    .F32 => process.minMaxFloat(f32, srcp, stride, w, h, d),
-                };
-            } else {
-                const refp = ref.?.getReadSlice(plane);
-                stats = switch (d.dt) {
-                    .U8 => process.minMaxIntRef(u8, srcp, refp, stride, w, h, d),
-                    .U16 => process.minMaxIntRef(u16, srcp, refp, stride, w, h, d),
-                    .F16 => process.minMaxFloatRef(f16, srcp, refp, stride, w, h, d),
-                    .F32 => process.minMaxFloatRef(f32, srcp, refp, stride, w, h, d),
-                };
+    count = 0;
+    var i: i32 = @intCast(d.peak);
+    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
+        const ui: u16 = @intCast(i);
+        count += accum_buf[ui];
+        if (count > totalmax) break ui;
+    } else 0;
 
-                _ = switch (stats) {
-                    .i => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.i.diff, .Append),
-                    .f => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.f.diff, .Append),
-                };
-            }
+    return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = undefined } };
+}
 
-            switch (stats) {
-                .i => {
-                    _ = vsapi.?.mapSetInt.?(props, if (d.prop != null) d.prop.?.ma.ptr else "psmMax", stats.i.max, .Append);
-                    _ = vsapi.?.mapSetInt.?(props, if (d.prop != null) d.prop.?.mi.ptr else "psmMin", stats.i.min, .Append);
-                },
-                .f => {
-                    _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.ma.ptr else "psmMax", stats.f.max, .Append);
-                    _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.mi.ptr else "psmMin", stats.f.min, .Append);
-                },
-            }
+pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+    const total: f64 = @floatFromInt(w * h);
+
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
+    defer allocator.free(accum_buf);
+
+    for (accum_buf) |*i| {
+        i.* = 0;
+    }
+
+    for (0..h) |_| {
+        for (srcp[0..w]) |v| {
+            accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
         }
-
-        return dst.frame;
+        srcp = srcp[stride..];
     }
 
-    return null;
+    const totalmin: u32 = @intFromFloat(total * d.minthr);
+    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    var count: u32 = 0;
+
+    var u: u16 = 0;
+    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
+        count += accum_buf[u];
+        if (count > totalmin) break u;
+    } else d.peak;
+
+    count = 0;
+    var i: i32 = @intCast(d.peak);
+    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
+        const ui: u16 = @intCast(i);
+        count += accum_buf[ui];
+        if (count > totalmax) break ui;
+    } else 0;
+
+    const retvalmaxf = @as(f32, @floatFromInt(retvalmax)) / 65535;
+    const retvalminf = @as(f32, @floatFromInt(retvalmin)) / 65535;
+    return .{ .f = .{ .max = retvalmaxf, .min = retvalminf, .diff = undefined } };
 }
 
-export fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
-    _ = core;
-    const d: *PlaneMinMaxData = @ptrCast(@alignCast(instance_data));
+pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
+    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+    const total: f64 = @floatFromInt(w * h);
+    var diffacc: u64 = 0;
 
-    if (d.node2) |node| vsapi.?.freeNode.?(node);
-    if (d.prop_buff) |buff| allocator.free(buff);
-    vsapi.?.freeNode.?(d.node1);
-    allocator.destroy(d);
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
+    defer allocator.free(accum_buf);
+
+    for (accum_buf) |*i| {
+        i.* = 0;
+    }
+
+    for (0..h) |_| {
+        for (srcp[0..w], refp[0..w]) |v, j| {
+            accum_buf[v] += 1;
+            diffacc += helper.absDiff(v, j);
+        }
+        srcp = srcp[stride..];
+        refp = refp[stride..];
+    }
+
+    const diff: f64 = @as(f64, @floatFromInt(diffacc)) / total / @as(f64, @floatFromInt(d.peak));
+    const totalmin: u32 = @intFromFloat(total * d.minthr);
+    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    var count: u32 = 0;
+
+    var u: u16 = 0;
+    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
+        count += accum_buf[u];
+        if (count > totalmin) break u;
+    } else d.peak;
+
+    count = 0;
+    var i: i32 = @intCast(d.peak);
+    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
+        const ui: u16 = @intCast(i);
+        count += accum_buf[ui];
+        if (count > totalmax) break ui;
+    } else 0;
+
+    return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = diff } };
 }
 
-pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
-    _ = user_data;
-    var d: PlaneMinMaxData = undefined;
+pub fn minMaxFloatRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *PlaneMinMaxData) Stats {
+    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
+    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
+    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+    const total: f64 = @floatFromInt(w * h);
+    var diffacc: f64 = 0;
 
-    var map = zapi.Map.init(in, out, vsapi);
-    d.node1, d.vi = map.getNodeVi("clipa");
-    d.dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
+    defer allocator.free(accum_buf);
 
-    d.node2, const vi2 = map.getNodeVi("clipb");
-    helper.compareNodes(out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
-
-    var nodes = [_]?*vs.Node{ d.node1, d.node2 };
-    var planes = [3]bool{ true, false, false };
-    helper.mapGetPlanes(in, out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
-    d.planes = planes;
-
-    d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
-    d.peak = @intCast(d.hist_size - 1);
-    d.maxthr = getThr(in, out, &nodes, "maxthr", vsapi) catch return;
-    d.minthr = getThr(in, out, &nodes, "minthr", vsapi) catch return;
-    d.prop = getPropData(map, "prop", allocator, &d.prop_buff);
-
-    const data: *PlaneMinMaxData = allocator.create(PlaneMinMaxData) catch unreachable;
-    data.* = d;
-
-    var deps1 = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node1,
-            .requestPattern = .StrictSpatial,
-        },
-    };
-
-    var deps_len: c_int = deps1.len;
-    var deps: [*]const vs.FilterDependency = &deps1;
-    if (d.node2 != null) {
-        var deps2 = [_]vs.FilterDependency{
-            deps1[0],
-            vs.FilterDependency{
-                .source = d.node2,
-                .requestPattern = if (d.vi.numFrames <= vi2.numFrames) .StrictSpatial else .General,
-            },
-        };
-
-        deps_len = deps2.len;
-        deps = &deps2;
+    for (accum_buf) |*i| {
+        i.* = 0;
     }
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, planeMinMaxGetFrame, planeMinMaxFree, .Parallel, deps, deps_len, data, core);
-}
-
-pub fn getThr(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, comptime key: []const u8, vsapi: ?*const vs.API) !f32 {
-    var err_msg: ?[*]const u8 = null;
-    errdefer {
-        vsapi.?.mapSetError.?(out, err_msg.?);
-        for (nodes) |node| vsapi.?.freeNode.?(node);
+    for (0..h) |_| {
+        for (srcp[0..w], refp[0..w]) |v, j| {
+            accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
+            diffacc += helper.absDiff(v, j);
+        }
+        srcp = srcp[stride..];
+        refp = refp[stride..];
     }
 
-    const thr = vsh.mapGetN(f32, in, key.ptr, 0, vsapi) orelse 0;
-    if (thr < 0 or thr > 1) {
-        err_msg = filter_name ++ ": " ++ key ++ " should be a float between 0.0 and 1.0";
-        return error.ValidationError;
-    }
+    const totalmin: u32 = @intFromFloat(total * d.minthr);
+    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    var count: u32 = 0;
 
-    return thr;
-}
+    var u: u16 = 0;
+    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
+        count += accum_buf[u];
+        if (count > totalmin) break u;
+    } else d.peak;
 
-pub fn getPropData(map: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
-    var err: vs.MapPropertyError = undefined;
-    data_buff.* = null;
-    const data_ptr = map.vsapi.?.mapGetData.?(map.in, key.ptr, 0, &err);
-    if (err != .Success) {
-        return null;
-    }
+    count = 0;
+    var i: i32 = @intCast(d.peak);
+    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
+        const ui: u16 = @intCast(i);
+        count += accum_buf[ui];
+        if (count > totalmax) break ui;
+    } else 0;
 
-    const data_len = map.vsapi.?.mapGetDataSize.?(map.in, key.ptr, 0, &err);
-    if ((err != .Success) or (data_len < 1)) {
-        return null;
-    }
-
-    const udata_len: u32 = @bitCast(data_len);
-    const diff_len = udata_len + 5;
-    const max_len = udata_len + 4;
-    const min_len = udata_len + 4;
-    const data = data_ptr[0..udata_len];
-    data_buff.* = data_allocator.alloc(u8, diff_len + max_len + min_len) catch unreachable;
-    return .{
-        .d = std.fmt.bufPrint(data_buff.*.?[0..diff_len], "{s}Diff\x00", .{data}) catch unreachable,
-        .ma = std.fmt.bufPrint(data_buff.*.?[diff_len..], "{s}Max\x00", .{data}) catch unreachable,
-        .mi = std.fmt.bufPrint(data_buff.*.?[(diff_len + max_len)..], "{s}Min\x00", .{data}) catch unreachable,
-    };
+    const retvalmaxf = @as(f32, @floatFromInt(retvalmax)) / 65535;
+    const retvalminf = @as(f32, @floatFromInt(retvalmin)) / 65535;
+    return .{ .f = .{ .max = retvalmaxf, .min = retvalminf, .diff = (diffacc / total) } };
 }

@@ -1,9 +1,9 @@
 const vapoursynth = @import("vapoursynth");
-const bilateral = @import("filters/bilateral.zig");
-const boxblur = @import("filters/boxblur.zig");
-const rfs = @import("filters/rfs.zig");
-const pavg = @import("filters/planeaverage.zig");
-const pmm = @import("filters/planeminmax.zig");
+const bilateral = @import("vapoursynth/bilateral.zig");
+const boxblur = @import("vapoursynth/boxblur.zig");
+const rfs = @import("vapoursynth/rfs.zig");
+const pavg = @import("vapoursynth/planeaverage.zig");
+const pmm = @import("vapoursynth/planeminmax.zig");
 
 pub const vs = vapoursynth.vapoursynth4;
 pub const vsh = vapoursynth.vshelper;

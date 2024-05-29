@@ -1,8 +1,8 @@
 const std = @import("std");
 const vszip = @import("../vszip.zig");
 const helper = @import("../helper.zig");
-const process_ct = @import("process/boxblur_comptime.zig");
-const process_rt = @import("process/boxblur_runtime.zig");
+const process_ct = @import("../filters/boxblur_comptime.zig");
+const process_rt = @import("../filters/boxblur_runtime.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
