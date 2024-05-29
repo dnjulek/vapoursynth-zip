@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     const lib = b.addSharedLibrary(.{
         .name = "vszip",
-        .root_source_file = .{ .path = "src/vszip.zig" },
+        .root_source_file = b.path("src/vszip.zig"),
         .target = target,
         .optimize = optimize,
     });
