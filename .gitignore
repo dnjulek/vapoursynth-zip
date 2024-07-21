@@ -1,5 +1,5 @@
-zig-cache/
 zig-out/
+.zig-cache/
 .vscode/
 run.bat
 build-help/releases.json

@@ -101,3 +101,19 @@ pub fn getPeak(vi: *const vs.VideoInfo) u16 {
         return math.maxInt(u16);
     }
 }
+
+pub fn YUVtoRGBS(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Node {
+    const vi = vsapi.?.getVideoInfo.?(node);
+    const matrix: i32 = if (vi.height > 650) 1 else 6;
+    const args = vsapi.?.createMap.?();
+    _ = vsapi.?.mapConsumeNode.?(args, "clip", node, .Replace);
+    _ = vsapi.?.mapSetInt.?(args, "matrix_in", matrix, .Replace);
+    _ = vsapi.?.mapSetInt.?(args, "format", @intFromEnum(vs.PresetVideoFormat.RGBS), .Replace);
+
+    const vsplugin = vsapi.?.getPluginByID.?(vsh.RESIZE_PLUGIN_ID, core);
+    const ret = vsapi.?.invoke.?(vsplugin, "Bicubic", args);
+    const out = vsapi.?.mapGetNode.?(ret, "clip", 0, null);
+    vsapi.?.freeMap.?(ret);
+    vsapi.?.freeMap.?(args);
+    return out;
+}
