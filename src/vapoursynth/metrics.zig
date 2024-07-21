@@ -79,8 +79,8 @@ pub export fn MetricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     var d: Data = undefined;
 
     var map = zapi.Map.init(in, out, vsapi);
-    d.node1, const vi1 = map.getNodeVi("clipa");
-    d.node2, const vi2 = map.getNodeVi("clipb");
+    d.node1, const vi1 = map.getNodeVi("reference");
+    d.node2, const vi2 = map.getNodeVi("distorted");
     helper.compareNodes(out, d.node1, d.node2, vi1, vi2, filter_name, vsapi) catch return;
     const dt = helper.DataType.select(map, d.node1, vi1, filter_name) catch return;
     _ = dt; // autofix
