@@ -29,38 +29,25 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
         vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        const src1 = vsapi.?.getFrameFilter.?(n, d.node1, frame_ctx);
-        const src2 = vsapi.?.getFrameFilter.?(n, d.node2, frame_ctx);
-        defer vsapi.?.freeFrame.?(src1);
-        defer vsapi.?.freeFrame.?(src2);
+        var src1 = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
+        var src2 = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+        defer src1.deinit();
+        defer src2.deinit();
 
-        const width: usize = @intCast(vsapi.?.getFrameWidth.?(src1, 0));
-        const height: usize = @intCast(vsapi.?.getFrameHeight.?(src1, 0));
-        const stride: usize = @intCast(vsapi.?.getStride.?(src1, 0));
-        const dst = vsapi.?.copyFrame.?(src2, core).?;
+        const dst = src1.copyFrame();
+        const props = dst.getPropertiesRW();
+        const w, const h, const stride = src1.getDimensions2(f32, 0);
 
-        const srcp1 = [3][*]const u8{
-            vsapi.?.getReadPtr.?(src1, 0),
-            vsapi.?.getReadPtr.?(src1, 1),
-            vsapi.?.getReadPtr.?(src1, 2),
-        };
+        var srcp1: [3][]const f32 = undefined;
+        var srcp2: [3][]const f32 = undefined;
+        for (0..3) |i| {
+            srcp1[i] = src1.getReadSlice2(f32, i);
+            srcp2[i] = src2.getReadSlice2(f32, i);
+        }
 
-        const srcp2 = [3][*]const u8{
-            vsapi.?.getReadPtr.?(src2, 0),
-            vsapi.?.getReadPtr.?(src2, 1),
-            vsapi.?.getReadPtr.?(src2, 2),
-        };
-
-        const val = ssimulacra2.process(
-            srcp1,
-            srcp2,
-            stride,
-            width,
-            height,
-        );
-
-        _ = vsapi.?.mapSetFloat.?(vsapi.?.getFramePropertiesRW.?(dst), "_SSIMULACRA2", val, .Replace);
-        return dst;
+        const val = ssimulacra2.process(srcp1, srcp2, stride, w, h);
+        _ = vsapi.?.mapSetFloat.?(props, "_SSIMULACRA2", val, .Replace);
+        return dst.frame;
     }
     return null;
 }

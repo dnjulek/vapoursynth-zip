@@ -4,72 +4,73 @@ const math = std.math;
 
 const allocator = std.heap.c_allocator;
 
-pub fn process(src8a: [3][*]const u8, src8b: [3][*]const u8, stride8: usize, width: usize, height: usize) f64 {
-    const stride: usize = stride8 >> (@sizeOf(f32) >> 1);
+const ksize = 9;
+const radius = 4;
 
-    const srcp1 = [3][*]const f32{
-        @ptrCast(@alignCast(src8a[0])),
-        @ptrCast(@alignCast(src8a[1])),
-        @ptrCast(@alignCast(src8a[2])),
-    };
+pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32) f64 {
+    const wh: u32 = stride * h;
+    const temp_alloc = allocator.alignedAlloc(f32, 32, wh * 18) catch unreachable;
+    defer allocator.free(temp_alloc);
+    var temp = temp_alloc[0..];
 
-    const srcp2 = [3][*]const f32{
-        @ptrCast(@alignCast(src8b[0])),
-        @ptrCast(@alignCast(src8b[1])),
-        @ptrCast(@alignCast(src8b[2])),
-    };
+    var temp6x3: [6][3][]f32 = undefined;
+    var x: u32 = 0;
+    for (0..6) |i| {
+        for (0..3) |ii| {
+            temp6x3[i][ii] = temp[x..(x + wh)];
+            x += wh;
+        }
+    }
 
-    const wh: usize = stride * height;
-    const tmp_arr = allocator.alignedAlloc(f32, 32, wh * 18) catch unreachable;
-    defer allocator.free(tmp_arr);
-    const tempp = tmp_arr.ptr;
-    const srcp1b = [3][*]f32{ tempp, tempp + wh, tempp + (wh * 2) };
-    const srcp2b = [3][*]f32{ tempp + (wh * 3), tempp + (wh * 4), tempp + (wh * 5) };
-    const tmpp1 = [3][*]f32{ tempp + (wh * 6), tempp + (wh * 7), tempp + (wh * 8) };
-    const tmpp2 = [3][*]f32{ tempp + (wh * 9), tempp + (wh * 10), tempp + (wh * 11) };
+    const srcp1b = temp6x3[0];
+    const srcp2b = temp6x3[1];
+    const tmpp1 = temp6x3[2];
+    const tmpp2 = temp6x3[3];
 
-    const tmpp3: [*]f32 = tempp + (wh * 12);
-    const tmpps11: [*]f32 = tempp + (wh * 13);
-    const tmpps22: [*]f32 = tempp + (wh * 14);
-    const tmpps12: [*]f32 = tempp + (wh * 15);
-    const tmppmu1: [*]f32 = tempp + (wh * 16);
+    const tmpp3 = temp6x3[4][0];
+    const tmpps11 = temp6x3[4][1];
+    const tmpps22 = temp6x3[4][2];
+    const tmpps12 = temp6x3[5][0];
+    const tmppmu1 = temp6x3[5][1];
 
-    copyData(srcp1b, srcp1, stride, width, height);
-    copyData(srcp2b, srcp2, stride, width, height);
+    for (0..3) |i| {
+        @memcpy(srcp1b[i], srcp1[i]);
+        @memcpy(srcp2b[i], srcp2[i]);
+    }
 
     var plane_avg_ssim: [6][6]f64 = undefined;
     var plane_avg_edge: [6][12]f64 = undefined;
     var stride2 = stride;
-    var width2 = width;
-    var height2 = height;
+    var w2 = w;
+    var h2 = h;
 
-    var scale: usize = 0;
+    var scale: u32 = 0;
     while (scale < 6) : (scale += 1) {
         if (scale > 0) {
-            downscale(srcp1b, srcp1b, stride2, width2, height2);
-            downscale(srcp2b, srcp2b, stride2, width2, height2);
+            downscale(srcp1b, srcp1b, stride2, w2, h2);
+            downscale(srcp2b, srcp2b, stride2, w2, h2);
             stride2 = @divTrunc((stride2 + 1), 2);
-            width2 = @divTrunc((width2 + 1), 2);
-            height2 = @divTrunc((height2 + 1), 2);
+            w2 = @divTrunc((w2 + 1), 2);
+            h2 = @divTrunc((h2 + 1), 2);
         }
 
-        const one_per_pixels: f64 = 1.0 / @as(f64, @floatFromInt(width2 * height2));
-        toXYB(srcp1b, tmpp1, stride2, width2, height2);
-        toXYB(srcp2b, tmpp2, stride2, width2, height2);
+        const one_per_pixels: f64 = 1.0 / @as(f64, @floatFromInt(w2 * h2));
+        toXYB(srcp1b, tmpp1, stride2, w2, h2);
+        toXYB(srcp2b, tmpp2, stride2, w2, h2);
 
-        var plane: usize = 0;
+        var plane: u32 = 0;
         while (plane < 3) : (plane += 1) {
-            multiply(tmpp1[plane], tmpp1[plane], tmpp3, stride2, width2, height2);
-            blur(tmpp3, tmpps11, stride2, width2, height2);
+            multiply(tmpp1[plane], tmpp1[plane], tmpp3, stride2, w2, h2);
+            blur(tmpp3, tmpps11, stride2, w2, h2);
 
-            multiply(tmpp2[plane], tmpp2[plane], tmpp3, stride2, width2, height2);
-            blur(tmpp3, tmpps22, stride2, width2, height2);
+            multiply(tmpp2[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
+            blur(tmpp3, tmpps22, stride2, w2, h2);
 
-            multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, width2, height2);
-            blur(tmpp3, tmpps12, stride2, width2, height2);
+            multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
+            blur(tmpp3, tmpps12, stride2, w2, h2);
 
-            blur(tmpp1[plane], tmppmu1, stride2, width2, height2);
-            blur(tmpp2[plane], tmpp3, stride2, width2, height2);
+            blur(tmpp1[plane], tmppmu1, stride2, w2, h2);
+            blur(tmpp2[plane], tmpp3, stride2, w2, h2);
 
             ssimMap(
                 tmpps11,
@@ -78,8 +79,8 @@ pub fn process(src8a: [3][*]const u8, src8b: [3][*]const u8, stride8: usize, wid
                 tmppmu1,
                 tmpp3,
                 stride2,
-                width2,
-                height2,
+                w2,
+                h2,
                 plane,
                 one_per_pixels,
                 &plane_avg_ssim[scale],
@@ -91,8 +92,8 @@ pub fn process(src8a: [3][*]const u8, src8b: [3][*]const u8, stride8: usize, wid
                 tmppmu1,
                 tmpp3,
                 stride2,
-                width2,
-                height2,
+                w2,
+                h2,
                 plane,
                 one_per_pixels,
                 &plane_avg_edge[scale],
@@ -103,49 +104,35 @@ pub fn process(src8a: [3][*]const u8, src8b: [3][*]const u8, stride8: usize, wid
     return score(plane_avg_ssim, plane_avg_edge);
 }
 
-inline fn copyData(dst: [3][*]f32, src: [3][*]const f32, stride: usize, width: usize, height: usize) void {
-    var i: usize = 0;
-    while (i < 3) : (i += 1) {
-        var dstp = dst[i];
-        var srcp = src[i];
-        var y: usize = 0;
-        while (y < height) : (y += 1) {
-            @memcpy(dstp[0..width], srcp[0..width]);
-            srcp += stride;
-            dstp += stride;
-        }
-    }
-}
-
-inline fn downscale(src: [3][*]f32, dst: [3][*]f32, src_stride: usize, in_w: usize, in_h: usize) void {
+inline fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
     const fscale: f32 = 2.0;
-    const uscale: usize = 2;
+    const uscale: u32 = 2;
     const out_w = @divTrunc((in_w + uscale - 1), uscale);
     const out_h = @divTrunc((in_h + uscale - 1), uscale);
     const dst_stride = @divTrunc((src_stride + uscale - 1), uscale);
     const normalize: f32 = 1.0 / (fscale * fscale);
 
-    var plane: usize = 0;
+    var plane: u32 = 0;
     while (plane < 3) : (plane += 1) {
         const srcp = src[plane];
         var dstp = dst[plane];
-        var oy: usize = 0;
+        var oy: u32 = 0;
         while (oy < out_h) : (oy += 1) {
-            var ox: usize = 0;
+            var ox: u32 = 0;
             while (ox < out_w) : (ox += 1) {
                 var sum: f32 = 0.0;
-                var iy: usize = 0;
+                var iy: u32 = 0;
                 while (iy < uscale) : (iy += 1) {
-                    var ix: usize = 0;
+                    var ix: u32 = 0;
                     while (ix < uscale) : (ix += 1) {
-                        const x: usize = @min((ox * uscale + ix), (in_w - 1));
-                        const y: usize = @min((oy * uscale + iy), (in_h - 1));
+                        const x: u32 = @min((ox * uscale + ix), (in_w - 1));
+                        const y: u32 = @min((oy * uscale + iy), (in_h - 1));
                         sum += srcp[y * src_stride + x];
                     }
                 }
                 dstp[ox] = sum * normalize;
             }
-            dstp += dst_stride;
+            dstp = dstp[dst_stride..];
         }
     }
 }
@@ -156,79 +143,76 @@ inline fn multiplyVec(src1: anytype, src2: anytype, dst: []f32) void {
     dst[0..16].* = @as(vec_t, src1[0..16].*) * @as(vec_t, src2[0..16].*);
 }
 
-pub inline fn multiply(src1: [*]const f32, src2: [*]const f32, dst: [*]f32, stride: usize, width: usize, height: usize) void {
-    var y: usize = 0;
-    while (y < height) : (y += 1) {
-        var srcp1 = src1 + y * stride;
-        var srcp2 = src2 + y * stride;
-        var dstp = dst + y * stride;
-        var x: usize = 0;
-        while (x < width) : (x += 16) {
-            const x2: usize = x + 16;
+pub inline fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        var srcp1 = src1[(y * stride)..];
+        var srcp2 = src2[(y * stride)..];
+        var dstp = dst[(y * stride)..];
+        var x: u32 = 0;
+        while (x < w) : (x += 16) {
+            const x2: u32 = x + 16;
             multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
         }
     }
 }
 
-inline fn blurH(srcp: anytype, dstp: [*]f32, kernel: [9]f32, width: usize) void {
-    const ksize: usize = 9;
-    const radius: usize = ksize >> 1;
-
-    var j: usize = 0;
-    while (j < @min(width, radius)) : (j += 1) {
-        const dist_from_right: usize = width - 1 - j;
-        var accum: f32 = 0.0;
-        var k: usize = 0;
+fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
+    var j: i32 = 0;
+    while (j < @min(w, radius)) : (j += 1) {
+        const dist_from_right: i32 = w - 1 - j;
+        var sum: f32 = 0.0;
+        var k: i32 = 0;
         while (k < radius) : (k += 1) {
-            const idx: usize = if (j < radius - k) (@min(radius - k - j, width - 1)) else (j - radius + k);
-            accum += kernel[k] * srcp[idx];
+            const idx: i32 = if (j < radius - k) @min(radius - k - j, w - 1) else (j - radius + k);
+            sum += kernel[@intCast(k)] * srcp[@intCast(idx)];
         }
 
         k = radius;
         while (k < ksize) : (k += 1) {
-            const idx: usize = if (dist_from_right < k - radius) (j - @min(k - radius - dist_from_right, j)) else (j - radius + k);
-            accum += kernel[k] * srcp[idx];
+            const idx: i32 = if (dist_from_right < k - radius) (j - @min(k - radius - dist_from_right, j)) else (j - radius + k);
+            sum += kernel[@intCast(k)] * srcp[@intCast(idx)];
         }
 
-        dstp[j] = accum;
+        dstp[@intCast(j)] = sum;
     }
 
     j = radius;
-    while (j < width - @min(width, radius)) : (j += 1) {
-        var accum: f32 = 0.0;
-        var k: usize = 0;
+    while (j < w - @min(w, radius)) : (j += 1) {
+        var sum: f32 = 0.0;
+        var k: i32 = 0;
         while (k < ksize) : (k += 1) {
-            accum += kernel[k] * srcp[j - radius + k];
+            sum += kernel[@intCast(k)] * srcp[@intCast(j - radius + k)];
         }
 
-        dstp[j] = accum;
+        dstp[@intCast(j)] = sum;
     }
 
-    j = @max(radius, width - @min(width, radius));
-    while (j < width) : (j += 1) {
-        const dist_from_right: usize = width - 1 - j;
-        var accum: f32 = 0.0;
-        var k: usize = 0;
+    j = @max(radius, w - @min(w, radius));
+    while (j < w) : (j += 1) {
+        const dist_from_right: i32 = w - 1 - j;
+        var sum: f32 = 0.0;
+        var k: i32 = 0;
         while (k < radius) : (k += 1) {
-            const idx: usize = if (j < radius - k) (@min(radius - k - j, width - 1)) else (j - radius + k);
-            accum += kernel[k] * srcp[idx];
+            const idx: i32 = if (j < radius - k) @min(radius - k - j, w - 1) else (j - radius + k);
+            sum += kernel[@intCast(k)] * srcp[@intCast(idx)];
         }
 
         k = radius;
         while (k < ksize) : (k += 1) {
-            const idx: usize = if (dist_from_right < k - radius) (j - @min(k - radius - dist_from_right, j)) else (j - radius + k);
-            accum += kernel[k] * srcp[idx];
+            const idx: i32 = if (dist_from_right < k - radius) (j - @min(k - radius - dist_from_right, j)) else (j - radius + k);
+            sum += kernel[@intCast(k)] * srcp[@intCast(idx)];
         }
 
-        dstp[j] = accum;
+        dstp[@intCast(j)] = sum;
     }
 }
 
-inline fn blurV(src: anytype, dstp: [*]f32, kernel: [9]f32, width: usize) void {
-    var j: usize = 0;
-    while (j < width) : (j += 1) {
+inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
+    var j: u32 = 0;
+    while (j < w) : (j += 1) {
         var accum: f32 = 0.0;
-        var k: usize = 0;
+        var k: u32 = 0;
         while (k < 9) : (k += 1) {
             accum += kernel[k] * src[k][j];
         }
@@ -237,8 +221,8 @@ inline fn blurV(src: anytype, dstp: [*]f32, kernel: [9]f32, width: usize) void {
     }
 }
 
-pub inline fn blur(src: [*]const f32, dst: [*]f32, stride: usize, width: usize, height: usize) void {
-    const kernel = [9]f32{
+pub inline fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+    const kernel = [ksize]f32{
         0.0076144188642501831054687500,
         0.0360749699175357818603515625,
         0.1095860823988914489746093750,
@@ -250,32 +234,33 @@ pub inline fn blur(src: [*]const f32, dst: [*]f32, stride: usize, width: usize, 
         0.0076144188642501831054687500,
     };
 
-    const ksize: usize = 9;
-    const radius: usize = ksize >> 1;
-    var i: usize = 0;
-    while (i < height) : (i += 1) {
-        var srcp: [9][*]const f32 = undefined;
-        const dstp: [*]f32 = dst + i * stride;
-        const dist_from_bottom: usize = height - 1 - i;
+    var i: i32 = 0;
+    const ih: i32 = @bitCast(h);
+    while (i < h) : (i += 1) {
+        const ui: u32 = @bitCast(i);
+        var srcp: [ksize][]const f32 = undefined;
+        const dstp: []f32 = dst[(ui * stride)..];
+        const dist_from_bottom: i32 = ih - 1 - i;
 
-        const tmp_arr = allocator.alignedAlloc(f32, 64, width) catch unreachable;
-        defer allocator.free(tmp_arr);
-        const tmp: [*]f32 = tmp_arr.ptr;
+        const tmp = allocator.alignedAlloc(f32, 64, w) catch unreachable;
+        defer allocator.free(tmp);
 
-        var k: usize = 0;
+        var k: i32 = 0;
         while (k < radius) : (k += 1) {
-            const row: usize = if (i < radius - k) (@min(radius - k - i, height - 1)) else (i - radius + k);
-            srcp[k] = src + row * stride;
+            const row: i32 = if (i < radius - k) (@min(radius - k - i, ih - 1)) else (i - radius + k);
+            const urow: u32 = @bitCast(row);
+            srcp[@intCast(k)] = src[(urow * stride)..];
         }
 
         k = radius;
         while (k < ksize) : (k += 1) {
-            const row: usize = if (dist_from_bottom < k - radius) (i - @min(k - radius - dist_from_bottom, i)) else (i - radius + k);
-            srcp[k] = src + row * stride;
+            const row: i32 = if (dist_from_bottom < k - radius) (i - @min(k - radius - dist_from_bottom, i)) else (i - radius + k);
+            const urow: u32 = @bitCast(row);
+            srcp[@intCast(k)] = src[(urow * stride)..];
         }
 
-        blurV(srcp, tmp, kernel, width);
-        blurH(tmp, dstp, kernel, width);
+        blurV(srcp, tmp, kernel, w);
+        blurH(tmp, dstp, kernel, @intCast(w));
     }
 }
 
@@ -311,7 +296,7 @@ const ABSORBANCE_BIAS: vec_t = @splat(-K_D1);
 
 inline fn cbrtVec(x: vec_t) vec_t {
     var out: vec_t = undefined;
-    var i: usize = 0;
+    var i: u32 = 0;
     while (i < 16) : (i += 1) {
         out[i] = std.math.lossyCast(f32, math.cbrt(@as(f32, x[i])));
     }
@@ -386,7 +371,7 @@ inline fn opsinAbsorbance(rgb: [3]vec_t) [3]vec_t {
 inline fn linearRGBtoXYB(input: [3]vec_t) [3]vec_t {
     var mixed: [3]vec_t = opsinAbsorbance(input);
 
-    var i: usize = 0;
+    var i: u32 = 0;
     while (i < 3) : (i += 1) {
         const pred: @Vector(16, bool) = mixed[i] < V00;
         mixed[i] = @select(f32, pred, V00, mixed[i]);
@@ -419,14 +404,14 @@ inline fn xybVec(src: [3][]const f32, dst: [3][]f32) void {
     }
 }
 
-pub inline fn toXYB(_srcp: [3][*]const f32, _dstp: [3][*]f32, stride: usize, width: usize, height: usize) void {
+pub inline fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
     var srcp = _srcp;
     var dstp = _dstp;
-    var y: usize = 0;
-    while (y < height) : (y += 1) {
-        var x: usize = 0;
-        while (x < width) : (x += 16) {
-            const x2: usize = x + 16;
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        var x: u32 = 0;
+        while (x < w) : (x += 16) {
+            const x2: u32 = x + 16;
             const srcps = [3][]const f32{
                 srcp[0][x..x2],
                 srcp[1][x..x2],
@@ -442,10 +427,10 @@ pub inline fn toXYB(_srcp: [3][*]const f32, _dstp: [3][*]f32, stride: usize, wid
             xybVec(srcps, dstps);
         }
 
-        var i: usize = 0;
+        var i: u32 = 0;
         while (i < 3) : (i += 1) {
-            srcp[i] += stride;
-            dstp[i] += stride;
+            srcp[i] = srcp[i][stride..];
+            dstp[i] = dstp[i][stride..];
         }
     }
 }
@@ -456,30 +441,30 @@ inline fn tothe4th(y: f64) f64 {
     return x;
 }
 
-pub inline fn ssimMap(
-    s11: [*]f32,
-    s22: [*]f32,
-    s12: [*]f32,
-    mu1: [*]f32,
-    mu2: [*]f32,
-    stride: usize,
-    width: usize,
-    height: usize,
-    plane: usize,
+inline fn ssimMap(
+    s11: []f32,
+    s22: []f32,
+    s12: []f32,
+    mu1: []f32,
+    mu2: []f32,
+    stride: u32,
+    w: u32,
+    h: u32,
+    plane: u32,
     one_per_pixels: f64,
-    plane_avg_ssim: [*]f64,
+    plane_avg_ssim: []f64,
 ) void {
     var sum1 = [2]f64{ 0.0, 0.0 };
-    var y: usize = 0;
-    while (y < height) : (y += 1) {
-        const s11p = s11 + y * stride;
-        const s22p = s22 + y * stride;
-        const s12p = s12 + y * stride;
-        const mu1p = mu1 + y * stride;
-        const mu2p = mu2 + y * stride;
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        const s11p = s11[(y * stride)..];
+        const s22p = s22[(y * stride)..];
+        const s12p = s12[(y * stride)..];
+        const mu1p = mu1[(y * stride)..];
+        const mu2p = mu2[(y * stride)..];
 
-        var x: usize = 0;
-        while (x < width) : (x += 1) {
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
             const m1: f32 = mu1p[x];
             const m2: f32 = mu2p[x];
             const m11 = m1 * m1;
@@ -500,28 +485,28 @@ pub inline fn ssimMap(
     plane_avg_ssim[plane * 2 + 1] = @sqrt(@sqrt(one_per_pixels * sum1[1]));
 }
 
-pub inline fn edgeMap(
-    im1: [*]f32,
-    im2: [*]f32,
-    mu1: [*]f32,
-    mu2: [*]f32,
-    stride: usize,
-    width: usize,
-    height: usize,
-    plane: usize,
+inline fn edgeMap(
+    im1: []f32,
+    im2: []f32,
+    mu1: []f32,
+    mu2: []f32,
+    stride: u32,
+    w: u32,
+    h: u32,
+    plane: u32,
     one_per_pixels: f64,
-    plane_avg_edge: [*]f64,
+    plane_avg_edge: []f64,
 ) void {
     var sum2 = [4]f64{ 0.0, 0.0, 0.0, 0.0 };
-    var y: usize = 0;
-    while (y < height) : (y += 1) {
-        const im1p = im1 + y * stride;
-        const im2p = im2 + y * stride;
-        const mu1p = mu1 + y * stride;
-        const mu2p = mu2 + y * stride;
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        const im1p = im1[(y * stride)..];
+        const im2p = im2[(y * stride)..];
+        const mu1p = mu1[(y * stride)..];
+        const mu2p = mu2[(y * stride)..];
 
-        var x: usize = 0;
-        while (x < width) : (x += 1) {
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
             const d1: f64 = (1.0 + @as(f64, @abs(im2p[x] - mu2p[x]))) /
                 (1.0 + @as(f64, @abs(im1p[x] - mu1p[x]))) - 1.0;
             const artifact: f64 = @max(d1, 0.0);
@@ -539,7 +524,7 @@ pub inline fn edgeMap(
     plane_avg_edge[plane * 4 + 3] = @sqrt(@sqrt(one_per_pixels * sum2[3]));
 }
 
-pub inline fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
+inline fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
     const weight = [108]f64{
         0.0,
         0.0007376606707406586,
@@ -653,13 +638,13 @@ pub inline fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
 
     var ssim: f64 = 0.0;
 
-    var i: usize = 0;
-    var plane: usize = 0;
+    var i: u32 = 0;
+    var plane: u32 = 0;
 
     while (plane < 3) : (plane += 1) {
-        var s: usize = 0;
+        var s: u32 = 0;
         while (s < 6) : (s += 1) {
-            var n: usize = 0;
+            var n: u32 = 0;
             while (n < 2) : (n += 1) {
                 ssim = @mulAdd(f64, weight[i], @abs(plane_avg_ssim[s][plane * 2 + n]), ssim);
                 i += 1;
