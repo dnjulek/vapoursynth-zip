@@ -67,7 +67,7 @@ fn hvBlurCT(comptime T: type, comptime radius: u32, _src: []const u8, _dst: []u8
             srcp[@intCast(k)] = src[urow * stride ..];
         }
 
-        if (@typeInfo(T) == .Int) {
+        if (@typeInfo(T) == .int) {
             const inv: u32 = @divTrunc(((1 << 16) + radius), ksize);
             vBlurInt(T, &srcp, tmp, w, ksize, inv);
             hBlurInt(T, tmp, dstp, w, ksize, inv);

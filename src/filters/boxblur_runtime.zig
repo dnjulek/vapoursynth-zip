@@ -105,7 +105,7 @@ inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: usize,
     var tmp2 = _tmp2;
     var p: i32 = passes;
 
-    if (@typeInfo(T) == .Int) {
+    if (@typeInfo(T) == .int) {
         blurInt(T, srcp, step, tmp1, 1, len, radius);
         while (p > 2) : (p -= 1) {
             blurInt(T, tmp1, 1, tmp2, 1, len, radius);

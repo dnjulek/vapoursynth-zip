@@ -12,7 +12,7 @@ pub fn bilateral(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, 
     const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
     const stride: u32 = _stride >> (@sizeOf(T) >> 1);
 
-    if (@typeInfo(T) == .Int) {
+    if (@typeInfo(T) == .int) {
         if (d.algorithm[plane] == 1) {
             bilateralAlg1(T, srcp, refp, dstp, stride, w, h, plane, d);
         } else {
