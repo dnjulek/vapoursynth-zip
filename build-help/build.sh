@@ -10,14 +10,14 @@ if ! command -v jq > /dev/null; then
   exit 1
 fi
 
-json_file="releases.json" 
+json_file="index.json" 
 
 if [ -e "${json_file}" ]
 then
-    echo "Using cached Zig releases.json"
+    echo "Using cached Zig index.json"
 else
-    echo "Downloading releases.json..."
-    wget https://github.com/ziglang/www.ziglang.org/raw/master/data/releases.json
+    echo "Downloading index.json..."
+    wget https://ziglang.org/download/index.json
 fi
 
 VER=$(jq -r '.master.version' "${json_file}")
