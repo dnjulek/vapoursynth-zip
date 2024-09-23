@@ -1,4 +1,4 @@
-$jsonUrl = "https://raw.githubusercontent.com/ziglang/www.ziglang.org/master/data/releases.json"
+$jsonUrl = "https://ziglang.org/download/index.json"
 $jsonContent = Invoke-RestMethod -Uri $jsonUrl -Method Get
 $version = $jsonContent.master.version
 $zipUrl = $jsonContent.master.'x86_64-windows'.tarball
