@@ -11,7 +11,7 @@ pub const vsh = vapoursynth.vshelper;
 pub const zapi = vapoursynth.zigapi;
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
-    _ = vspapi.configPlugin.?("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", vs.makeVersion(1, 0), vs.VAPOURSYNTH_API_VERSION, 0, plugin);
+    _ = vspapi.configPlugin.?("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", vs.makeVersion(3, 0), vs.VAPOURSYNTH_API_VERSION, 0, plugin);
     _ = vspapi.registerFunction.?(bilateral.filter_name, "clip:vnode;ref:vnode:opt;sigmaS:float[]:opt;sigmaR:float[]:opt;planes:int[]:opt;algorithm:int[]:opt;PBFICnum:int[]:opt", "clip:vnode;", bilateral.bilateralCreate, null, plugin);
     _ = vspapi.registerFunction.?(boxblur.filter_name, "clip:vnode;planes:int[]:opt;hradius:int:opt;hpasses:int:opt;vradius:int:opt;vpasses:int:opt", "clip:vnode;", boxblur.boxBlurCreate, null, plugin);
     _ = vspapi.registerFunction.?(metrics.filter_name, "reference:vnode;distorted:vnode;mode:int:opt;", "clip:vnode;", metrics.MetricsCreate, null, plugin);

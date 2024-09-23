@@ -65,14 +65,14 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
                     var stats: filter.Stats = undefined;
                     if (refb) {
                         const refp = ref.?.getReadSlice(plane);
-                        stats = if (@typeInfo(T) == .Int) filter.minMaxIntRef(T, srcp, refp, stride, w, h, d) else filter.minMaxFloatRef(T, srcp, refp, stride, w, h, d);
+                        stats = if (@typeInfo(T) == .int) filter.minMaxIntRef(T, srcp, refp, stride, w, h, d) else filter.minMaxFloatRef(T, srcp, refp, stride, w, h, d);
 
                         _ = switch (stats) {
                             .i => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.i.diff, .Append),
                             .f => vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.f.diff, .Append),
                         };
                     } else {
-                        stats = if (@typeInfo(T) == .Int) filter.minMaxInt(T, srcp, stride, w, h, d) else filter.minMaxFloat(T, srcp, stride, w, h, d);
+                        stats = if (@typeInfo(T) == .int) filter.minMaxInt(T, srcp, stride, w, h, d) else filter.minMaxFloat(T, srcp, stride, w, h, d);
                     }
 
                     switch (stats) {
