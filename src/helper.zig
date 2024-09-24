@@ -102,8 +102,12 @@ pub fn getPeak(vi: *const vs.VideoInfo) u16 {
     }
 }
 
-pub fn YUVtoRGBS(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Node {
+pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Node {
     const vi = vsapi.?.getVideoInfo.?(node);
+    if ((vi.format.colorFamily == .RGB) and (vi.format.sampleType == .Float)) {
+        return node;
+    }
+
     const matrix: i32 = if (vi.height > 650) 1 else 6;
     const args = vsapi.?.createMap.?();
     _ = vsapi.?.mapConsumeNode.?(args, "clip", node, .Replace);

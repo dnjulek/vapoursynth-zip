@@ -66,11 +66,8 @@ pub export fn MetricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     var d: Data = undefined;
 
     var map = zapi.Map.init(in, out, vsapi);
-    d.node1, const vi1 = map.getNodeVi("reference");
-    d.node2, const vi2 = map.getNodeVi("distorted");
-    helper.compareNodes(out, d.node1, d.node2, vi1, vi2, filter_name, vsapi) catch return;
-    const dt = helper.DataType.select(map, d.node1, vi1, filter_name) catch return;
-    _ = dt; // autofix
+    d.node1 = map.getNode("reference");
+    d.node2 = map.getNode("distorted");
 
     const mode = map.getInt(i32, "mode") orelse 0;
     if (mode != 0) {
@@ -80,11 +77,8 @@ pub export fn MetricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
         return;
     }
 
-    if ((vi1.format.colorFamily == .YUV)) {
-        d.node1 = helper.YUVtoRGBS(d.node1, core, vsapi);
-        d.node2 = helper.YUVtoRGBS(d.node2, core, vsapi);
-    }
-
+    d.node1 = helper.toRGBS(d.node1, core, vsapi);
+    d.node2 = helper.toRGBS(d.node2, core, vsapi);
     d.node1 = sRGBtoLinearRGB(d.node1, core, vsapi);
     d.node2 = sRGBtoLinearRGB(d.node2, core, vsapi);
 
