@@ -104,6 +104,7 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) 
     var in = node;
     var err: vs.MapPropertyError = undefined;
     const frame = vsapi.?.getFrame.?(0, node, null, 0);
+    defer vsapi.?.freeFrame.?(frame);
     const transfer_in = vsapi.?.mapGetInt.?(vsapi.?.getFramePropertiesRO.?(frame), "_Transfer", 0, &err);
     const reszplugin = vsapi.?.getPluginByID.?(vsh.RESIZE_PLUGIN_ID, core);
 
