@@ -66,8 +66,22 @@ pub export fn MetricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     var d: Data = undefined;
 
     var map = zapi.Map.init(in, out, vsapi);
-    d.node1 = map.getNode("reference");
-    d.node2 = map.getNode("distorted");
+    d.node1, const vi1 = map.getNodeVi("reference");
+    d.node2, const vi2 = map.getNodeVi("distorted");
+
+    if ((vi1.width != vi2.width) or (vi1.height != vi2.height)) {
+        vsapi.?.mapSetError.?(out, filter_name ++ " : clips must have the same dimensions.");
+        vsapi.?.freeNode.?(d.node1);
+        vsapi.?.freeNode.?(d.node2);
+        return;
+    }
+
+    if (vi1.numFrames != vi2.numFrames) {
+        vsapi.?.mapSetError.?(out, filter_name ++ " : clips must have the same length.");
+        vsapi.?.freeNode.?(d.node1);
+        vsapi.?.freeNode.?(d.node2);
+        return;
+    }
 
     const mode = map.getInt(i32, "mode") orelse 0;
     if (mode != 0) {
