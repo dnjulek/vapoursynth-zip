@@ -120,21 +120,22 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) 
     const frame = vsapi.?.getFrame.?(0, node, null, 0);
     defer vsapi.?.freeFrame.?(frame);
     const transfer_in = vsapi.?.mapGetInt.?(vsapi.?.getFramePropertiesRO.?(frame), "_Transfer", 0, &err);
-    const reszplugin = vsapi.?.getPluginByID.?(vsh.RESIZE_PLUGIN_ID, core);
+    if (transfer_in == 8) {
+        return in;
+    }
 
+    const reszplugin = vsapi.?.getPluginByID.?(vsh.RESIZE_PLUGIN_ID, core);
     const args = vsapi.?.createMap.?();
     var ret: ?*vs.Map = null;
 
-    if (transfer_in != 8) {
-        _ = vsapi.?.mapConsumeNode.?(args, "clip", in, .Replace);
-        _ = vsapi.?.mapSetData.?(args, "prop", "_Transfer", -1, .Utf8, .Replace);
-        _ = vsapi.?.mapSetInt.?(args, "intval", 13, .Replace);
-        const stdplugin = vsapi.?.getPluginByID.?(vsh.STD_PLUGIN_ID, core);
-        ret = vsapi.?.invoke.?(stdplugin, "SetFrameProp", args);
-        in = vsapi.?.mapGetNode.?(ret, "clip", 0, null);
-        vsapi.?.freeMap.?(ret);
-        vsapi.?.clearMap.?(args);
-    }
+    _ = vsapi.?.mapConsumeNode.?(args, "clip", in, .Replace);
+    _ = vsapi.?.mapSetData.?(args, "prop", "_Transfer", -1, .Utf8, .Replace);
+    _ = vsapi.?.mapSetInt.?(args, "intval", 13, .Replace);
+    const stdplugin = vsapi.?.getPluginByID.?(vsh.STD_PLUGIN_ID, core);
+    ret = vsapi.?.invoke.?(stdplugin, "SetFrameProp", args);
+    in = vsapi.?.mapGetNode.?(ret, "clip", 0, null);
+    vsapi.?.freeMap.?(ret);
+    vsapi.?.clearMap.?(args);
 
     _ = vsapi.?.mapConsumeNode.?(args, "clip", in, .Replace);
     _ = vsapi.?.mapSetInt.?(args, "transfer", 8, .Replace);
@@ -142,6 +143,5 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) 
     const out = vsapi.?.mapGetNode.?(ret, "clip", 0, null);
     vsapi.?.freeMap.?(ret);
     vsapi.?.freeMap.?(args);
-
     return out;
 }
