@@ -3,6 +3,7 @@
 [READ THE DOCS](https://github.com/dnjulek/vapoursynth-zip/wiki)
 
 # FILTERS
+- [AdaptiveBinarize](https://github.com/dnjulek/vapoursynth-zip/wiki/AdaptiveBinarize): based on [OpenCV's Adaptive Thresholding](https://docs.opencv.org/5.x/d7/d4d/tutorial_py_thresholding.html).
 - [Bilateral](https://github.com/dnjulek/vapoursynth-zip/wiki/Bilateral): A faster version of [VapourSynth-Bilateral](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-Bilateral).
 - [BoxBlur](https://github.com/dnjulek/vapoursynth-zip/wiki/BoxBlur): A faster version of [std.BoxBlur](https://www.vapoursynth.com/doc/functions/video/boxblur.html).
 - [CLAHE](https://github.com/dnjulek/vapoursynth-zip/wiki/CLAHE): Contrast Limited Adaptive Histogram Equalization [from OpenCV](https://docs.opencv.org/5.x/d5/daf/tutorial_py_histogram_equalization.html).
