@@ -5,6 +5,7 @@
 # FILTERS
 - [Bilateral](https://github.com/dnjulek/vapoursynth-zip/wiki/Bilateral): A faster version of [VapourSynth-Bilateral](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-Bilateral).
 - [BoxBlur](https://github.com/dnjulek/vapoursynth-zip/wiki/BoxBlur): A faster version of [std.BoxBlur](https://www.vapoursynth.com/doc/functions/video/boxblur.html).
+- [CLAHE](https://github.com/dnjulek/vapoursynth-zip/wiki/CLAHE): Contrast Limited Adaptive Histogram Equalization [from OpenCV](https://docs.opencv.org/5.x/d5/daf/tutorial_py_histogram_equalization.html).
 - [Metrics](https://github.com/dnjulek/vapoursynth-zip/wiki/Metrics): Image metrics like [SSIMULACRA2](https://github.com/cloudinary/ssimulacra2) and [XPSNR](https://github.com/fraunhoferhhi/xpsnr).
 - [PlaneAverage](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneAverage): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
