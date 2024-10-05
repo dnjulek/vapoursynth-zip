@@ -35,7 +35,6 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         defer src2.deinit();
 
         const dst = src1.copyFrame();
-        const props = dst.getPropertiesRW();
         const w, const h, const stride = src1.getDimensions2(f32, 0);
 
         var srcp1: [3][]const f32 = undefined;
@@ -46,7 +45,7 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         }
 
         const val = ssimulacra2.process(srcp1, srcp2, stride, w, h);
-        _ = vsapi.?.mapSetFloat.?(props, "_SSIMULACRA2", val, .Replace);
+        dst.setFloat("_SSIMULACRA2", val);
         return dst.frame;
     }
     return null;
@@ -61,7 +60,7 @@ export fn MetricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*cons
     allocator.destroy(d);
 }
 
-pub export fn MetricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub export fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
 
