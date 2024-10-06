@@ -2,6 +2,7 @@ const vapoursynth = @import("vapoursynth");
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
+const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
 const metrics = @import("vapoursynth/metrics.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
@@ -44,6 +45,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;planes:int[]:opt;hradius:int:opt;hpasses:int:opt;vradius:int:opt;vpasses:int:opt",
         "clip:vnode;",
         boxblur.boxBlurCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        checkmate.filter_name,
+        "clip:vnode;thr:int:opt;tmax:int:opt;tthr2:int:opt;",
+        "clip:vnode;",
+        checkmate.checkmateCreate,
         null,
         plugin,
     );

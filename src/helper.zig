@@ -121,3 +121,19 @@ pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Node
     vsapi.?.freeMap.?(args);
     return out;
 }
+
+pub fn getVal(comptime T: type, ptr: anytype, dist: isize) T {
+    const adr: isize = @intCast(@intFromPtr(ptr));
+    const uadr: usize = @intCast(adr + dist);
+    const ptr2: [*]const T = @ptrFromInt(uadr);
+    return ptr2[0];
+}
+
+pub fn getVal2(comptime T: type, ptr: anytype, x: u32, y: u32) T {
+    const ix: i32 = @intCast(x);
+    const iy: i32 = @intCast(y);
+    const adr: isize = @intCast(@intFromPtr(ptr));
+    const uadr: usize = @intCast(adr + ix - iy);
+    const ptr2: [*]const T = @ptrFromInt(uadr);
+    return ptr2[0];
+}

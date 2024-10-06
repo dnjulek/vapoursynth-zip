@@ -4,3 +4,6 @@ zig-out/
 run.bat
 build-help/releases.json
 build-help/zig-*
+*.h
+*.cpp
+*.so
