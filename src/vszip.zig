@@ -4,7 +4,6 @@ const bilateral = @import("vapoursynth/bilateral.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
-const comb_mask = @import("vapoursynth/comb_mask.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const metrics = @import("vapoursynth/metrics.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
@@ -63,14 +62,6 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;limit:int:opt;tiles:int[]:opt",
         "clip:vnode;",
         clahe.claheCreate,
-        null,
-        plugin,
-    );
-    _ = vspapi.registerFunction.?(
-        comb_mask.filter_name,
-        "clip:vnode;cthresh:int:opt;mthresh:int:opt;exapnd:int:opt;metric:int:opt;",
-        "clip:vnode;",
-        comb_mask.combMaskCreate,
         null,
         plugin,
     );
