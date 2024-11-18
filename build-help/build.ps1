@@ -29,5 +29,5 @@ if (Test-Path $dllFilePath){
     Write-Host "Installing 'vszip.dll' to '$destinationFilePath'" -ForegroundColor Blue
     Copy-Item -Path $dllFilePath -Destination $destinationFilePath -Force
 } else {
-    Write-Host "No '\zig-out\lib\vszip.dll' file, build error." -ForegroundColor Red
+    Write-Host "No '\zig-out\bin\vszip.dll' file, build error." -ForegroundColor Red
 }
