@@ -6,7 +6,7 @@ $zipUrl = $jsonContent.master.'x86_64-windows'.tarball
 $parentFolder = Split-Path -Path $PSScriptRoot -Parent
 $zipFilePath = Join-Path $PSScriptRoot "zig-windows-x86_64-$version.zip"
 $zigPath = Join-Path $PSScriptRoot "\zig-windows-x86_64-$version\zig.exe"
-$dllFilePath = Join-Path $parentFolder "\zig-out\lib\vszip.dll"
+$dllFilePath = Join-Path $parentFolder "\zig-out\bin\vszip.dll"
 $destinationFileFolder = Join-Path $env:APPDATA "\VapourSynth\plugins64"
 New-Item -ItemType Directory -Force -Path $destinationFileFolder | Out-Null
 $destinationFilePath = Join-Path $destinationFileFolder "\vszip.dll"
