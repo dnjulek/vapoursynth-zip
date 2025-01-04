@@ -31,6 +31,11 @@ jobs:
     - name: build dll
       run: cd .\test\ && .\build.ps1
 
-    - name: Run test.vpy
-      run: |
-        vspipe test\test.vpy . -o 0
+    - name: Run test.vpy (8-bit)
+      run: vspipe test\test.vpy . -o 1
+
+    - name: Run test.vpy (16-bit)
+      run: vspipe test\test.vpy . -o 2
+
+    - name: Run test.vpy (32-bit)
+      run: vspipe test\test.vpy . -o 3
