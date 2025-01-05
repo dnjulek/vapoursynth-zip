@@ -37,6 +37,10 @@ src.vszip.BoxBlur(hradius=13, hpasses=5, vradius=13, vpasses=5).set_output(6)
 
 ## Building
 
-Put [zig-master](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``
-
-Or run the script in [build-help](/build-help).
+- Via manual download:\
+Put [zig-master](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
+- Via automated scripts:\
+Run the script in [build-help](/build-help).
+- Via AUR (for Arch Linux):\
+Run ``paru -S vapoursynth-plugin-vszip-git``
+ 
