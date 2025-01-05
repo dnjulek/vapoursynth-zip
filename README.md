@@ -43,4 +43,6 @@ Put [zig-master](https://ziglang.org/download/) in your PATH and run: ``zig buil
 Run the script in [build-help](/build-help).
 - Via AUR (for Arch Linux):\
 Run ``paru -S vapoursynth-plugin-vszip-git``
+- Via vsrepo (for Windows):\
+Run ``vsrepo install vszip``
  
