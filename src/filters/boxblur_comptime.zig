@@ -68,7 +68,7 @@ fn hvBlurCT(comptime T: type, comptime radius: u32, _src: []const u8, _dst: []u8
         }
 
         if (@typeInfo(T) == .int) {
-            const inv: u32 = @divTrunc(((1 << 16) + radius), ksize);
+            const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
             vBlurInt(T, &srcp, tmp, w, ksize, inv);
             hBlurInt(T, tmp, dstp, w, ksize, inv);
         } else {
@@ -79,33 +79,34 @@ fn hvBlurCT(comptime T: type, comptime radius: u32, _src: []const u8, _dst: []u8
     }
 }
 
-inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u32) void {
+inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u64) void {
     const radius: u32 = ksize >> 1;
-    var sum: u32 = srcp[radius];
+    var sum: u64 = srcp[radius];
+    const inv2 = inv >> 16;
 
     for (0..radius) |x| {
         sum += @as(u32, srcp[x]) << 1;
     }
 
-    sum = sum * inv + (1 << 15);
+    sum = (sum * inv + (1 << 31)) >> 16;
 
     var x: u32 = 0;
     while (x <= radius) : (x += 1) {
-        sum += @as(u32, srcp[radius + x]) * inv;
-        sum -= @as(u32, srcp[radius - x]) * inv;
-        dstp[x] = @as(T, @intCast(sum >> 16));
+        sum += @as(u32, srcp[radius + x]) * inv2;
+        sum -= @as(u32, srcp[radius - x]) * inv2;
+        dstp[x] = @intCast(sum >> 16);
     }
 
     while (x < w - radius) : (x += 1) {
-        sum += @as(u32, srcp[radius + x]) * inv;
-        sum -= @as(u32, srcp[x - radius - 1]) * inv;
-        dstp[x] = @as(T, @intCast(sum >> 16));
+        sum += @as(u32, srcp[radius + x]) * inv2;
+        sum -= @as(u32, srcp[x - radius - 1]) * inv2;
+        dstp[x] = @intCast(sum >> 16);
     }
 
     while (x < w) : (x += 1) {
-        sum += @as(u32, srcp[2 * w - radius - x - 1]) * inv;
-        sum -= @as(u32, srcp[x - radius - 1]) * inv;
-        dstp[x] = @as(T, @intCast(sum >> 16));
+        sum += @as(u32, srcp[2 * w - radius - x - 1]) * inv2;
+        sum -= @as(u32, srcp[x - radius - 1]) * inv2;
+        dstp[x] = @intCast(sum >> 16);
     }
 }
 
@@ -162,17 +163,17 @@ fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u3
     }
 }
 
-fn vBlurInt(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u32) void {
+fn vBlurInt(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u64) void {
     var j: u32 = 0;
     while (j < w) : (j += 1) {
-        var sum: u32 = 0;
+        var sum: u64 = 0;
         var k: u32 = 0;
         while (k < ksize) : (k += 1) {
             sum += src[k][j];
         }
 
-        sum = sum * inv + (1 << 15);
-        dstp[j] = @as(T, @intCast(sum >> 16));
+        sum = (sum * inv + (1 << 31)) >> 16;
+        dstp[j] = @intCast(sum >> 16);
     }
 }
 

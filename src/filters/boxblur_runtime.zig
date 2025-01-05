@@ -34,33 +34,34 @@ pub fn hvBlur(comptime T: type, src: zapi.Frame, dst: zapi.Frame, d: *Data) void
 
 inline fn blurInt(comptime T: type, srcp: []const T, src_step: usize, dstp: []T, dst_step: usize, len: u32, radius: u32) void {
     const ksize: u32 = (radius << 1) + 1;
-    const inv: u32 = @divTrunc(((1 << 16) + radius), ksize);
-    var sum: u32 = srcp[radius * src_step];
+    const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
+    var sum: u64 = srcp[radius * src_step];
+    const inv2 = inv >> 16;
 
     var x: usize = 0;
     while (x < radius) : (x += 1) {
         sum += @as(u32, srcp[x * src_step]) << 1;
     }
 
-    sum = sum * inv + (1 << 15);
+    sum = (sum * inv + (1 << 31)) >> 16;
 
     x = 0;
     while (x <= radius) : (x += 1) {
-        sum += srcp[(radius + x) * src_step] * inv;
-        sum -= srcp[(radius - x) * src_step] * inv;
-        dstp[x * dst_step] = @as(T, @intCast(sum >> 16));
+        sum += srcp[(radius + x) * src_step] * inv2;
+        sum -= srcp[(radius - x) * src_step] * inv2;
+        dstp[x * dst_step] = @intCast(sum >> 16);
     }
 
     while (x < len - radius) : (x += 1) {
-        sum += srcp[(radius + x) * src_step] * inv;
-        sum -= srcp[(x - radius - 1) * src_step] * inv;
-        dstp[x * dst_step] = @as(T, @intCast(sum >> 16));
+        sum += srcp[(radius + x) * src_step] * inv2;
+        sum -= srcp[(x - radius - 1) * src_step] * inv2;
+        dstp[x * dst_step] = @intCast(sum >> 16);
     }
 
     while (x < len) : (x += 1) {
-        sum += srcp[(2 * len - radius - x - 1) * src_step] * inv;
-        sum -= srcp[(x - radius - 1) * src_step] * inv;
-        dstp[x * dst_step] = @as(T, @intCast(sum >> 16));
+        sum += srcp[(2 * len - radius - x - 1) * src_step] * inv2;
+        sum -= srcp[(x - radius - 1) * src_step] * inv2;
+        dstp[x * dst_step] = @intCast(sum >> 16);
     }
 }
 
@@ -183,13 +184,6 @@ fn vblur(comptime T: type, srcp: []const T, dstp: []T, stride: usize, w: u32, h:
                 temp1,
                 temp2,
             );
-        }
-    } else {
-        var y: usize = 0;
-        while (y < h) : (y += 1) {
-            const srcp2 = srcp[(y * stride)..];
-            const dstp2 = dstp[(y * stride)..];
-            @memcpy(dstp2[0..w], srcp2[0..w]);
         }
     }
 }
