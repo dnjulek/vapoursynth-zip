@@ -32,11 +32,11 @@ fn calcLut(
     comptime T: type,
     srcp: []const T,
     stride: u32,
-    width: usize,
-    height: usize,
+    width: u32,
+    height: u32,
     lut: []T,
-    tile_width: usize,
-    tile_height: usize,
+    tile_width: u32,
+    tile_height: u32,
     tiles: []u32,
     clip_limit: i32,
     lut_scale: f32,
@@ -47,15 +47,15 @@ fn calcLut(
     const tiles_x = tiles[0];
     const tiles_y = tiles[1];
 
-    var ty: usize = 0;
+    var ty: u32 = 0;
     while (ty < tiles_y) : (ty += 1) {
-        var tx: usize = 0;
+        var tx: u32 = 0;
         while (tx < tiles_x) : (tx += 1) {
             @memset(&tile_hist, 0);
 
-            var y: usize = ty * tile_height;
+            var y: u32 = ty * tile_height;
             while (y < @min((ty + 1) * tile_height, height)) : (y += 1) {
-                var x: usize = tx * tile_width;
+                var x: u32 = tx * tile_width;
                 while (x < @min((tx + 1) * tile_width, width)) : (x += 1) {
                     tile_hist[srcp[y * stride + x]] += 1;
                 }
@@ -79,7 +79,7 @@ fn calcLut(
 
                 if (residual != 0) {
                     const residual_step = @max(@divTrunc(hist_sizei, residual), 1);
-                    var i: usize = 0;
+                    var i: u32 = 0;
                     while ((i < hist_size) and (residual > 0)) : (i += residual_step) {
                         tile_hist[i] += 1;
                         residual -= 1;
@@ -88,7 +88,7 @@ fn calcLut(
             }
 
             var sum: i32 = 0;
-            var i: usize = 0;
+            var i: u32 = 0;
             while (i < hist_size) : (i += 1) {
                 sum += tile_hist[i];
                 lut[(ty * tiles_x + tx) * hist_size + i] = @intFromFloat(@as(f32, @floatFromInt(sum)) * lut_scale + 0.5);
@@ -102,11 +102,11 @@ fn interpolate(
     srcp: []const T,
     dstp: []T,
     stride: u32,
-    width: usize,
-    height: usize,
+    width: u32,
+    height: u32,
     lut: []const T,
-    tile_width: usize,
-    tile_height: usize,
+    tile_width: u32,
+    tile_height: u32,
     tiles: []u32,
 ) void {
     const hist_size: u32 = @as(u32, 1) << @as(u32, @typeInfo(T).int.bits);
@@ -116,7 +116,7 @@ fn interpolate(
     const inv_tw: f32 = 1.0 / @as(f32, @floatFromInt(tile_width));
     const inv_th: f32 = 1.0 / @as(f32, @floatFromInt(tile_height));
 
-    var y: usize = 0;
+    var y: u32 = 0;
     while (y < height) : (y += 1) {
         const tyf: f32 = @as(f32, @floatFromInt(y)) * inv_th - 0.5;
         var ty1: i32 = @intFromFloat(@floor(tyf));
@@ -128,7 +128,7 @@ fn interpolate(
         const lut_p1 = ty1 * tiles_x;
         const lut_p2 = ty2 * tiles_x;
 
-        var x: usize = 0;
+        var x: u32 = 0;
         while (x < width) : (x += 1) {
             const txf: f32 = @as(f32, @floatFromInt(x)) * inv_tw - 0.5;
             const _tx1: i32 = @intFromFloat(@floor(txf));

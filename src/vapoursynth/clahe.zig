@@ -27,7 +27,7 @@ fn CLAHE(comptime T: type) type {
             if (activation_reason == .Initial) {
                 vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
                 defer src.deinit();
                 const dst = src.newVideoFrame();
 
@@ -39,7 +39,8 @@ fn CLAHE(comptime T: type) type {
                     filter.applyCLAHE(T, srcp, dstp, stride, width, height, d.limit, &d.tiles);
                 }
 
-                dst.setInt("_ColorRange", 0);
+                const dst_prop = dst.getProperties();
+                dst_prop.setInt("_ColorRange", 0, .Replace);
                 return dst.frame;
             }
 
@@ -58,18 +59,19 @@ export fn claheFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const 
 pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
-    var map = zapi.Map.init(in, out, vsapi);
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
 
-    d.node, d.vi = map.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip");
 
     if ((d.vi.format.sampleType != .Integer)) {
-        map.setError(filter_name ++ ": only 8-16 bit int formats supported.");
+        map_out.setError(filter_name ++ ": only 8-16 bit int formats supported.");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
-    d.limit = map.getInt(u32, "limit") orelse 7;
-    const in_arr = map.getIntArray("tiles");
+    d.limit = map_in.getInt(u32, "limit") orelse 7;
+    const in_arr = map_in.getIntArray("tiles");
     const df_arr = [2]i64{ 3, 3 };
     const tiles_arr = if ((in_arr == null) or (in_arr.?.len == 0)) &df_arr else in_arr.?;
     d.tiles[0] = @intCast(tiles_arr[0]);
@@ -81,7 +83,7 @@ pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopa
             d.tiles[1] = @intCast(tiles_arr[1]);
         },
         else => {
-            map.setError(filter_name ++ " : tiles array can't have more than 2 values.");
+            map_out.setError(filter_name ++ " : tiles array can't have more than 2 values.");
             vsapi.?.freeNode.?(d.node);
             return;
         },

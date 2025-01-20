@@ -11,10 +11,10 @@ pub const DataType = enum {
     F16,
     F32,
 
-    pub fn select(map: zapi.Map, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
-        var err_msg: ?[*]const u8 = null;
+    pub fn select(map: zapi.ZMapRW, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
+        var err_msg: ?[]const u8 = null;
         errdefer {
-            map.vsapi.?.mapSetError.?(map.out, err_msg.?);
+            map.setError(err_msg.?);
             map.vsapi.?.freeNode.?(node);
         }
 
@@ -44,23 +44,19 @@ pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);
 }
 
-pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
-    const num_e = vsapi.?.mapNumElements.?(in, "planes");
-    if (num_e < 1) {
-        return;
-    }
-
+pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
+    const num_e = in.numElements("planes") orelse return;
     @memset(process, false);
 
-    var err_msg: ?[*]const u8 = null;
+    var err_msg: ?[]const u8 = null;
     errdefer {
-        vsapi.?.mapSetError.?(out, err_msg.?);
+        out.setError(err_msg.?);
         for (nodes) |node| vsapi.?.freeNode.?(node);
     }
 
     var i: u32 = 0;
     while (i < num_e) : (i += 1) {
-        const e: i32 = vsh.mapGetN(i32, in, "planes", i, vsapi).?;
+        const e = in.getInt2(i32, "planes", i).?;
         if ((e < 0) or (e >= num_planes)) {
             err_msg = name ++ ": plane index out of range";
             return error.ValidationError;
@@ -76,14 +72,14 @@ pub fn mapGetPlanes(in: ?*const vs.Map, out: ?*vs.Map, nodes: []?*vs.Node, proce
     }
 }
 
-pub fn compareNodes(out: ?*vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *const vs.VideoInfo, vi2: *const vs.VideoInfo, comptime name: []const u8, vsapi: ?*const vs.API) !void {
+pub fn compareNodes(out: zapi.ZMapRW, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *const vs.VideoInfo, vi2: *const vs.VideoInfo, comptime name: []const u8, vsapi: ?*const vs.API) !void {
     if (node2 == null) {
         return;
     }
 
-    var err_msg: ?[*]const u8 = null;
+    var err_msg: ?[]const u8 = null;
     errdefer {
-        vsapi.?.mapSetError.?(out, err_msg.?);
+        out.setError(err_msg.?);
         vsapi.?.freeNode.?(node1);
         vsapi.?.freeNode.?(node2);
     }

@@ -6,12 +6,7 @@ const math = std.math;
 
 const allocator = std.heap.c_allocator;
 
-pub fn bilateral(comptime T: type, src: []const u8, ref: []const u8, dst: []u8, _stride: u32, w: u32, h: u32, plane: u32, comptime join: bool, d: *Data) void {
-    const srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const dstp: []T = @as([*]T, @ptrCast(@alignCast(dst)))[0..dst.len];
-    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
-
+pub fn bilateral(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, w: u32, h: u32, plane: u32, comptime join: bool, d: *Data) void {
     if (@typeInfo(T) == .int) {
         if (d.algorithm[plane] == 1) {
             bilateralAlg1(T, srcp, refp, dstp, stride, w, h, plane, d);

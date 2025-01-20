@@ -7,7 +7,7 @@ const math = std.math;
 
 const allocator = std.heap.c_allocator;
 
-pub fn hvBlur(comptime T: type, src: []const u8, dst: []u8, stride: u32, w: u32, h: u32, radius: u32) void {
+pub fn hvBlur(comptime T: type, src: []const T, dst: []T, stride: u32, w: u32, h: u32, radius: u32) void {
     switch (radius) {
         1 => hvBlurCT(T, 1, src, dst, stride, w, h),
         2 => hvBlurCT(T, 2, src, dst, stride, w, h),
@@ -35,10 +35,7 @@ pub fn hvBlur(comptime T: type, src: []const u8, dst: []u8, stride: u32, w: u32,
     }
 }
 
-fn hvBlurCT(comptime T: type, comptime radius: u32, _src: []const u8, _dst: []u8, _stride: u32, w: u32, h: u32) void {
-    const src: []const T = @as([*]const T, @ptrCast(@alignCast(_src)))[0.._src.len];
-    const dst: []T = @as([*]T, @ptrCast(@alignCast(_dst)))[0.._dst.len];
-    const stride: u32 = _stride >> (@sizeOf(T) >> 1);
+fn hvBlurCT(comptime T: type, comptime radius: u32, src: []const T, dst: []T, stride: u32, w: u32, h: u32) void {
     const ksize: u32 = (radius << 1) + 1;
     const iradius: i32 = @bitCast(radius);
     const ih: i32 = @bitCast(h);

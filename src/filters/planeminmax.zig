@@ -23,9 +23,8 @@ pub const Stats = union(enum) {
     i: StatsInt,
 };
 
-pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn minMaxInt(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, d: *Data) Stats {
+    var srcp: []const T = src;
     const total: f64 = @floatFromInt(w * h);
 
     const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
@@ -63,9 +62,8 @@ pub fn minMaxInt(comptime T: type, src: []const u8, _stride: usize, w: usize, h:
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = undefined } };
 }
 
-pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn minMaxFloat(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, d: *Data) Stats {
+    var srcp: []const T = src;
     const total: f64 = @floatFromInt(w * h);
 
     const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
@@ -105,10 +103,9 @@ pub fn minMaxFloat(comptime T: type, src: []const u8, _stride: usize, w: usize, 
     return .{ .f = .{ .max = retvalmaxf, .min = retvalminf, .diff = undefined } };
 }
 
-pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn minMaxIntRef(comptime T: type, src: []const T, ref: []const T, stride: u32, w: u32, h: u32, d: *Data) Stats {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
     const total: f64 = @floatFromInt(w * h);
     var diffacc: u64 = 0;
 
@@ -150,10 +147,9 @@ pub fn minMaxIntRef(comptime T: type, src: []const u8, ref: []const u8, _stride:
     return .{ .i = .{ .max = retvalmax, .min = retvalmin, .diff = diff } };
 }
 
-pub fn minMaxFloatRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, d: *Data) Stats {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn minMaxFloatRef(comptime T: type, src: []const T, ref: []const T, stride: u32, w: u32, h: u32, d: *Data) Stats {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
 

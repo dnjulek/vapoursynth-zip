@@ -25,8 +25,8 @@ fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
         vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
         vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
-        var src2 = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+        const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
+        const src2 = zapi.ZFrame.init(d.node2, n, frame_ctx, core, vsapi);
         defer src.deinit();
         defer src2.deinit();
         const dst = src.newVideoFrame();
@@ -52,7 +52,8 @@ fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
             }
         }
 
-        dst.setInt("_ColorRange", 0);
+        const dst_prop = dst.getProperties();
+        dst_prop.setInt("_ColorRange", 0, .Replace);
         return dst.frame;
     }
 
@@ -70,14 +71,15 @@ export fn adaptiveBinarizeFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsap
 pub export fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
-    var map = zapi.Map.init(in, out, vsapi);
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
 
-    d.node, d.vi = map.getNodeVi("clip");
-    d.node2, const vi2 = map.getNodeVi("clip2");
+    d.node, d.vi = map_in.getNodeVi("clip");
+    d.node2, const vi2 = map_in.getNodeVi("clip2");
 
-    helper.compareNodes(out, d.node, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
+    helper.compareNodes(map_out, d.node, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
     if ((d.vi.format.sampleType != .Integer) or (d.vi.format.bitsPerSample != 8)) {
-        map.setError(filter_name ++ ": only 8 bit int format supported.");
+        map_out.setError(filter_name ++ ": only 8 bit int format supported.");
         vsapi.?.freeNode.?(d.node);
         vsapi.?.freeNode.?(d.node2);
         return;
@@ -90,7 +92,7 @@ pub export fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, user_dat
         return;
     }
 
-    const c_param = map.getInt(i32, "c") orelse 3;
+    const c_param = map_in.getInt(i32, "c") orelse 3;
     for (&d.tab, 0..) |*i, n| {
         i.* = if (@as(i32, @intCast(n)) - 255 <= -c_param) 255 else 0;
     }

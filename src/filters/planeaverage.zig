@@ -23,9 +23,8 @@ fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
     }
 }
 
-pub fn average(comptime T: type, src: []const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) f64 {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, exclude_union: Exclude, peak: f32) f64 {
+    var srcp: []const T = src;
     const exclude = if (@typeInfo(T) == .float) exclude_union.f else exclude_union.i;
     var total: i64 = @intCast(w * h);
     var acc: if (@typeInfo(T) == .float) f64 else u64 = 0;
@@ -48,10 +47,10 @@ pub fn average(comptime T: type, src: []const u8, _stride: usize, w: usize, h: u
     return result(T, acc, @floatFromInt(total), peak);
 }
 
-pub fn averageRef(comptime T: type, src: []const u8, ref: []const u8, _stride: usize, w: usize, h: usize, exclude_union: Exclude, peak: f32) Stats {
-    var srcp: []const T = @as([*]const T, @ptrCast(@alignCast(src)))[0..src.len];
-    var refp: []const T = @as([*]const T, @ptrCast(@alignCast(ref)))[0..ref.len];
-    const stride: usize = @divTrunc(_stride, @sizeOf(T));
+pub fn averageRef(comptime T: type, src: []const T, ref: []const T, stride: u32, w: u32, h: u32, exclude_union: Exclude, peak: f32) Stats {
+    var srcp: []const T = src;
+    var refp: []const T = ref;
+
     const exclude = if (@typeInfo(T) == .float) exclude_union.f else exclude_union.i;
     const _total: i64 = @intCast(w * h);
     var total = _total;

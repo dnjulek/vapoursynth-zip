@@ -39,17 +39,17 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
                     vsapi.?.requestFrameFilter.?(n, d.node2.?, frame_ctx);
                 }
             } else if (activation_reason == .AllFramesReady) {
-                var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node1, n, frame_ctx, core, vsapi);
                 defer src.deinit();
 
-                var ref: ?zapi.Frame = null;
+                var ref: ?zapi.ZFrameRO = null;
                 if (refb) {
-                    ref = zapi.Frame.init(d.node2.?, n, frame_ctx, core, vsapi);
+                    ref = zapi.ZFrame.init(d.node2.?, n, frame_ctx, core, vsapi);
                     defer ref.?.deinit();
                 }
 
                 const dst = src.copyFrame();
-                const props = dst.getPropertiesRW();
+                const props = dst.getProperties();
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -57,19 +57,19 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
                         continue;
                     }
 
-                    const srcp = src.getReadSlice(plane);
-                    const w, const h, const stride = src.getDimensions(plane);
+                    const srcp = src.getReadSlice2(T, plane);
+                    const w, const h, const stride = src.getDimensions2(T, plane);
                     var avg: f64 = undefined;
 
                     if (refb) {
-                        const refp = ref.?.getReadSlice(plane);
+                        const refp = ref.?.getReadSlice2(T, plane);
                         const stats = filter.averageRef(T, srcp, refp, stride, w, h, d.exclude, d.peak);
-                        _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.d.ptr else "psmDiff", stats.diff, .Append);
+                        props.setFloat(if (d.prop != null) d.prop.?.d else "psmDiff", stats.diff, .Append);
                         avg = stats.avg;
                     } else {
                         avg = filter.average(T, srcp, stride, w, h, d.exclude, d.peak);
                     }
-                    _ = vsapi.?.mapSetFloat.?(props, if (d.prop != null) d.prop.?.a.ptr else "psmAvg", avg, .Append);
+                    props.setFloat(if (d.prop != null) d.prop.?.a else "psmAvg", avg, .Append);
                 }
 
                 return dst.frame;
@@ -98,21 +98,22 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     _ = user_data;
     var d: Data = undefined;
 
-    var map = zapi.Map.init(in, out, vsapi);
-    d.node1, d.vi = map.getNodeVi("clipa");
-    const dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
+    d.node1, d.vi = map_in.getNodeVi("clipa");
+    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
-    d.node2, const vi2 = map.getNodeVi("clipb");
-    helper.compareNodes(out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
+    d.node2, const vi2 = map_in.getNodeVi("clipb");
+    helper.compareNodes(map_out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
 
     d.peak = @floatFromInt(helper.getPeak(d.vi));
     var nodes = [_]?*vs.Node{ d.node1, d.node2 };
     var planes = [3]bool{ true, false, false };
-    helper.mapGetPlanes(in, out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
+    helper.mapGetPlanes(map_in, map_out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
     d.planes = planes;
 
-    d.prop = getPropData(map, "prop", allocator, &d.prop_buff);
-    const exclude_in = map.getIntArray("exclude");
+    d.prop = getString(map_in, "prop", allocator, &d.prop_buff);
+    const exclude_in = map_in.getIntArray("exclude");
     if (exclude_in) |ein| {
         if (d.vi.format.sampleType == .Float) {
             d.exclude = filter.Exclude{ .f = allocator.alloc(f32, ein.len) catch unreachable };
@@ -163,23 +164,12 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, planeAverageFree, .Parallel, deps, deps_len, data, core);
 }
 
-pub fn getPropData(map: zapi.Map, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
-    var err: vs.MapPropertyError = undefined;
+pub fn getString(map: zapi.ZMapRO, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
     data_buff.* = null;
-    const data_ptr = map.vsapi.?.mapGetData.?(map.in, key.ptr, 0, &err);
-    if (err != .Success) {
-        return null;
-    }
+    const data = map.getData(key, 0) orelse return null;
 
-    const data_len = map.vsapi.?.mapGetDataSize.?(map.in, key.ptr, 0, &err);
-    if ((err != .Success) or (data_len < 1)) {
-        return null;
-    }
-
-    const udata_len: u32 = @bitCast(data_len);
-    const diff_len = udata_len + 5;
-    const avg_len = udata_len + 4;
-    const data = data_ptr[0..udata_len];
+    const diff_len = data.len + 5;
+    const avg_len = data.len + 4;
     data_buff.* = data_allocator.alloc(u8, diff_len + avg_len) catch unreachable;
     return .{
         .d = std.fmt.bufPrint(data_buff.*.?[0..diff_len], "{s}Diff\x00", .{data}) catch unreachable,

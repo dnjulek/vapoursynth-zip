@@ -1,5 +1,6 @@
 const std = @import("std");
 const vszip = @import("../vszip.zig");
+const helper = @import("../helper.zig");
 
 const vs = vszip.vs;
 const vsh = vszip.vsh;
@@ -42,15 +43,18 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     var d: Data = undefined;
     var node_err: vs.MapPropertyError = undefined;
 
+    const map_in = zapi.ZMapRO.init(in, vsapi);
+    const map_out = zapi.ZMapRW.init(out, vsapi);
+
     d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
     d.node2 = vsapi.?.mapGetNode.?(in, "clipb", 0, &node_err).?;
     var vi = vsapi.?.getVideoInfo.?(d.node1).*;
-    const mismatch = vsh.mapGetN(bool, in, "mismatch", 0, vsapi) orelse false;
+    const mismatch = map_in.getBool("mismatch") orelse false;
     rfsValidateInput(out.?, d.node1, d.node2, &vi, mismatch, vsapi.?) catch return;
     d.replace = allocator.alloc(bool, @intCast(vi.numFrames)) catch unreachable;
 
     const np = vi.format.numPlanes;
-    const ne = vsapi.?.mapNumElements.?(in, "planes");
+    var ne = map_in.numElements("planes") orelse 0;
     var i: u32 = 0;
 
     if ((ne > 0) and (np > 1)) {
@@ -58,9 +62,9 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
         i = 0;
         while (i < ne) : (i += 1) {
-            const e: i32 = vsh.mapGetN(i32, in, "planes", i, vsapi).?;
+            const e = map_in.getInt2(i32, "planes", i).?;
             if ((e < 0) or (e >= np)) {
-                vsapi.?.mapSetError.?(out, filter_name ++ ": plane index out of range.");
+                map_out.setError(filter_name ++ ": plane index out of range.");
                 vsapi.?.freeNode.?(d.node1);
                 vsapi.?.freeNode.?(d.node2);
                 return;
@@ -92,8 +96,9 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     @memset(d.replace, false);
 
     i = 0;
-    while (i < vsapi.?.mapNumElements.?(in, "frames")) : (i += 1) {
-        d.replace[vsh.mapGetN(usize, in, "frames", i, vsapi).?] = true;
+    ne = map_in.numElements("frames") orelse 0;
+    while (i < ne) : (i += 1) {
+        d.replace[map_in.getInt2(usize, "frames", i).?] = true;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;

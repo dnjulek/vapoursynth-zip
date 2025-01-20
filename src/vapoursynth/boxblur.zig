@@ -32,7 +32,7 @@ pub fn BoxBlurCT(comptime T: type) type {
             if (activation_reason == .Initial) {
                 vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
                 defer src.deinit();
                 const dst = src.newVideoFrame2(d.planes);
 
@@ -42,9 +42,9 @@ pub fn BoxBlurCT(comptime T: type) type {
                         continue;
                     }
 
-                    const srcp = src.getReadSlice(plane);
-                    const dstp = dst.getWriteSlice(plane);
-                    const w, const h, const stride = src.getDimensions(plane);
+                    const srcp = src.getReadSlice2(T, plane);
+                    const dstp = dst.getWriteSlice2(T, plane);
+                    const w, const h, const stride = src.getDimensions2(T, plane);
                     boxblur_ct.hvBlur(T, srcp, dstp, stride, w, h, d.hradius);
                 }
 
@@ -65,7 +65,7 @@ fn BoxBlurRT(comptime T: type) type {
             if (activation_reason == .Initial) {
                 vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
                 defer src.deinit();
                 const dst = src.newVideoFrame2(d.planes);
 
@@ -90,26 +90,27 @@ pub export fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     _ = user_data;
     var d: Data = undefined;
 
-    var map = zapi.Map.init(in, out, vsapi);
-    d.node, d.vi = map.getNodeVi("clip");
-    const dt = helper.DataType.select(map, d.node, d.vi, filter_name) catch return;
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
+    d.node, d.vi = map_in.getNodeVi("clip");
+    const dt = helper.DataType.select(map_out, d.node, d.vi, filter_name) catch return;
 
     d.tmp_size = @intCast(@max(d.vi.width, d.vi.height));
 
     var nodes = [_]?*vs.Node{d.node};
     var planes = [3]bool{ true, true, true };
-    helper.mapGetPlanes(in, out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
+    helper.mapGetPlanes(map_in, map_out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
     d.planes = planes;
 
-    d.hradius = map.getInt(u32, "hradius") orelse 1;
-    d.vradius = map.getInt(u32, "vradius") orelse 1;
-    d.hpasses = map.getInt(i32, "hpasses") orelse 1;
-    d.vpasses = map.getInt(i32, "vpasses") orelse 1;
+    d.hradius = map_in.getInt(u32, "hradius") orelse 1;
+    d.vradius = map_in.getInt(u32, "vradius") orelse 1;
+    d.hpasses = map_in.getInt(i32, "hpasses") orelse 1;
+    d.vpasses = map_in.getInt(i32, "vpasses") orelse 1;
 
     const vblur = (d.vradius > 0) and (d.vpasses > 0);
     const hblur = (d.hradius > 0) and (d.hpasses > 0);
     if (!vblur and !hblur) {
-        map.setError(filter_name ++ ": nothing to be performed");
+        map_out.setError(filter_name ++ ": nothing to be performed");
         vsapi.?.freeNode.?(d.node);
         return;
     }

@@ -36,15 +36,15 @@ fn Checkmate(comptime use_tthr2: bool) type {
                     vsapi.?.requestFrameFilter.?(@min(n + 2, d.vi.numFrames - 1), d.node, frame_ctx);
                 }
             } else if (activation_reason == .AllFramesReady) {
-                var src_p1 = zapi.Frame.init(d.node, @max(0, n - 1), frame_ctx, core, vsapi);
-                var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
-                var src_n1 = zapi.Frame.init(d.node, @min(n + 1, d.vi.numFrames - 1), frame_ctx, core, vsapi);
+                const src_p1 = zapi.ZFrame.init(d.node, @max(0, n - 1), frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
+                const src_n1 = zapi.ZFrame.init(d.node, @min(n + 1, d.vi.numFrames - 1), frame_ctx, core, vsapi);
 
-                var src_p2: ?zapi.Frame = null;
-                var src_n2: ?zapi.Frame = null;
+                var src_p2: ?zapi.ZFrameRO = null;
+                var src_n2: ?zapi.ZFrameRO = null;
                 if (use_tthr2) {
-                    src_p2 = zapi.Frame.init(d.node, @max(0, n - 2), frame_ctx, core, vsapi);
-                    src_n2 = zapi.Frame.init(d.node, @min(n + 2, d.vi.numFrames - 1), frame_ctx, core, vsapi);
+                    src_p2 = zapi.ZFrame.init(d.node, @max(0, n - 2), frame_ctx, core, vsapi);
+                    src_n2 = zapi.ZFrame.init(d.node, @min(n + 2, d.vi.numFrames - 1), frame_ctx, core, vsapi);
                 }
 
                 const dst = src.newVideoFrame();
@@ -112,28 +112,29 @@ export fn checkmateFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
 pub export fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
-    var map = zapi.Map.init(in, out, vsapi);
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
 
-    d.node, d.vi = map.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip");
 
     if ((d.vi.format.sampleType != .Integer) or (d.vi.format.bitsPerSample != 8)) {
-        map.setError(filter_name ++ ": only 8 bit int format supported.");
+        map_out.setError(filter_name ++ ": only 8 bit int format supported.");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
-    d.thr = map.getInt(i32, "thr") orelse 12;
-    d.tmax = map.getInt(i32, "tmax") orelse 12;
-    d.tthr2 = map.getInt(i32, "tthr2") orelse 0;
+    d.thr = map_in.getInt(i32, "thr") orelse 12;
+    d.tmax = map_in.getInt(i32, "tmax") orelse 12;
+    d.tthr2 = map_in.getInt(i32, "tthr2") orelse 0;
 
     if ((d.tmax < 1) or (d.tmax > 255)) {
-        map.setError(filter_name ++ ": tmax value should be in range [1;255].");
+        map_out.setError(filter_name ++ ": tmax value should be in range [1;255].");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
     if (d.tthr2 < 0) {
-        map.setError(filter_name ++ ": tthr2 should be non-negative.");
+        map_out.setError(filter_name ++ ": tthr2 should be non-negative.");
         vsapi.?.freeNode.?(d.node);
         return;
     }

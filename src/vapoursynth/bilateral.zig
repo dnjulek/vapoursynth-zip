@@ -42,12 +42,12 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
                     vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
                 }
             } else if (activation_reason == .AllFramesReady) {
-                var src = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
+                const src = zapi.ZFrame.init(d.node1, n, frame_ctx, core, vsapi);
                 defer src.deinit();
 
                 var ref = src;
                 if (join) {
-                    ref = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+                    ref = zapi.ZFrame.init(d.node2, n, frame_ctx, core, vsapi);
                     defer ref.deinit();
                 }
 
@@ -58,10 +58,10 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
                         continue;
                     }
 
-                    const srcp = src.getReadSlice(plane);
-                    const refp = if (join) ref.getReadSlice(plane) else srcp;
-                    const dstp = dst.getWriteSlice(plane);
-                    const w, const h, const stride = src.getDimensions(plane);
+                    const srcp = src.getReadSlice2(T, plane);
+                    const refp = if (join) ref.getReadSlice2(T, plane) else srcp;
+                    const dstp = dst.getWriteSlice2(T, plane);
+                    const w, const h, const stride = src.getDimensions2(T, plane);
                     filter.bilateral(T, srcp, refp, dstp, stride, w, h, plane, join, d);
                 }
 
@@ -96,25 +96,25 @@ export fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*co
 pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
-    var err: vs.MapPropertyError = undefined;
 
-    const map = zapi.Map.init(in, out, vsapi);
-    d.node1, d.vi = map.getNodeVi("clip");
-    const dt = helper.DataType.select(map, d.node1, d.vi, filter_name) catch return;
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
+    d.node1, d.vi = map_in.getNodeVi("clip");
+    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
     const peak: u32 = helper.getPeak(d.vi);
     d.peak = @floatFromInt(peak);
 
     var i: u32 = 0;
-    var m: i32 = vsapi.?.mapNumElements.?(in, "sigmaS");
+    var m = map_in.numElements("sigmaS") orelse 0;
     while (i < 3) : (i += 1) {
         const ssw: i32 = d.vi.format.subSamplingW;
         const ssh: i32 = d.vi.format.subSamplingH;
         if (i < m) {
-            d.sigmaS[i] = vsapi.?.mapGetFloat.?(in, "sigmaS", @as(c_int, @intCast(i)), &err);
+            d.sigmaS[i] = map_in.getFloat2(f64, "sigmaS", i).?;
         } else if (i == 0) {
-            d.sigmaS[0] = 3.0;
+            d.sigmaS[0] = 3;
         } else if ((i == 1) and (yuv) and (ssh == 1) and (ssw == 1)) {
             const j: f64 = @floatFromInt((ssh + 1) * (ssw + 1));
             d.sigmaS[1] = d.sigmaS[0] / @sqrt(j);
@@ -122,18 +122,18 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
             d.sigmaS[i] = d.sigmaS[i - 1];
         }
 
-        if (d.sigmaS[i] < 0.0) {
-            vsapi.?.mapSetError.?(out, "Bilateral: Invalid \"sigmaS\" assigned, must be non-negative float number");
+        if (d.sigmaS[i] < 0) {
+            map_out.setError("Bilateral: Invalid \"sigmaS\" assigned, must be non-negative float number");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
     }
 
     i = 0;
-    m = vsapi.?.mapNumElements.?(in, "sigmaR");
+    m = map_in.numElements("sigmaR") orelse 0;
     while (i < 3) : (i += 1) {
         if (i < m) {
-            d.sigmaR[i] = vsapi.?.mapGetFloat.?(in, "sigmaR", @as(c_int, @intCast(i)), &err);
+            d.sigmaR[i] = map_in.getFloat2(f64, "sigmaR", i).?;
         } else if (i == 0) {
             d.sigmaR[i] = 0.02;
         } else {
@@ -141,7 +141,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         }
 
         if (d.sigmaR[i] < 0) {
-            vsapi.?.mapSetError.?(out, "Bilateral: Invalid \"sigmaR\" assigned, must be non-negative float number");
+            map_out.setError("Bilateral: Invalid \"sigmaR\" assigned, must be non-negative float number");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
@@ -149,7 +149,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     const n: i32 = d.vi.format.numPlanes;
-    m = vsapi.?.mapNumElements.?(in, "planes");
+    m = map_in.numElements("planes") orelse 0;
     while (i < 3) : (i += 1) {
         if ((i > 0) and (yuv)) {
             d.process[i] = false;
@@ -160,14 +160,14 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     while (i < m) : (i += 1) {
-        const o: u32 = @intCast(vsapi.?.mapGetInt.?(in, "planes", @as(c_int, @intCast(i)), &err));
+        const o = map_in.getInt2(u32, "planes", i).?;
         if ((o < 0) or (o >= n)) {
-            vsapi.?.mapSetError.?(out, "Bilateral: plane index out of range");
+            map_out.setError("Bilateral: plane index out of range");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
         if (d.process[o]) {
-            vsapi.?.mapSetError.?(out, "Bilateral: plane specified twice");
+            map_out.setError("Bilateral: plane specified twice");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
@@ -176,16 +176,16 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
 
     i = 0;
     while (i < 3) : (i += 1) {
-        if ((d.sigmaS[i] == 0.0) or (d.sigmaR[i] == 0.0)) {
+        if ((d.sigmaS[i] == 0) or (d.sigmaR[i] == 0)) {
             d.process[i] = false;
         }
     }
 
     i = 0;
-    m = vsapi.?.mapNumElements.?(in, "algorithm");
+    m = map_in.numElements("algorithm") orelse 0;
     while (i < 3) : (i += 1) {
         if (i < m) {
-            d.algorithm[i] = vsh.mapGetN(i32, in, "algorithm", @intCast(i), vsapi).?;
+            d.algorithm[i] = map_in.getInt2(i32, "algorithm", i).?;
         } else if (i == 0) {
             d.algorithm[i] = 0;
         } else {
@@ -193,17 +193,17 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         }
 
         if ((d.algorithm[i] < 0) or (d.algorithm[i] > 2)) {
-            vsapi.?.mapSetError.?(out, "Bilateral: Invalid \"algorithm\" assigned, must be integer ranges in [0,2]");
+            map_out.setError("Bilateral: Invalid \"algorithm\" assigned, must be integer ranges in [0,2]");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
     }
 
     i = 0;
-    m = vsapi.?.mapNumElements.?(in, "PBFICnum");
+    m = map_in.numElements("PBFICnum") orelse 0;
     while (i < 3) : (i += 1) {
         if (i < m) {
-            d.PBFICnum[i] = vsh.mapGetN(u32, in, "PBFICnum", @intCast(i), vsapi).?;
+            d.PBFICnum[i] = map_in.getInt2(u32, "PBFICnum", i).?;
         } else if (i == 0) {
             d.PBFICnum[i] = 0;
         } else {
@@ -211,37 +211,37 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         }
 
         if ((d.PBFICnum[i] < 0) or (d.PBFICnum[i] == 1) or (d.PBFICnum[i] > 256)) {
-            vsapi.?.mapSetError.?(out, "Bilateral: Invalid \"PBFICnum\" assigned, must be integer ranges in [0,256] except 1");
+            map_out.setError("Bilateral: Invalid \"PBFICnum\" assigned, must be integer ranges in [0,256] except 1");
             vsapi.?.freeNode.?(d.node1);
             return;
         }
     }
 
     d.join = false;
-    d.node2 = vsapi.?.mapGetNode.?(in, "ref", 0, &err);
+    d.node2 = map_in.getNode("ref");
     if (d.node2 != null) {
         d.join = true;
         const rvi: *const vs.VideoInfo = vsapi.?.getVideoInfo.?(d.node2);
         if ((d.vi.width != rvi.width) or (d.vi.height != rvi.height)) {
-            vsapi.?.mapSetError.?(out, "Bilateral: input clip and clip \"ref\" must be of the same size");
+            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same size");
             vsapi.?.freeNode.?(d.node1);
             vsapi.?.freeNode.?(d.node2);
             return;
         }
         if (d.vi.format.colorFamily != rvi.format.colorFamily) {
-            vsapi.?.mapSetError.?(out, "Bilateral: input clip and clip \"ref\" must be of the same color family");
+            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same color family");
             vsapi.?.freeNode.?(d.node1);
             vsapi.?.freeNode.?(d.node2);
             return;
         }
         if ((d.vi.format.subSamplingH != rvi.format.subSamplingH) or (d.vi.format.subSamplingW != rvi.format.subSamplingW)) {
-            vsapi.?.mapSetError.?(out, "Bilateral: input clip and clip \"ref\" must be of the same subsampling");
+            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same subsampling");
             vsapi.?.freeNode.?(d.node1);
             vsapi.?.freeNode.?(d.node2);
             return;
         }
         if (d.vi.format.bitsPerSample != rvi.format.bitsPerSample) {
-            vsapi.?.mapSetError.?(out, "Bilateral: input clip and clip \"ref\" must be of the same bit depth");
+            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same bit depth");
             vsapi.?.freeNode.?(d.node1);
             vsapi.?.freeNode.?(d.node2);
             return;
@@ -254,9 +254,9 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
             if (d.sigmaR[i] >= 0.08) {
                 d.PBFICnum[i] = 4;
             } else if (d.sigmaR[i] >= 0.015) {
-                d.PBFICnum[i] = @min(16, @as(u32, @intFromFloat(4.0 * 0.08 / d.sigmaR[i] + 0.5)));
+                d.PBFICnum[i] = @min(16, @as(u32, @intFromFloat(4 * 0.08 / d.sigmaR[i] + 0.5)));
             } else {
-                d.PBFICnum[i] = @min(32, @as(u32, @intFromFloat(16.0 * 0.015 / d.sigmaR[i] + 0.5)));
+                d.PBFICnum[i] = @min(32, @as(u32, @intFromFloat(16 * 0.015 / d.sigmaR[i] + 0.5)));
             }
 
             if ((i > 0) and yuv and (d.PBFICnum[i] % 2 == 0) and (d.PBFICnum[i] < 256)) {
@@ -269,7 +269,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     var orad = [_]i32{ 0, 0, 0 };
     while (i < 3) : (i += 1) {
         if (d.process[i]) {
-            orad[i] = @max(@as(i32, @intFromFloat(d.sigmaS[i] * 2.0 + 0.5)), 1);
+            orad[i] = @max(@as(i32, @intFromFloat(d.sigmaS[i] * 2 + 0.5)), 1);
             if (orad[i] < 4) {
                 d.step[i] = 1;
             } else if (orad[i] < 8) {

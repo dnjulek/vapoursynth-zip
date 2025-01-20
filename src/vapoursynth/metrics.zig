@@ -29,8 +29,8 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
         vsapi.?.requestFrameFilter.?(n, d.node2, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        var src1 = zapi.Frame.init(d.node1, n, frame_ctx, core, vsapi);
-        var src2 = zapi.Frame.init(d.node2, n, frame_ctx, core, vsapi);
+        const src1 = zapi.ZFrame.init(d.node1, n, frame_ctx, core, vsapi);
+        const src2 = zapi.ZFrame.init(d.node2, n, frame_ctx, core, vsapi);
         defer src1.deinit();
         defer src2.deinit();
 
@@ -45,7 +45,8 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         }
 
         const val = ssimulacra2.process(srcp1, srcp2, stride, w, h);
-        dst.setFloat("_SSIMULACRA2", val);
+        const dst_prop = dst.getProperties();
+        dst_prop.setFloat("_SSIMULACRA2", val, .Replace);
         return dst.frame;
     }
     return null;
@@ -64,27 +65,29 @@ pub export fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     _ = user_data;
     var d: Data = undefined;
 
-    var map = zapi.Map.init(in, out, vsapi);
-    d.node1, const vi1 = map.getNodeVi("reference");
-    d.node2, const vi2 = map.getNodeVi("distorted");
+    const map_in = zapi.ZMapRO.init(in, vsapi);
+    const map_out = zapi.ZMapRW.init(out, vsapi);
+
+    d.node1, const vi1 = map_in.getNodeVi("reference");
+    d.node2, const vi2 = map_in.getNodeVi("distorted");
 
     if ((vi1.width != vi2.width) or (vi1.height != vi2.height)) {
-        vsapi.?.mapSetError.?(out, filter_name ++ " : clips must have the same dimensions.");
+        map_out.setError(filter_name ++ " : clips must have the same dimensions.");
         vsapi.?.freeNode.?(d.node1);
         vsapi.?.freeNode.?(d.node2);
         return;
     }
 
     if (vi1.numFrames != vi2.numFrames) {
-        vsapi.?.mapSetError.?(out, filter_name ++ " : clips must have the same length.");
+        map_out.setError(filter_name ++ " : clips must have the same length.");
         vsapi.?.freeNode.?(d.node1);
         vsapi.?.freeNode.?(d.node2);
         return;
     }
 
-    const mode = map.getInt(i32, "mode") orelse 0;
+    const mode = map_in.getInt(i32, "mode") orelse 0;
     if (mode != 0) {
-        vsapi.?.mapSetError.?(out, filter_name ++ " : only mode=0 is implemented.");
+        map_out.setError(filter_name ++ " : only mode=0 is implemented.");
         vsapi.?.freeNode.?(d.node1);
         vsapi.?.freeNode.?(d.node2);
         return;

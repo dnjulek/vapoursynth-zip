@@ -25,7 +25,7 @@ fn combMaskMTGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance
     if (activation_reason == .Initial) {
         vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        var src = zapi.Frame.init(d.node, n, frame_ctx, core, vsapi);
+        const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
 
         defer src.deinit();
 
@@ -55,32 +55,33 @@ export fn combMaskMTFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*c
 pub export fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
     var d: Data = undefined;
-    var map = zapi.Map.init(in, out, vsapi);
+    const map_in = zapi.ZMap.init(in, vsapi);
+    const map_out = zapi.ZMap.init(out, vsapi);
 
-    d.node, d.vi = map.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip");
     if ((d.vi.format.sampleType != .Integer) or (d.vi.format.bitsPerSample != 8)) {
-        map.setError(filter_name ++ ": only 8 bit int format supported.");
+        map_out.setError(filter_name ++ ": only 8 bit int format supported.");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
-    d.thy1 = map.getInt(i16, "thY1") orelse 30;
-    d.thy2 = map.getInt(i16, "thY2") orelse 30;
+    d.thy1 = map_in.getInt(i16, "thY1") orelse 30;
+    d.thy2 = map_in.getInt(i16, "thY2") orelse 30;
 
     if (d.thy1 > 255 or d.thy1 < 0) {
-        map.setError(filter_name ++ ": thY1 value should be in range [0;255]");
+        map_out.setError(filter_name ++ ": thY1 value should be in range [0;255]");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
     if (d.thy2 > 255 or d.thy2 < 0) {
-        map.setError(filter_name ++ ": thY2 value should be in range [0;255]");
+        map_out.setError(filter_name ++ ": thY2 value should be in range [0;255]");
         vsapi.?.freeNode.?(d.node);
         return;
     }
 
     if (d.thy1 > d.thy2) {
-        map.setError(filter_name ++ ": thY1 can't be greater than thY2");
+        map_out.setError(filter_name ++ ": thY1 can't be greater than thY2");
         vsapi.?.freeNode.?(d.node);
         return;
     }
