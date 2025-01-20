@@ -1,6 +1,6 @@
 const std = @import("std");
-const hz = @import("../helper.zig");
 const math = std.math;
+const hz = @import("../helper.zig");
 
 pub fn process(
     dstp: []u8,

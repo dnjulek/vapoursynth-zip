@@ -1,8 +1,8 @@
 const std = @import("std");
-const vszip = @import("../vszip.zig");
+const math = std.math;
+
 const helper = @import("../helper.zig");
 const Data = @import("../vapoursynth/bilateral.zig").Data;
-const math = std.math;
 
 const allocator = std.heap.c_allocator;
 

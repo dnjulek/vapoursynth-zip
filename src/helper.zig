@@ -1,6 +1,7 @@
 const std = @import("std");
-const vszip = @import("vszip.zig");
 const math = std.math;
+
+const vszip = @import("vszip.zig");
 const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;

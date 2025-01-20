@@ -1,10 +1,10 @@
 const std = @import("std");
+const math = std.math;
+
 const helper = @import("../helper.zig");
 const Data = @import("../vapoursynth/planeminmax.zig").Data;
 
-const math = std.math;
 const allocator = std.heap.c_allocator;
-pub const filter_name = "PlaneMinMax";
 
 const StatsFloat = struct {
     max: f32,

@@ -1,13 +1,13 @@
 const std = @import("std");
-const vszip = @import("../vszip.zig");
-const helper = @import("../helper.zig");
+const math = std.math;
+
 const boxblur_ct = @import("../filters/boxblur_comptime.zig");
 const boxblur_rt = @import("../filters/boxblur_runtime.zig");
-
+const helper = @import("../helper.zig");
+const vszip = @import("../vszip.zig");
 const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;
-const math = std.math;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "BoxBlur";

@@ -1,9 +1,6 @@
 //! BoxBlur with runtime radius size
 
 const std = @import("std");
-const vszip = @import("../vszip.zig");
-const Data = @import("../vapoursynth/boxblur.zig").Data;
-const zapi = vszip.zapi;
 const math = std.math;
 
 const allocator = std.heap.c_allocator;

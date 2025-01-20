@@ -1,12 +1,12 @@
 const std = @import("std");
-const vszip = @import("../vszip.zig");
-const helper = @import("../helper.zig");
-const filter = @import("../filters/clahe.zig");
+const math = std.math;
 
+const filter = @import("../filters/clahe.zig");
+const helper = @import("../helper.zig");
+const vszip = @import("../vszip.zig");
 const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;
-const math = std.math;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "CLAHE";

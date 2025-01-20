@@ -1,6 +1,6 @@
 const std = @import("std");
-const helper = @import("../helper.zig");
 const math = std.math;
+const helper = @import("../helper.zig");
 
 const allocator = std.heap.c_allocator;
 

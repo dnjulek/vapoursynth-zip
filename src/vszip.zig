@@ -1,4 +1,8 @@
 const vapoursynth = @import("vapoursynth");
+pub const vs = vapoursynth.vapoursynth4;
+pub const vsh = vapoursynth.vshelper;
+pub const zapi = vapoursynth.zigapi;
+
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
@@ -9,10 +13,6 @@ const metrics = @import("vapoursynth/metrics.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
-
-pub const vs = vapoursynth.vapoursynth4;
-pub const vsh = vapoursynth.vshelper;
-pub const zapi = vapoursynth.zigapi;
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     _ = vspapi.configPlugin.?(
