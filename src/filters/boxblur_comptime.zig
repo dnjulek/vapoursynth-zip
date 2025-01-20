@@ -7,35 +7,7 @@ const math = std.math;
 
 const allocator = std.heap.c_allocator;
 
-pub fn hvBlur(comptime T: type, src: []const T, dst: []T, stride: u32, w: u32, h: u32, radius: u32) void {
-    switch (radius) {
-        1 => hvBlurCT(T, 1, src, dst, stride, w, h),
-        2 => hvBlurCT(T, 2, src, dst, stride, w, h),
-        3 => hvBlurCT(T, 3, src, dst, stride, w, h),
-        4 => hvBlurCT(T, 4, src, dst, stride, w, h),
-        5 => hvBlurCT(T, 5, src, dst, stride, w, h),
-        6 => hvBlurCT(T, 6, src, dst, stride, w, h),
-        7 => hvBlurCT(T, 7, src, dst, stride, w, h),
-        8 => hvBlurCT(T, 8, src, dst, stride, w, h),
-        9 => hvBlurCT(T, 9, src, dst, stride, w, h),
-        10 => hvBlurCT(T, 10, src, dst, stride, w, h),
-        11 => hvBlurCT(T, 11, src, dst, stride, w, h),
-        12 => hvBlurCT(T, 12, src, dst, stride, w, h),
-        13 => hvBlurCT(T, 13, src, dst, stride, w, h),
-        14 => hvBlurCT(T, 14, src, dst, stride, w, h),
-        15 => hvBlurCT(T, 15, src, dst, stride, w, h),
-        16 => hvBlurCT(T, 16, src, dst, stride, w, h),
-        17 => hvBlurCT(T, 17, src, dst, stride, w, h),
-        18 => hvBlurCT(T, 18, src, dst, stride, w, h),
-        19 => hvBlurCT(T, 19, src, dst, stride, w, h),
-        20 => hvBlurCT(T, 20, src, dst, stride, w, h),
-        21 => hvBlurCT(T, 21, src, dst, stride, w, h),
-        22 => hvBlurCT(T, 22, src, dst, stride, w, h),
-        else => unreachable,
-    }
-}
-
-fn hvBlurCT(comptime T: type, comptime radius: u32, src: []const T, dst: []T, stride: u32, w: u32, h: u32) void {
+pub fn hvBlur(comptime T: type, comptime radius: u32, src: []const T, dst: []T, stride: u32, w: u32, h: u32) void {
     const ksize: u32 = (radius << 1) + 1;
     const iradius: i32 = @bitCast(radius);
     const ih: i32 = @bitCast(h);

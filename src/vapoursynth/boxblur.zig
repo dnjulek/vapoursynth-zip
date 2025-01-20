@@ -23,7 +23,7 @@ pub const Data = struct {
     planes: [3]bool,
 };
 
-pub fn BoxBlurCT(comptime T: type) type {
+pub fn BoxBlurCT(comptime T: type, radius: comptime_int) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
@@ -45,7 +45,7 @@ pub fn BoxBlurCT(comptime T: type) type {
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
-                    boxblur_ct.hvBlur(T, srcp, dstp, stride, w, h, d.hradius);
+                    boxblur_ct.hvBlur(T, radius, srcp, dstp, stride, w, h);
                 }
 
                 return dst.frame;
@@ -66,10 +66,28 @@ fn BoxBlurRT(comptime T: type) type {
                 vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
-                defer src.deinit();
                 const dst = src.newVideoFrame2(d.planes);
+                defer src.deinit();
 
-                boxblur_rt.hvBlur(T, src, dst, d);
+                const temp1 = allocator.alloc(T, d.tmp_size) catch unreachable;
+                const temp2 = allocator.alloc(T, d.tmp_size) catch unreachable;
+                defer allocator.free(temp1);
+                defer allocator.free(temp2);
+
+                var plane: u32 = 0;
+                while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    if (!(d.planes[plane])) {
+                        continue;
+                    }
+
+                    const srcp = src.getReadSlice2(T, plane);
+                    const dstp = dst.getWriteSlice2(T, plane);
+                    const w, const h, const stride = src.getDimensions2(T, plane);
+
+                    boxblur_rt.hblur(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, temp1, temp2);
+                    boxblur_rt.vblur(T, dstp, dstp, stride, w, h, d.vradius, d.vpasses, temp1, temp2);
+                }
+
                 return dst.frame;
             }
 
@@ -126,12 +144,25 @@ pub export fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     };
 
     const use_rt: bool = (d.hradius != d.vradius) or (d.hradius > 22) or (d.hpasses > 1) or (d.vpasses > 1);
-    const getFrame = switch (dt) {
-        .U8 => if (use_rt) &BoxBlurRT(u8).getFrame else &BoxBlurCT(u8).getFrame,
-        .U16 => if (use_rt) &BoxBlurRT(u16).getFrame else &BoxBlurCT(u16).getFrame,
-        .F16 => if (use_rt) &BoxBlurRT(f16).getFrame else &BoxBlurCT(f16).getFrame,
-        .F32 => if (use_rt) &BoxBlurRT(f32).getFrame else &BoxBlurCT(f32).getFrame,
-    };
+    var get_frame: vs.FilterGetFrame = undefined;
+    if (use_rt) {
+        get_frame = switch (dt) {
+            .U8 => &BoxBlurRT(u8).getFrame,
+            .U16 => &BoxBlurRT(u16).getFrame,
+            .F16 => &BoxBlurRT(f16).getFrame,
+            .F32 => &BoxBlurRT(f32).getFrame,
+        };
+    } else {
+        get_frame = switch (d.hradius) {
+            inline 1...22 => |r| switch (dt) {
+                .U8 => &BoxBlurCT(u8, r).getFrame,
+                .U16 => &BoxBlurCT(u16, r).getFrame,
+                .F16 => &BoxBlurCT(f16, r).getFrame,
+                .F32 => &BoxBlurCT(f32, r).getFrame,
+            },
+            else => unreachable,
+        };
+    }
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, boxBlurFree, .Parallel, &deps, deps.len, data, core);
+    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, get_frame, boxBlurFree, .Parallel, &deps, deps.len, data, core);
 }

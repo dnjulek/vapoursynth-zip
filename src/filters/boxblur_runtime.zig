@@ -8,27 +8,6 @@ const math = std.math;
 
 const allocator = std.heap.c_allocator;
 
-pub fn hvBlur(comptime T: type, src: zapi.ZFrameRO, dst: zapi.ZFrameRW, d: *Data) void {
-    const temp1 = allocator.alloc(T, d.tmp_size) catch unreachable;
-    const temp2 = allocator.alloc(T, d.tmp_size) catch unreachable;
-    defer allocator.free(temp1);
-    defer allocator.free(temp2);
-
-    var plane: u32 = 0;
-    while (plane < d.vi.format.numPlanes) : (plane += 1) {
-        if (!(d.planes[plane])) {
-            continue;
-        }
-
-        const srcp = src.getReadSlice2(T, plane);
-        const dstp = dst.getWriteSlice2(T, plane);
-        const w, const h, const stride = src.getDimensions2(T, plane);
-
-        hblur(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, temp1, temp2);
-        vblur(T, dstp, dstp, stride, w, h, d.vradius, d.vpasses, temp1, temp2);
-    }
-}
-
 inline fn blurInt(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, dst_step: u32, len: u32, radius: u32) void {
     const ksize: u32 = (radius << 1) + 1;
     const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
@@ -140,7 +119,7 @@ inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, l
     }
 }
 
-fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
+pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
     if ((passes > 0) and (radius > 0)) {
         var y: u32 = 0;
         while (y < h) : (y += 1) {
@@ -166,7 +145,7 @@ fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u
     }
 }
 
-fn vblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
+pub fn vblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
     if ((passes > 0) and (radius > 0)) {
         var x: u32 = 0;
         while (x < w) : (x += 1) {
