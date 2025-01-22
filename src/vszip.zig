@@ -9,6 +9,7 @@ const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
+const limiter = @import("vapoursynth/limiter.zig");
 const metrics = @import("vapoursynth/metrics.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
@@ -70,6 +71,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;thY1:int:opt;thY2:int:opt;",
         "clip:vnode;",
         comb_mask_mt.combMaskMTCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        limiter.filter_name,
+        "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;",
+        "clip:vnode;",
+        limiter.limiterCreate,
         null,
         plugin,
     );

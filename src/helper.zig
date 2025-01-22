@@ -6,6 +6,51 @@ const vs = vszip.vs;
 const vsh = vszip.vsh;
 const zapi = vszip.zapi;
 
+pub const BPSType = enum {
+    U8,
+    U9,
+    U10,
+    U12,
+    U14,
+    U16,
+    U32,
+    F16,
+    F32,
+
+    pub fn select(map: zapi.ZMapRW, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !BPSType {
+        var err_msg: ?[]const u8 = null;
+        errdefer {
+            map.setError(err_msg.?);
+            map.vsapi.?.freeNode.?(node);
+        }
+
+        if (vi.format.sampleType == .Integer) {
+            switch (vi.format.bitsPerSample) {
+                8 => return .U8,
+                9 => return .U9,
+                10 => return .U10,
+                12 => return .U12,
+                14 => return .U14,
+                16 => return .U16,
+                32 => return .U32,
+                else => return {
+                    err_msg = name ++ ": not supported Int format.";
+                    return error.format;
+                },
+            }
+        } else {
+            switch (vi.format.bitsPerSample) {
+                16 => return .F16,
+                32 => return .F32,
+                else => return {
+                    err_msg = name ++ ": not supported Float format.";
+                    return error.format;
+                },
+            }
+        }
+    }
+};
+
 pub const DataType = enum {
     U8,
     U16,

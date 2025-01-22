@@ -12,6 +12,7 @@ src8 = core.vszip.BoxBlur(src8, planes=[0,1,2], hradius=30, vradius=60, hpasses=
 src8 = core.vszip.BoxBlur(src8, planes=[1,2], hradius=10, vradius=10, hpasses=6, vpasses=8)
 src8 = core.vszip.Bilateral(src8, ref=None, sigmaS=2, sigmaR=2, planes=[0,1,2], algorithm=0)
 src8 = core.vszip.Bilateral(src8, ref=src8b, sigmaS=2, sigmaR=2, planes=[0], algorithm=0)
+src8 = core.vszip.Limiter(src8, tv_range=True)
 
 src16 = core.std.BlankClip(None, 1920, 1080, vs.YUV420P16, 10, color=[65535,32768,0])
 src16b = core.std.BlankClip(None, 1920, 1080, vs.YUV420P16, 10, color=[65535,32768,0])
@@ -22,6 +23,7 @@ src16 = core.vszip.BoxBlur(src16, planes=[0,1,2], hradius=30, vradius=60, hpasse
 src16 = core.vszip.BoxBlur(src16, planes=[1,2], hradius=10, vradius=10, hpasses=6, vpasses=8)
 src16 = core.vszip.Bilateral(src16, ref=None, sigmaS=2, sigmaR=2, planes=[0,1,2], algorithm=0)
 src16 = core.vszip.Bilateral(src16, ref=src16b, sigmaS=2, sigmaR=2, planes=[0], algorithm=0)
+src16 = core.vszip.Limiter(src16, [111,111,111], [20000,30000,25000])
 
 src32 = core.std.BlankClip(None, 1920, 1080, vs.YUV444PS, 10)
 src32b = core.std.BlankClip(None, 1920, 1080, vs.YUV444PS, 10)
@@ -32,6 +34,7 @@ src32 = core.vszip.BoxBlur(src32, planes=[0,1,2], hradius=30, vradius=60, hpasse
 src32 = core.vszip.BoxBlur(src32, planes=[1,2], hradius=10, vradius=10, hpasses=1, vpasses=1)
 src32 = core.vszip.Bilateral(src32, ref=None, sigmaS=2, sigmaR=2, planes=[0,1,2], algorithm=0)
 src32 = core.vszip.Bilateral(src32, ref=src32b, sigmaS=2, sigmaR=2, planes=[0], algorithm=0)
+src32 = core.vszip.Limiter(src32)
 
 src8.set_output(1)
 src16.set_output(2)
