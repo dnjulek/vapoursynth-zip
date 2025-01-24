@@ -10,8 +10,8 @@ const allocator = std.heap.c_allocator;
 pub const filter_name = "RFS";
 
 const Data = struct {
-    node1: *vs.Node,
-    node2: *vs.Node,
+    node1: ?*vs.Node,
+    node2: ?*vs.Node,
     replace: []bool,
 };
 
@@ -46,11 +46,11 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     const map_in = zapi.ZMapRO.init(in, vsapi);
     const map_out = zapi.ZMapRW.init(out, vsapi);
 
-    d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
-    d.node2 = vsapi.?.mapGetNode.?(in, "clipb", 0, &node_err).?;
-    var vi = vsapi.?.getVideoInfo.?(d.node1).*;
+    d.node1, const vi = map_in.getNodeVi("clipa");
+    d.node2 = map_in.getNode("clipb");
+    var vi_out = vi.*;
     const mismatch = map_in.getBool("mismatch") orelse false;
-    rfsValidateInput(out.?, d.node1, d.node2, &vi, mismatch, vsapi.?) catch return;
+    rfsValidateInput(out.?, d.node1, d.node2, &vi_out, mismatch, vsapi.?) catch return;
     d.replace = allocator.alloc(bool, @intCast(vi.numFrames)) catch unreachable;
 
     const np = vi.format.numPlanes;
@@ -59,7 +59,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
 
     if ((ne > 0) and (np > 1)) {
         var process = [3]bool{ false, false, false };
-        var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
+        var nodes = [3]?*vs.Node{ d.node1, d.node1, d.node1 };
         i = 0;
         while (i < ne) : (i += 1) {
             const e = map_in.getInt2(i32, "planes", i).?;
@@ -115,7 +115,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
         },
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, deps.len, data, core);
+    vsapi.?.createVideoFilter.?(out, filter_name, &vi_out, rfsGetFrame, rfsFree, .Parallel, &deps, deps.len, data, core);
 }
 
 const rfsInputError = error{
@@ -124,7 +124,7 @@ const rfsInputError = error{
     FrameRate,
 };
 
-fn rfsValidateInput(out: *vs.Map, node1: *vs.Node, node2: *vs.Node, outvi: *vs.VideoInfo, mismatch: bool, vsapi: *const vs.API) rfsInputError!void {
+fn rfsValidateInput(out: *vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, outvi: *vs.VideoInfo, mismatch: bool, vsapi: *const vs.API) rfsInputError!void {
     const vi2 = vsapi.getVideoInfo.?(node2);
     var err_msg: ?[*]const u8 = null;
 

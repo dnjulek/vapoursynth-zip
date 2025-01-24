@@ -98,16 +98,17 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     _ = user_data;
     var d: Data = undefined;
 
-    const map_in = zapi.ZMap.init(in, vsapi);
-    const map_out = zapi.ZMap.init(out, vsapi);
+    const map_in = zapi.ZMapRO.init(in, vsapi);
+    const map_out = zapi.ZMapRW.init(out, vsapi);
     d.node1, d.vi = map_in.getNodeVi("clipa");
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
-    d.node2, const vi2 = map_in.getNodeVi("clipb");
-    helper.compareNodes(map_out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
+    d.node2 = map_in.getNode("clipb");
+    const nodes = [_]?*vs.Node{ d.node1, d.node2 };
+    helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, vsapi) catch return;
 
     d.peak = @floatFromInt(helper.getPeak(d.vi));
-    var nodes = [_]?*vs.Node{ d.node1, d.node2 };
+
     var planes = [3]bool{ true, false, false };
     helper.mapGetPlanes(map_in, map_out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
     d.planes = planes;
@@ -145,7 +146,7 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
             deps1[0],
             vs.FilterDependency{
                 .source = d.node2,
-                .requestPattern = if (d.vi.numFrames <= vi2.numFrames) .StrictSpatial else .General,
+                .requestPattern = .StrictSpatial,
             },
         };
 

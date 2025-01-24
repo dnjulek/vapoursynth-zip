@@ -90,7 +90,7 @@ pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);
 }
 
-pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
+pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []const ?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
     const num_e = in.numElements("planes") orelse return;
     @memset(process, false);
 
@@ -118,21 +118,54 @@ pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, proce
     }
 }
 
-pub fn compareNodes(out: zapi.ZMapRW, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *const vs.VideoInfo, vi2: *const vs.VideoInfo, comptime name: []const u8, vsapi: ?*const vs.API) !void {
-    if (node2 == null) {
-        return;
-    }
+pub const ClipLen = enum {
+    SAME_LEN,
+    BIGGER_THAN,
+    MISMATCH,
+};
 
+pub fn compareNodes(out: zapi.ZMapRW, nodes: []const ?*vs.Node, len: ClipLen, comptime name: []const u8, vsapi: ?*const vs.API) !void {
+    const vi0 = vsapi.?.getVideoInfo.?(nodes[0]);
     var err_msg: ?[]const u8 = null;
     errdefer {
         out.setError(err_msg.?);
-        vsapi.?.freeNode.?(node1);
-        vsapi.?.freeNode.?(node2);
+        for (nodes) |node| vsapi.?.freeNode.?(node);
     }
 
-    if (!vsh.isSameVideoInfo(vi1, vi2) or !vsh.isConstantVideoFormat(vi2)) {
-        err_msg = name ++ ": both input clips must have the same format.";
-        return error.node;
+    for (nodes[1..]) |node| {
+        const vi = vsapi.?.getVideoInfo.?(node);
+        if (!vsh.isConstantVideoFormat(vi)) {
+            err_msg = name ++ ": all input clips must have constant format.";
+            return error.constant_format;
+        }
+        if ((vi0.width != vi.width) or (vi0.height != vi.height)) {
+            err_msg = name ++ ": all input clips must have the same width and height.";
+            return error.width_height;
+        }
+        if (vi0.format.colorFamily != vi.format.colorFamily) {
+            err_msg = name ++ ": all input clips must have the same color family.";
+            return error.color_family;
+        }
+        if ((vi0.format.subSamplingW != vi.format.subSamplingW) or (vi0.format.subSamplingH != vi.format.subSamplingH)) {
+            err_msg = name ++ ": all input clips must have the same subsampling.";
+            return error.subsampling;
+        }
+        if (vi0.format.bitsPerSample != vi.format.bitsPerSample) {
+            err_msg = name ++ ": all input clips must have the same bit depth.";
+            return error.bit_depth;
+        }
+
+        switch (len) {
+            .SAME_LEN => if (vi0.numFrames != vi.numFrames) {
+                err_msg = name ++ ": all input clips must have the same length.";
+                return error.length;
+            },
+            .BIGGER_THAN => if (vi0.numFrames > vi.numFrames) {
+                err_msg = name ++ ": second clip has less frames than input clip.";
+                return error.length;
+            },
+            .MISMATCH => {},
+        }
     }
 }
 

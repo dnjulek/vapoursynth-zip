@@ -217,35 +217,11 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
         }
     }
 
-    d.join = false;
     d.node2 = map_in.getNode("ref");
-    if (d.node2 != null) {
-        d.join = true;
-        const rvi: *const vs.VideoInfo = vsapi.?.getVideoInfo.?(d.node2);
-        if ((d.vi.width != rvi.width) or (d.vi.height != rvi.height)) {
-            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same size");
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            return;
-        }
-        if (d.vi.format.colorFamily != rvi.format.colorFamily) {
-            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same color family");
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            return;
-        }
-        if ((d.vi.format.subSamplingH != rvi.format.subSamplingH) or (d.vi.format.subSamplingW != rvi.format.subSamplingW)) {
-            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same subsampling");
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            return;
-        }
-        if (d.vi.format.bitsPerSample != rvi.format.bitsPerSample) {
-            map_out.setError("Bilateral: input clip and clip \"ref\" must be of the same bit depth");
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            return;
-        }
+    d.join = d.node2 != null;
+    if (d.join) {
+        const nodes = [_]?*vs.Node{ d.node1, d.node2 };
+        helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, vsapi) catch return;
     }
 
     i = 0;
@@ -336,7 +312,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
             deps1[0],
             vs.FilterDependency{
                 .source = d.node2,
-                .requestPattern = if (d.vi.numFrames <= vsapi.?.getVideoInfo.?(d.node2).numFrames) .StrictSpatial else .General,
+                .requestPattern = .StrictSpatial,
             },
         };
 

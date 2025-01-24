@@ -75,18 +75,13 @@ pub export fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, user_dat
     const map_out = zapi.ZMap.init(out, vsapi);
 
     d.node, d.vi = map_in.getNodeVi("clip");
-    d.node2, const vi2 = map_in.getNodeVi("clip2");
+    d.node2 = map_in.getNode("clip2");
 
-    helper.compareNodes(map_out, d.node, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
+    const nodes = [_]?*vs.Node{ d.node, d.node2 };
+    helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, vsapi) catch return;
+
     if ((d.vi.format.sampleType != .Integer) or (d.vi.format.bitsPerSample != 8)) {
         map_out.setError(filter_name ++ ": only 8 bit int format supported.");
-        vsapi.?.freeNode.?(d.node);
-        vsapi.?.freeNode.?(d.node2);
-        return;
-    }
-
-    if (d.vi.numFrames != vi2.numFrames) {
-        vsapi.?.mapSetError.?(out, filter_name ++ " : clips must have the same length.");
         vsapi.?.freeNode.?(d.node);
         vsapi.?.freeNode.?(d.node2);
         return;
