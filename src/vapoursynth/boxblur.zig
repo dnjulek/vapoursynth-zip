@@ -136,12 +136,10 @@ pub export fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
-    var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node,
-            .requestPattern = .StrictSpatial,
-        },
-    };
+    var deps = [_]vs.FilterDependency{.{
+        .source = d.node,
+        .requestPattern = .StrictSpatial,
+    }};
 
     const use_rt: bool = (d.hradius != d.vradius) or (d.hradius > 22) or (d.hpasses > 1) or (d.vpasses > 1);
     var get_frame: vs.FilterGetFrame = undefined;

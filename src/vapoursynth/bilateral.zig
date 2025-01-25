@@ -299,10 +299,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     data.* = d;
 
     var deps1 = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node1,
-            .requestPattern = .StrictSpatial,
-        },
+        .{ .source = d.node1, .requestPattern = .StrictSpatial },
     };
 
     var deps_len: c_int = deps1.len;
@@ -310,10 +307,7 @@ pub export fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     if (d.node2 != null) {
         var deps2 = [_]vs.FilterDependency{
             deps1[0],
-            vs.FilterDependency{
-                .source = d.node2,
-                .requestPattern = .StrictSpatial,
-            },
+            .{ .source = d.node2, .requestPattern = .StrictSpatial },
         };
 
         deps_len = deps2.len;

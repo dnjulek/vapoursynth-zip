@@ -105,11 +105,8 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node1,
-            .requestPattern = .StrictSpatial,
-        },
-        vs.FilterDependency{
+        .{ .source = d.node1, .requestPattern = .StrictSpatial },
+        .{
             .source = d.node2,
             .requestPattern = if (vi.numFrames > vi2.numFrames) .FrameReuseLastOnly else .StrictSpatial,
         },

@@ -96,14 +96,8 @@ pub export fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, user_dat
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node,
-            .requestPattern = .StrictSpatial,
-        },
-        vs.FilterDependency{
-            .source = d.node2,
-            .requestPattern = .StrictSpatial,
-        },
+        .{ .source = d.node, .requestPattern = .StrictSpatial },
+        .{ .source = d.node2, .requestPattern = .StrictSpatial },
     };
 
     vsapi.?.createVideoFilter.?(out, filter_name, d.vi, adaptiveBinarizeGetFrame, adaptiveBinarizeFree, .Parallel, &deps, deps.len, data, core);

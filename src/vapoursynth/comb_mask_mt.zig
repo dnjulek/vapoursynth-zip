@@ -90,10 +90,7 @@ pub export fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*a
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node,
-            .requestPattern = .StrictSpatial,
-        },
+        .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
     vsapi.?.createVideoFilter.?(out, filter_name, d.vi, combMaskMTGetFrame, combMaskMTFree, .Parallel, &deps, deps.len, data, core);
