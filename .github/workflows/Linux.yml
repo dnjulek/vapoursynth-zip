@@ -1,0 +1,21 @@
+name: Test (Linux)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+jobs:
+  linux-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install zig
+        run: sudo snap install zig --classic --edge
+      - name: build
+        run: |
+          zig build -Doptimize=ReleaseFast
+          ls zig-out/lib

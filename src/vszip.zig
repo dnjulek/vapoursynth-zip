@@ -15,10 +15,6 @@ const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
 
-const c = @cImport({
-    @cDefine("VS_USE_LATEST_API", "1");
-});
-
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     _ = vspapi.configPlugin.?(
         "com.julek.vszip",
