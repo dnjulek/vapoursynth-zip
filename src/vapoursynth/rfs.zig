@@ -47,7 +47,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     const map_out = zapi.ZMapRW.init(out, vsapi);
 
     d.node1, const vi = map_in.getNodeVi("clipa");
-    d.node2 = map_in.getNode("clipb");
+    d.node2, const vi2 = map_in.getNodeVi("clipb");
     var vi_out = vi.*;
     const mismatch = map_in.getBool("mismatch") orelse false;
     rfsValidateInput(out.?, d.node1, d.node2, &vi_out, mismatch, vsapi.?) catch return;
@@ -107,11 +107,11 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     var deps = [_]vs.FilterDependency{
         vs.FilterDependency{
             .source = d.node1,
-            .requestPattern = .General,
+            .requestPattern = .StrictSpatial,
         },
         vs.FilterDependency{
             .source = d.node2,
-            .requestPattern = .General,
+            .requestPattern = if (vi.numFrames > vi2.numFrames) .FrameReuseLastOnly else .StrictSpatial,
         },
     };
 
