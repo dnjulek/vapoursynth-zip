@@ -1,8 +1,6 @@
 import vapoursynth as vs
 core = vs.core
 
-core.std.LoadPlugin("../zig-out/bin/vszip.dll")
-
 src8 = core.std.BlankClip(None, 1920, 1080, vs.YUV420P8, 10, color=[255,128,0])
 src8b = core.std.BlankClip(None, 1920, 1080, vs.YUV420P8, 10, color=[255,128,0])
 src8 = core.vszip.RFS(clipa=src8, clipb=src8b, frames=[0, 3, 5, 9], mismatch=False, planes=[0, 1, 2])
