@@ -168,7 +168,7 @@ fn rfsValidateInput(out: *vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, outvi: *vs
 
     if (!vsh.isSameVideoFormat(&outvi.format, &vi2.format)) {
         if (mismatch) {
-            outvi.format.colorFamily = .Undefined;
+            outvi.format = .{};
         } else {
             err_msg = filter_name ++ ": Clip formats don't match, enable mismatch if you want variable format.";
             return rfsInputError.Format;
