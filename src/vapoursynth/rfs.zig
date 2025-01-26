@@ -98,7 +98,32 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     i = 0;
     ne = map_in.numElements("frames") orelse 0;
     while (i < ne) : (i += 1) {
-        d.replace[map_in.getInt2(usize, "frames", i).?] = true;
+        const value: isize = map_in.getInt2(isize, "frames", i).?;
+        if (value < 0) {
+            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: negative input.", .{value}) catch unreachable;
+            map_out.setError(str);
+            vsapi.?.freeNode.?(d.node1);
+            vsapi.?.freeNode.?(d.node2);
+            allocator.free(str);
+            return;
+        }
+        if (value >= vi.numFrames) {
+            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: input exceeds \"clipa\" frame count ({}).", .{ value, vi.numFrames }) catch unreachable;
+            map_out.setError(str);
+            vsapi.?.freeNode.?(d.node1);
+            vsapi.?.freeNode.?(d.node2);
+            allocator.free(str);
+            return;
+        }
+        if (value >= vi2.numFrames) {
+            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: input exceeds \"clipb\" frame count ({}).", .{ value, vi2.numFrames }) catch unreachable;
+            map_out.setError(str);
+            vsapi.?.freeNode.?(d.node1);
+            vsapi.?.freeNode.?(d.node2);
+            allocator.free(str);
+            return;
+        }
+        d.replace[@bitCast(value)] = true;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
