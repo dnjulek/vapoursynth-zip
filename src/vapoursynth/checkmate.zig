@@ -143,7 +143,10 @@ pub export fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*an
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        .{ .source = d.node, .requestPattern = .General },
+        vs.FilterDependency{
+            .source = d.node,
+            .requestPattern = .General,
+        },
     };
 
     const getFrame = if (d.tthr2 > 0) &Checkmate(true).getFrame else &Checkmate(false).getFrame;

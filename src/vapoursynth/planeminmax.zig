@@ -114,10 +114,10 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     d.node1, d.vi = map_in.getNodeVi("clipa");
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
-    d.node2 = map_in.getNode("clipb");
-    const nodes = [_]?*vs.Node{ d.node1, d.node2 };
-    helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, vsapi) catch return;
+    d.node2, const vi2 = map_in.getNodeVi("clipb");
+    helper.compareNodes(map_out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
 
+    var nodes = [_]?*vs.Node{ d.node1, d.node2 };
     var planes = [3]bool{ true, false, false };
     helper.mapGetPlanes(map_in, map_out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
     d.planes = planes;
@@ -132,7 +132,10 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     data.* = d;
 
     var deps1 = [_]vs.FilterDependency{
-        .{ .source = d.node1, .requestPattern = .StrictSpatial },
+        vs.FilterDependency{
+            .source = d.node1,
+            .requestPattern = .StrictSpatial,
+        },
     };
 
     var deps_len: c_int = deps1.len;
@@ -140,7 +143,10 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     if (d.node2 != null) {
         var deps2 = [_]vs.FilterDependency{
             deps1[0],
-            .{ .source = d.node2, .requestPattern = .StrictSpatial },
+            vs.FilterDependency{
+                .source = d.node2,
+                .requestPattern = if (d.vi.numFrames <= vi2.numFrames) .StrictSpatial else .General,
+            },
         };
 
         deps_len = deps2.len;
@@ -158,7 +164,7 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, planeMinMaxFree, .Parallel, deps, deps_len, data, core);
 }
 
-pub fn getThr(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []const ?*vs.Node, comptime key: []const u8, vsapi: ?*const vs.API) !f32 {
+pub fn getThr(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, comptime key: []const u8, vsapi: ?*const vs.API) !f32 {
     var err_msg: ?[]const u8 = null;
     errdefer {
         out.setError(err_msg.?);

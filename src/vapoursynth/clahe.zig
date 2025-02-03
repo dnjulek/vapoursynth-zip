@@ -93,7 +93,10 @@ pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopa
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        .{ .source = d.node, .requestPattern = .StrictSpatial },
+        vs.FilterDependency{
+            .source = d.node,
+            .requestPattern = .StrictSpatial,
+        },
     };
 
     const getFrame = if (d.vi.format.bytesPerSample == 1) &CLAHE(u8).getFrame else &CLAHE(u16).getFrame;

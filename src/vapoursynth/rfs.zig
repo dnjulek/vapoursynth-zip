@@ -10,8 +10,8 @@ const allocator = std.heap.c_allocator;
 pub const filter_name = "RFS";
 
 const Data = struct {
-    node1: ?*vs.Node,
-    node2: ?*vs.Node,
+    node1: *vs.Node,
+    node2: *vs.Node,
     replace: []bool,
 };
 
@@ -46,11 +46,11 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     const map_in = zapi.ZMapRO.init(in, vsapi);
     const map_out = zapi.ZMapRW.init(out, vsapi);
 
-    d.node1, const vi = map_in.getNodeVi("clipa");
-    d.node2, const vi2 = map_in.getNodeVi("clipb");
-    var vi_out = vi.*;
+    d.node1 = vsapi.?.mapGetNode.?(in, "clipa", 0, &node_err).?;
+    d.node2 = vsapi.?.mapGetNode.?(in, "clipb", 0, &node_err).?;
+    var vi = vsapi.?.getVideoInfo.?(d.node1).*;
     const mismatch = map_in.getBool("mismatch") orelse false;
-    rfsValidateInput(out.?, d.node1, d.node2, &vi_out, mismatch, vsapi.?) catch return;
+    rfsValidateInput(out.?, d.node1, d.node2, &vi, mismatch, vsapi.?) catch return;
     d.replace = allocator.alloc(bool, @intCast(vi.numFrames)) catch unreachable;
 
     const np = vi.format.numPlanes;
@@ -59,7 +59,7 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
 
     if ((ne > 0) and (np > 1)) {
         var process = [3]bool{ false, false, false };
-        var nodes = [3]?*vs.Node{ d.node1, d.node1, d.node1 };
+        var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
         i = 0;
         while (i < ne) : (i += 1) {
             const e = map_in.getInt2(i32, "planes", i).?;
@@ -98,46 +98,24 @@ pub export fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaqu
     i = 0;
     ne = map_in.numElements("frames") orelse 0;
     while (i < ne) : (i += 1) {
-        const value: isize = map_in.getInt2(isize, "frames", i).?;
-        if (value < 0) {
-            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: negative input.", .{value}) catch unreachable;
-            map_out.setError(str);
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            allocator.free(str);
-            return;
-        }
-        if (value >= vi.numFrames) {
-            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: input exceeds \"clipa\" frame count ({}).", .{ value, vi.numFrames }) catch unreachable;
-            map_out.setError(str);
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            allocator.free(str);
-            return;
-        }
-        if (value >= vi2.numFrames) {
-            const str = std.fmt.allocPrintZ(allocator, filter_name ++ ": frame index \"{}\" out of range: input exceeds \"clipb\" frame count ({}).", .{ value, vi2.numFrames }) catch unreachable;
-            map_out.setError(str);
-            vsapi.?.freeNode.?(d.node1);
-            vsapi.?.freeNode.?(d.node2);
-            allocator.free(str);
-            return;
-        }
-        d.replace[@bitCast(value)] = true;
+        d.replace[map_in.getInt2(usize, "frames", i).?] = true;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        .{ .source = d.node1, .requestPattern = .StrictSpatial },
-        .{
+        vs.FilterDependency{
+            .source = d.node1,
+            .requestPattern = .General,
+        },
+        vs.FilterDependency{
             .source = d.node2,
-            .requestPattern = if (vi.numFrames > vi2.numFrames) .FrameReuseLastOnly else .StrictSpatial,
+            .requestPattern = .General,
         },
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, &vi_out, rfsGetFrame, rfsFree, .Parallel, &deps, deps.len, data, core);
+    vsapi.?.createVideoFilter.?(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, deps.len, data, core);
 }
 
 const rfsInputError = error{
@@ -146,7 +124,7 @@ const rfsInputError = error{
     FrameRate,
 };
 
-fn rfsValidateInput(out: *vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, outvi: *vs.VideoInfo, mismatch: bool, vsapi: *const vs.API) rfsInputError!void {
+fn rfsValidateInput(out: *vs.Map, node1: *vs.Node, node2: *vs.Node, outvi: *vs.VideoInfo, mismatch: bool, vsapi: *const vs.API) rfsInputError!void {
     const vi2 = vsapi.getVideoInfo.?(node2);
     var err_msg: ?[*]const u8 = null;
 
@@ -168,7 +146,7 @@ fn rfsValidateInput(out: *vs.Map, node1: ?*vs.Node, node2: ?*vs.Node, outvi: *vs
 
     if (!vsh.isSameVideoFormat(&outvi.format, &vi2.format)) {
         if (mismatch) {
-            outvi.format = .{};
+            outvi.format = std.mem.zeroes(vs.VideoFormat);
         } else {
             err_msg = filter_name ++ ": Clip formats don't match, enable mismatch if you want variable format.";
             return rfsInputError.Format;

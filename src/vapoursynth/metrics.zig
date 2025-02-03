@@ -103,8 +103,14 @@ pub export fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        .{ .source = d.node1, .requestPattern = .StrictSpatial },
-        .{ .source = d.node2, .requestPattern = .StrictSpatial },
+        vs.FilterDependency{
+            .source = d.node1,
+            .requestPattern = .StrictSpatial,
+        },
+        vs.FilterDependency{
+            .source = d.node2,
+            .requestPattern = .StrictSpatial,
+        },
     };
 
     vsapi.?.createVideoFilter.?(out, filter_name, vi_out, ssimulacra2GetFrame, MetricsFree, .Parallel, &deps, deps.len, data, core);
