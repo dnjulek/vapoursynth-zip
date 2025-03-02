@@ -1,11 +1,13 @@
 .{
-    .name = "vszip",
+    .name = .vszip,
     .version = "5.0.0",
     .paths = .{""},
+    .fingerprint = 0x7466a154dbe09310,
     .dependencies = .{
         .vapoursynth = .{
-            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#078212d9cd1cf2911d3a30b49a2e23a3666b3197",
-            .hash = "1220532eb543f1169a359cc0821533ce699c7fd81a2cd2fd00c886eec72df066adaf",
+            // zig fetch --save git+https://github.com/dnjulek/vapoursynth-zig.git
+            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#a06b4520b9d54cade3aac66b424d6ccf349ec794",
+            .hash = "vapoursynth-4.0.0-jLYMQ03yAQBAEAW2pfGvvnVM6hImZt2Ijw5ghAneAf4b",
         },
     },
 }
