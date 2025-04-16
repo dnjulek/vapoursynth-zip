@@ -1,4 +1,4 @@
-name: Linux test
+name: Test (linux)
 
 on:
   push:
@@ -81,13 +81,13 @@ jobs:
       run: export PATH="${{ runner.os }}-vapoursynth-build/vapoursynth:$PATH"
 
     - name: Run test.vpy (8-bit)
-      run: vspipe .\test\test.vpy . -o 1
+      run: vspipe ./test/test.vpy . -o 1
 
     - name: Run test.vpy (16-bit)
-      run: vspipe .\test\test.vpy . -o 2
+      run: vspipe ./test/test.vpy . -o 2
 
     - name: Run test.vpy (32-bit)
-      run: vspipe .\test\test.vpy . -o 3
+      run: vspipe ./test/test.vpy . -o 3
 
     - name: Run rfs_mismatch.py
-      run: vspipe .\test\rfs_mismatch.py
+      run: vspipe ./test/rfs_mismatch.py
