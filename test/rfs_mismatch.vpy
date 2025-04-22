@@ -16,3 +16,5 @@ assert(rfs.fps == 0)
 assert(rfs.format == None)
 
 print(rfs)
+
+clip1.set_output()

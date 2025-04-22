@@ -88,5 +88,5 @@ jobs:
     - name: Run test.vpy (32-bit)
       run: vspipe ./test/test.vpy . -o 3
 
-    - name: Run rfs_mismatch.py
-      run: python3 ./test/rfs_mismatch.py
+    - name: Run rfs_mismatch.vpy
+      run: vspipe ./test/rfs_mismatch.vpy .

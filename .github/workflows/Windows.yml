@@ -34,5 +34,5 @@ jobs:
       - name: Run test.vpy (32-bit)
         run: .\vapoursynth-portable\VSPipe.exe .\test\test.vpy . -o 3
 
-      - name: Run rfs_mismatch.py
-        run: .\vapoursynth-portable\python.exe .\test\rfs_mismatch.py
+      - name: Run rfs_mismatch.vpy
+        run: .\vapoursynth-portable\VSPipe.exe .\test\rfs_mismatch.vpy .
