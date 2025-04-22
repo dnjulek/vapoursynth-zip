@@ -75,7 +75,6 @@ jobs:
     - name: build plugin
       run: |
         zig build
-        sudo cp zig-out/lib/libvszip.so /usr/lib/vapoursynth/libvszip.so
 
     - name: export PATH
       run: export PATH="${{ runner.os }}-vapoursynth-build/vapoursynth:$PATH"
