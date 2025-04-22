@@ -1,35 +1,37 @@
 const std = @import("std");
 const math = std.math;
 
-const vapoursynth = @import("vapoursynth");
-const vs = vapoursynth.vapoursynth4;
-const vsh = vapoursynth.vshelper;
-const zapi = vapoursynth.zigapi;
+const hz = @import("../helper.zig");
+const vszip = @import("../vszip.zig");
 
-const BPSType = @import("../helper.zig").BPSType;
+const vapoursynth = vszip.vapoursynth;
+const vs = vapoursynth.vapoursynth4;
+const ZAPI = vapoursynth.ZAPI;
+const BPSType = hz.BPSType;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Limiter";
 
-const LimiterData = struct {
-    node: ?*vs.Node,
-    vi: *const vs.VideoInfo,
-    max: [3]u32,
-    min: [3]u32,
-    maxf: [3]f32,
-    minf: [3]f32,
+const Data = struct {
+    node: ?*vs.Node = null,
+    vi: *const vs.VideoInfo = undefined,
+    max: [3]u32 = .{ 0, 0, 0 },
+    min: [3]u32 = .{ 0, 0, 0 },
+    maxf: [3]f32 = .{ 0, 0, 0 },
+    minf: [3]f32 = .{ 0, 0, 0 },
 };
 
 pub fn LimiterRT(comptime T: type, np: comptime_int) type {
     return struct {
         fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
-            const d: *LimiterData = @ptrCast(@alignCast(instance_data));
+            const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi);
 
             if (activation_reason == .Initial) {
-                vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
+                zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
                 defer src.deinit();
                 const dst = src.newVideoFrame();
 
@@ -58,12 +60,13 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int) type {
     return struct {
         fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
-            const d: *LimiterData = @ptrCast(@alignCast(instance_data));
+            const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi);
 
             if (activation_reason == .Initial) {
-                vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
+                zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
                 defer src.deinit();
                 const dst = src.newVideoFrame();
 
@@ -87,17 +90,20 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int) type {
 
 export fn limiterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = core;
-    const d: *LimiterData = @ptrCast(@alignCast(instance_data));
-    vsapi.?.freeNode.?(d.node);
+    const d: *Data = @ptrCast(@alignCast(instance_data));
+    const zapi = ZAPI.init(vsapi);
+
+    zapi.freeNode(d.node);
     allocator.destroy(d);
 }
 
 pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
-    var d: LimiterData = undefined;
-    const map_in = zapi.ZMapRO.init(in, vsapi);
-    const map_out = zapi.ZMapRW.init(out, vsapi);
+    var d: Data = .{};
 
+    const zapi = ZAPI.init(vsapi);
+    const map_in = zapi.initZMap(in);
+    const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip");
 
     const min_in = map_in.getFloatArray("min");
@@ -105,19 +111,28 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
     const tv_range = map_in.getBool("tv_range") orelse false;
 
     const num_planes = d.vi.format.numPlanes;
+    const peak = hz.getPeak(d.vi);
 
     var has_min = false;
     if (min_in) |arr| {
         has_min = true;
         if (arr.len != num_planes) {
             map_out.setError(filter_name ++ ": min array must have the same number of elements as planes.");
-            vsapi.?.freeNode.?(d.node);
+            zapi.freeNode(d.node);
             return;
         }
 
         for (0..arr.len) |i| {
             if (d.vi.format.sampleType == .Integer) {
-                d.min[i] = @intFromFloat(arr[i]);
+                const val: i64 = @intFromFloat(arr[i]);
+
+                if (val < 0) {
+                    map_out.setError(filter_name ++ ": min value must be greater than or equal to 0.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
+                d.min[i] = @intCast(val);
             } else {
                 d.minf[i] = @floatCast(arr[i]);
             }
@@ -129,13 +144,21 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
         has_max = true;
         if (arr.len != num_planes) {
             map_out.setError(filter_name ++ ": max array must have the same number of elements as planes.");
-            vsapi.?.freeNode.?(d.node);
+            zapi.freeNode(d.node);
             return;
         }
 
         for (0..arr.len) |i| {
             if (d.vi.format.sampleType == .Integer) {
-                d.max[i] = @intFromFloat(arr[i]);
+                const val: i64 = @intFromFloat(arr[i]);
+
+                if (val > peak) {
+                    map_out.setError(filter_name ++ ": max value must be less than or equal to peak value.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
+                d.max[i] = @intCast(val);
             } else {
                 d.maxf[i] = @floatCast(arr[i]);
             }
@@ -144,13 +167,13 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
 
     if (has_min and !has_max) {
         map_out.setError(filter_name ++ ": min array is set but max array is not.");
-        vsapi.?.freeNode.?(d.node);
+        zapi.freeNode(d.node);
         return;
     }
 
     if (!has_min and has_max) {
         map_out.setError(filter_name ++ ": max array is set but min array is not.");
-        vsapi.?.freeNode.?(d.node);
+        zapi.freeNode(d.node);
         return;
     }
 
@@ -232,15 +255,12 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
         }
     }
 
-    const data: *LimiterData = allocator.create(LimiterData) catch unreachable;
+    const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node,
-            .requestPattern = .StrictSpatial,
-        },
+        .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, get_frame, limiterFree, .Parallel, &deps, deps.len, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, get_frame, limiterFree, .Parallel, &deps, data, core);
 }

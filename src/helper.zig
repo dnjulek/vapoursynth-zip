@@ -2,9 +2,10 @@ const std = @import("std");
 const math = std.math;
 
 const vszip = @import("vszip.zig");
-const vs = vszip.vs;
-const vsh = vszip.vsh;
-const zapi = vszip.zapi;
+const vapoursynth = vszip.vapoursynth;
+const vs = vapoursynth.vapoursynth4;
+const vsh = vapoursynth.vshelper;
+const ZAPI = vapoursynth.ZAPI;
 
 pub const BPSType = enum {
     U8,
@@ -17,11 +18,11 @@ pub const BPSType = enum {
     F16,
     F32,
 
-    pub fn select(map: zapi.ZMapRW, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !BPSType {
-        var err_msg: ?[]const u8 = null;
+    pub fn select(map: ZAPI.ZMap(?*vs.Map), node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !BPSType {
+        var err_msg: ?[:0]const u8 = null;
         errdefer {
             map.setError(err_msg.?);
-            map.vsapi.?.freeNode.?(node);
+            map.api.freeNode(node);
         }
 
         if (vi.format.sampleType == .Integer) {
@@ -57,11 +58,11 @@ pub const DataType = enum {
     F16,
     F32,
 
-    pub fn select(map: zapi.ZMapRW, node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
-        var err_msg: ?[]const u8 = null;
+    pub fn select(map: ZAPI.ZMap(?*vs.Map), node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
+        var err_msg: ?[:0]const u8 = null;
         errdefer {
             map.setError(err_msg.?);
-            map.vsapi.?.freeNode.?(node);
+            map.api.freeNode(node);
         }
 
         if (vi.format.sampleType == .Integer) {
@@ -90,14 +91,18 @@ pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);
 }
 
-pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, vsapi: ?*const vs.API) !void {
+pub fn mapGetPlanes(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, zapi: *const ZAPI) !void {
     const num_e = in.numElements("planes") orelse return;
     @memset(process, false);
 
-    var err_msg: ?[]const u8 = null;
+    var err_msg: ?[:0]const u8 = null;
     errdefer {
         out.setError(err_msg.?);
-        for (nodes) |node| vsapi.?.freeNode.?(node);
+        for (nodes) |node| {
+            if (node) |n| {
+                zapi.freeNode(n);
+            }
+        }
     }
 
     var i: u32 = 0;
@@ -118,21 +123,58 @@ pub fn mapGetPlanes(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, proce
     }
 }
 
-pub fn compareNodes(out: zapi.ZMapRW, node1: ?*vs.Node, node2: ?*vs.Node, vi1: *const vs.VideoInfo, vi2: *const vs.VideoInfo, comptime name: []const u8, vsapi: ?*const vs.API) !void {
-    if (node2 == null) {
-        return;
-    }
+pub const ClipLen = enum {
+    SAME_LEN,
+    BIGGER_THAN,
+    MISMATCH,
+};
 
-    var err_msg: ?[]const u8 = null;
+pub fn compareNodes(out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, len: ClipLen, comptime name: []const u8, zapi: *const ZAPI) !void {
+    const vi0 = zapi.getVideoInfo(nodes[0]);
+    var err_msg: ?[:0]const u8 = null;
     errdefer {
         out.setError(err_msg.?);
-        vsapi.?.freeNode.?(node1);
-        vsapi.?.freeNode.?(node2);
+        for (nodes) |node| {
+            if (node) |n| {
+                zapi.freeNode(n);
+            }
+        }
     }
 
-    if (!vsh.isSameVideoInfo(vi1, vi2) or !vsh.isConstantVideoFormat(vi2)) {
-        err_msg = name ++ ": both input clips must have the same format.";
-        return error.node;
+    for (nodes[1..]) |node| {
+        const vi = zapi.getVideoInfo(node);
+        if (!vsh.isConstantVideoFormat(vi)) {
+            err_msg = name ++ ": all input clips must have constant format.";
+            return error.constant_format;
+        }
+        if ((vi0.width != vi.width) or (vi0.height != vi.height)) {
+            err_msg = name ++ ": all input clips must have the same width and height.";
+            return error.width_height;
+        }
+        if (vi0.format.colorFamily != vi.format.colorFamily) {
+            err_msg = name ++ ": all input clips must have the same color family.";
+            return error.color_family;
+        }
+        if ((vi0.format.subSamplingW != vi.format.subSamplingW) or (vi0.format.subSamplingH != vi.format.subSamplingH)) {
+            err_msg = name ++ ": all input clips must have the same subsampling.";
+            return error.subsampling;
+        }
+        if (vi0.format.bitsPerSample != vi.format.bitsPerSample) {
+            err_msg = name ++ ": all input clips must have the same bit depth.";
+            return error.bit_depth;
+        }
+
+        switch (len) {
+            .SAME_LEN => if (vi0.numFrames != vi.numFrames) {
+                err_msg = name ++ ": all input clips must have the same length.";
+                return error.length;
+            },
+            .BIGGER_THAN => if (vi0.numFrames > vi.numFrames) {
+                err_msg = name ++ ": second clip has less frames than input clip.";
+                return error.length;
+            },
+            .MISMATCH => {},
+        }
     }
 }
 
@@ -144,23 +186,23 @@ pub fn getPeak(vi: *const vs.VideoInfo) u16 {
     }
 }
 
-pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, vsapi: ?*const vs.API) ?*vs.Node {
-    const vi = vsapi.?.getVideoInfo.?(node);
+pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, zapi: *const ZAPI) ?*vs.Node {
+    const vi = zapi.getVideoInfo(node);
     if ((vi.format.colorFamily == .RGB) and (vi.format.sampleType == .Float)) {
         return node;
     }
 
     const matrix: i32 = if (vi.height > 650) 1 else 6;
-    const args = vsapi.?.createMap.?();
-    _ = vsapi.?.mapConsumeNode.?(args, "clip", node, .Replace);
-    _ = vsapi.?.mapSetInt.?(args, "matrix_in", matrix, .Replace);
-    _ = vsapi.?.mapSetInt.?(args, "format", @intFromEnum(vs.PresetVideoFormat.RGBS), .Replace);
+    const args = zapi.createZMap();
+    _ = args.consumeNode("clip", node, .Replace);
+    args.setInt("matrix_in", matrix, .Replace);
+    args.setInt("format", @intFromEnum(vs.PresetVideoFormat.RGBS), .Replace);
 
-    const vsplugin = vsapi.?.getPluginByID.?(vsh.RESIZE_PLUGIN_ID, core);
-    const ret = vsapi.?.invoke.?(vsplugin, "Bicubic", args);
-    const out = vsapi.?.mapGetNode.?(ret, "clip", 0, null);
-    vsapi.?.freeMap.?(ret);
-    vsapi.?.freeMap.?(args);
+    const vsplugin = zapi.getPluginByID2(.Resize, core);
+    const ret = args.invoke(vsplugin, "Bicubic");
+    const out = args.getNode("clip");
+    ret.free();
+    args.free();
     return out;
 }
 

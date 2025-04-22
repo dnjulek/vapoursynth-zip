@@ -4,18 +4,19 @@ const math = std.math;
 const filter = @import("../filters/clahe.zig");
 const helper = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
-const vs = vszip.vs;
-const vsh = vszip.vsh;
-const zapi = vszip.zapi;
+
+const vapoursynth = vszip.vapoursynth;
+const vs = vapoursynth.vapoursynth4;
+const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "CLAHE";
 
 const Data = struct {
-    node: ?*vs.Node,
-    vi: *const vs.VideoInfo,
-    limit: u32,
-    tiles: [2]u32,
+    node: ?*vs.Node = null,
+    vi: *const vs.VideoInfo = undefined,
+    limit: u32 = 0,
+    tiles: [2]u32 = .{ 0, 0 },
 };
 
 fn CLAHE(comptime T: type) type {
@@ -23,11 +24,12 @@ fn CLAHE(comptime T: type) type {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
             const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi);
 
             if (activation_reason == .Initial) {
-                vsapi.?.requestFrameFilter.?(n, d.node, frame_ctx);
+                zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.ZFrame.init(d.node, n, frame_ctx, core, vsapi);
+                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
                 defer src.deinit();
                 const dst = src.newVideoFrame();
 
@@ -39,8 +41,8 @@ fn CLAHE(comptime T: type) type {
                     filter.applyCLAHE(T, srcp, dstp, stride, width, height, d.limit, &d.tiles);
                 }
 
-                const dst_prop = dst.getProperties();
-                dst_prop.setInt("_ColorRange", 0, .Replace);
+                const dst_prop = dst.getPropertiesRW();
+                dst_prop.setColorRange(.FULL);
                 return dst.frame;
             }
 
@@ -52,21 +54,24 @@ fn CLAHE(comptime T: type) type {
 export fn claheFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = core;
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    vsapi.?.freeNode.?(d.node);
+    const zapi = ZAPI.init(vsapi);
+
+    zapi.freeNode(d.node);
     allocator.destroy(d);
 }
 
 pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
-    var d: Data = undefined;
-    const map_in = zapi.ZMap.init(in, vsapi);
-    const map_out = zapi.ZMap.init(out, vsapi);
+    var d: Data = .{};
 
+    const zapi = ZAPI.init(vsapi);
+    const map_in = zapi.initZMap(in);
+    const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip");
 
     if ((d.vi.format.sampleType != .Integer)) {
         map_out.setError(filter_name ++ ": only 8-16 bit int formats supported.");
-        vsapi.?.freeNode.?(d.node);
+        zapi.freeNode(d.node);
         return;
     }
 
@@ -84,7 +89,7 @@ pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopa
         },
         else => {
             map_out.setError(filter_name ++ " : tiles array can't have more than 2 values.");
-            vsapi.?.freeNode.?(d.node);
+            zapi.freeNode(d.node);
             return;
         },
     }
@@ -93,12 +98,9 @@ pub export fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopa
     data.* = d;
 
     var deps = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node,
-            .requestPattern = .StrictSpatial,
-        },
+        .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
     const getFrame = if (d.vi.format.bytesPerSample == 1) &CLAHE(u8).getFrame else &CLAHE(u16).getFrame;
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, claheFree, .Parallel, &deps, deps.len, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, claheFree, .Parallel, &deps, data, core);
 }

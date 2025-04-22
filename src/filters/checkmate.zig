@@ -4,11 +4,11 @@ const hz = @import("../helper.zig");
 
 pub fn process(
     dstp: []u8,
-    srcp_p2: ?[]const u8,
+    srcp_p2: anytype,
     srcp_p1: []const u8,
     srcp: []const u8,
     srcp_n1: []const u8,
-    srcp_n2: ?[]const u8,
+    srcp_n2: anytype,
     stride: u32,
     width: u32,
     thr: i32,
@@ -22,8 +22,8 @@ pub fn process(
     while (x < width) : (x += 1) {
         if (use_tthr2 and
             (@abs(@as(i32, srcp_p1[x]) - srcp_n1[x]) < tthr2 and
-            @abs(@as(i32, srcp_p2.?[x]) - srcp[x]) < tthr2 and
-            @abs(@as(i32, srcp[x]) - srcp_n2.?[x]) < tthr2))
+                @abs(@as(i32, srcp_p2[x]) - srcp[x]) < tthr2 and
+                @abs(@as(i32, srcp[x]) - srcp_n2[x]) < tthr2))
         {
             dstp[x] = @intCast((@as(u16, srcp_p1[x]) + @as(u16, srcp[x]) * 2 + @as(u16, srcp_n1[x])) >> 2);
         } else {

@@ -4,30 +4,31 @@ const math = std.math;
 const filter = @import("../filters/planeminmax.zig");
 const helper = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
-const vs = vszip.vs;
-const vsh = vszip.vsh;
-const zapi = vszip.zapi;
+
+const vapoursynth = vszip.vapoursynth;
+const vs = vapoursynth.vapoursynth4;
+const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "PlaneMinMax";
 
 pub const Data = struct {
-    node1: ?*vs.Node,
-    node2: ?*vs.Node,
-    vi: *const vs.VideoInfo,
-    peak: u16,
-    minthr: f32,
-    maxthr: f32,
-    hist_size: u32,
-    planes: [3]bool,
-    prop_buff: ?[]u8,
-    prop: ?StringProp,
+    node1: ?*vs.Node = null,
+    node2: ?*vs.Node = null,
+    vi: *const vs.VideoInfo = undefined,
+    peak: u16 = 0,
+    minthr: f32 = 0,
+    maxthr: f32 = 0,
+    hist_size: u32 = 0,
+    planes: [3]bool = .{ true, false, false },
+    prop_buff: [3 * 32]u8 = undefined,
+    prop: StringProp = undefined,
 };
 
 const StringProp = struct {
-    d: []u8,
-    ma: []u8,
-    mi: []u8,
+    d: [:0]u8,
+    ma: [:0]u8,
+    mi: [:0]u8,
 };
 
 fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
@@ -35,24 +36,18 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
             const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi);
 
             if (activation_reason == .Initial) {
-                vsapi.?.requestFrameFilter.?(n, d.node1, frame_ctx);
+                zapi.requestFrameFilter(n, d.node1, frame_ctx);
                 if (refb) {
-                    vsapi.?.requestFrameFilter.?(n, d.node2.?, frame_ctx);
+                    zapi.requestFrameFilter(n, d.node2, frame_ctx);
                 }
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.ZFrame.init(d.node1, n, frame_ctx, core, vsapi);
-                defer src.deinit();
-
-                var ref: ?zapi.ZFrameRO = null;
-                if (refb) {
-                    ref = zapi.ZFrame.init(d.node2.?, n, frame_ctx, core, vsapi);
-                    defer ref.?.deinit();
-                }
-
+                const src = zapi.initZFrame(d.node1, n, frame_ctx, core);
+                const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx, core);
                 const dst = src.copyFrame();
-                const props = dst.getProperties();
+                const props = dst.getPropertiesRW();
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -64,12 +59,12 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
                     const w, const h, const stride = src.getDimensions2(T, plane);
                     var stats: filter.Stats = undefined;
                     if (refb) {
-                        const refp = ref.?.getReadSlice2(T, plane);
+                        const refp = ref.getReadSlice2(T, plane);
                         stats = if (@typeInfo(T) == .int) filter.minMaxIntRef(T, srcp, refp, stride, w, h, d) else filter.minMaxFloatRef(T, srcp, refp, stride, w, h, d);
 
                         _ = switch (stats) {
-                            .i => props.setFloat(if (d.prop != null) d.prop.?.d else "psmDiff", stats.i.diff, .Append),
-                            .f => props.setFloat(if (d.prop != null) d.prop.?.d else "psmDiff", stats.f.diff, .Append),
+                            .i => props.setFloat(d.prop.d, stats.i.diff, .Append),
+                            .f => props.setFloat(d.prop.d, stats.f.diff, .Append),
                         };
                     } else {
                         stats = if (@typeInfo(T) == .int) filter.minMaxInt(T, srcp, stride, w, h, d) else filter.minMaxFloat(T, srcp, stride, w, h, d);
@@ -77,15 +72,18 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
 
                     switch (stats) {
                         .i => {
-                            props.setInt(if (d.prop != null) d.prop.?.ma else "psmMax", stats.i.max, .Append);
-                            props.setInt(if (d.prop != null) d.prop.?.mi else "psmMin", stats.i.min, .Append);
+                            props.setInt(d.prop.ma, stats.i.max, .Append);
+                            props.setInt(d.prop.mi, stats.i.min, .Append);
                         },
                         .f => {
-                            props.setFloat(if (d.prop != null) d.prop.?.ma else "psmMax", stats.f.max, .Append);
-                            props.setFloat(if (d.prop != null) d.prop.?.mi else "psmMin", stats.f.min, .Append);
+                            props.setFloat(d.prop.ma, stats.f.max, .Append);
+                            props.setFloat(d.prop.mi, stats.f.min, .Append);
                         },
                     }
                 }
+
+                src.deinit();
+                if (refb) ref.deinit();
 
                 return dst.frame;
             }
@@ -98,62 +96,46 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
 export fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = core;
     const d: *Data = @ptrCast(@alignCast(instance_data));
+    const zapi = ZAPI.init(vsapi);
 
-    if (d.node2) |node| vsapi.?.freeNode.?(node);
-    if (d.prop_buff) |buff| allocator.free(buff);
-    vsapi.?.freeNode.?(d.node1);
+    if (d.node2) |node| zapi.freeNode(node);
+    zapi.freeNode(d.node1);
     allocator.destroy(d);
 }
 
 pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     _ = user_data;
-    var d: Data = undefined;
+    var d: Data = .{};
 
-    const map_in = zapi.ZMap.init(in, vsapi);
-    const map_out = zapi.ZMap.init(out, vsapi);
+    const zapi = ZAPI.init(vsapi);
+    const map_in = zapi.initZMap(in);
+    const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clipa");
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
-    d.node2, const vi2 = map_in.getNodeVi("clipb");
-    helper.compareNodes(map_out, d.node1, d.node2, d.vi, vi2, filter_name, vsapi) catch return;
+    d.node2 = map_in.getNode("clipb");
+    const refb = d.node2 != null;
+    const nodes = [_]?*vs.Node{ d.node1, d.node2 };
+    if (refb) {
+        helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
+    }
 
-    var nodes = [_]?*vs.Node{ d.node1, d.node2 };
-    var planes = [3]bool{ true, false, false };
-    helper.mapGetPlanes(map_in, map_out, &nodes, &planes, d.vi.format.numPlanes, filter_name, vsapi) catch return;
-    d.planes = planes;
-
+    helper.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
     d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
     d.peak = @intCast(d.hist_size - 1);
-    d.maxthr = getThr(map_in, map_out, &nodes, "maxthr", vsapi) catch return;
-    d.minthr = getThr(map_in, map_out, &nodes, "minthr", vsapi) catch return;
-    d.prop = getString(map_in, "prop", allocator, &d.prop_buff);
+    d.maxthr = getThr(map_in, map_out, &nodes, "maxthr", &zapi) catch return;
+    d.minthr = getThr(map_in, map_out, &nodes, "minthr", &zapi) catch return;
+    d.prop = getString(map_in, &d.prop_buff);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
-    var deps1 = [_]vs.FilterDependency{
-        vs.FilterDependency{
-            .source = d.node1,
-            .requestPattern = .StrictSpatial,
-        },
+    const rp2: vs.RequestPattern = if (refb and (d.vi.numFrames <= zapi.getVideoInfo(d.node2).numFrames)) .StrictSpatial else .FrameReuseLastOnly;
+    const deps = [_]vs.FilterDependency{
+        .{ .source = d.node1, .requestPattern = .StrictSpatial },
+        .{ .source = d.node2, .requestPattern = rp2 },
     };
 
-    var deps_len: c_int = deps1.len;
-    var deps: [*]const vs.FilterDependency = &deps1;
-    if (d.node2 != null) {
-        var deps2 = [_]vs.FilterDependency{
-            deps1[0],
-            vs.FilterDependency{
-                .source = d.node2,
-                .requestPattern = if (d.vi.numFrames <= vi2.numFrames) .StrictSpatial else .General,
-            },
-        };
-
-        deps_len = deps2.len;
-        deps = &deps2;
-    }
-
-    const refb = d.node2 != null;
     const getFrame = switch (dt) {
         .U8 => if (refb) &PlaneMinMax(u8, true).getFrame else &PlaneMinMax(u8, false).getFrame,
         .U16 => if (refb) &PlaneMinMax(u16, true).getFrame else &PlaneMinMax(u16, false).getFrame,
@@ -161,14 +143,19 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
         .F32 => if (refb) &PlaneMinMax(f32, true).getFrame else &PlaneMinMax(f32, false).getFrame,
     };
 
-    vsapi.?.createVideoFilter.?(out, filter_name, d.vi, getFrame, planeMinMaxFree, .Parallel, deps, deps_len, data, core);
+    const ndeps: usize = if (refb) 2 else 1;
+    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeMinMaxFree, .Parallel, deps[0..ndeps], data, core);
 }
 
-pub fn getThr(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, comptime key: []const u8, vsapi: ?*const vs.API) !f32 {
-    var err_msg: ?[]const u8 = null;
+pub fn getThr(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, comptime key: [:0]const u8, zapi: *const ZAPI) !f32 {
+    var err_msg: ?[:0]const u8 = null;
     errdefer {
         out.setError(err_msg.?);
-        for (nodes) |node| vsapi.?.freeNode.?(node);
+        for (nodes) |node| {
+            if (node) |n| {
+                zapi.freeNode(n);
+            }
+        }
     }
 
     const thr = in.getFloat(f32, key) orelse 0;
@@ -180,17 +167,20 @@ pub fn getThr(in: zapi.ZMapRO, out: zapi.ZMapRW, nodes: []?*vs.Node, comptime ke
     return thr;
 }
 
-pub fn getString(map: zapi.ZMapRO, comptime key: []const u8, data_allocator: std.mem.Allocator, data_buff: *?[]u8) ?StringProp {
-    data_buff.* = null;
-    const data = map.getData(key, 0) orelse return null;
+pub fn getString(map: ZAPI.ZMap(?*const vs.Map), data_buff: []u8) StringProp {
+    const prop_in = map.getData("prop", 0) orelse "psm";
+    const data_len = data_buff.len / 3;
+    const diff_buff = data_buff[0..data_len];
+    const max_buff = data_buff[data_len..(2 * data_len)];
+    const min_buff = data_buff[(2 * data_len)..];
 
-    const diff_len = data.len + 5;
-    const max_len = data.len + 4;
-    const min_len = data.len + 4;
-    data_buff.* = data_allocator.alloc(u8, diff_len + max_len + min_len) catch unreachable;
+    if (prop_in.len > (data_len - 5)) { // Diff\x00
+        @panic("arg 'prop' cant be longer than 27 characters");
+    }
+
     return .{
-        .d = std.fmt.bufPrint(data_buff.*.?[0..diff_len], "{s}Diff\x00", .{data}) catch unreachable,
-        .ma = std.fmt.bufPrint(data_buff.*.?[diff_len..], "{s}Max\x00", .{data}) catch unreachable,
-        .mi = std.fmt.bufPrint(data_buff.*.?[(diff_len + max_len)..], "{s}Min\x00", .{data}) catch unreachable,
+        .d = std.fmt.bufPrintZ(diff_buff, "{s}Diff", .{prop_in}) catch unreachable,
+        .ma = std.fmt.bufPrintZ(max_buff, "{s}Max", .{prop_in}) catch unreachable,
+        .mi = std.fmt.bufPrintZ(min_buff, "{s}Min", .{prop_in}) catch unreachable,
     };
 }

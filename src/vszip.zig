@@ -1,7 +1,5 @@
-const vapoursynth = @import("vapoursynth");
-pub const vs = vapoursynth.vapoursynth4;
-pub const vsh = vapoursynth.vshelper;
-pub const zapi = vapoursynth.zigapi;
+pub const vapoursynth = @import("vapoursynth");
+const vs = vapoursynth.vapoursynth4;
 
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");

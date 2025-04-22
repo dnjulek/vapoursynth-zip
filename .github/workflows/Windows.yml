@@ -24,7 +24,6 @@ jobs:
       - name: build dll
         run: |
           .\test\build.ps1
-          cp .\zig-out\bin\vszip.dll .\vapoursynth-portable\vs-plugins\vszip.dll
 
       - name: Run test.vpy (8-bit)
         run: .\vapoursynth-portable\VSPipe.exe .\test\test.vpy . -o 1
