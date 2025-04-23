@@ -21,7 +21,6 @@ pub const Data = struct {
     maxthr: f32 = 0,
     hist_size: u32 = 0,
     planes: [3]bool = .{ true, false, false },
-    prop_buff: [3 * 32]u8 = undefined,
     prop: StringProp = undefined,
 };
 
@@ -48,6 +47,9 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
                 const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx, core);
                 const dst = src.copyFrame();
                 const props = dst.getPropertiesRW();
+                props.deleteKey(d.prop.d);
+                props.deleteKey(d.prop.ma);
+                props.deleteKey(d.prop.mi);
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -98,6 +100,10 @@ export fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi);
 
+    allocator.free(d.prop.d);
+    allocator.free(d.prop.ma);
+    allocator.free(d.prop.mi);
+
     if (d.node2) |node| zapi.freeNode(node);
     zapi.freeNode(d.node1);
     allocator.destroy(d);
@@ -125,7 +131,13 @@ pub export fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*
     d.peak = @intCast(d.hist_size - 1);
     d.maxthr = getThr(map_in, map_out, &nodes, "maxthr", &zapi) catch return;
     d.minthr = getThr(map_in, map_out, &nodes, "minthr", &zapi) catch return;
-    d.prop = getString(map_in, &d.prop_buff);
+
+    const prop_in = map_in.getData("prop", 0) orelse "psm";
+    d.prop = .{
+        .d = std.fmt.allocPrintZ(allocator, "{s}Diff", .{prop_in}) catch unreachable,
+        .ma = std.fmt.allocPrintZ(allocator, "{s}Max", .{prop_in}) catch unreachable,
+        .mi = std.fmt.allocPrintZ(allocator, "{s}Min", .{prop_in}) catch unreachable,
+    };
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
@@ -165,22 +177,4 @@ pub fn getThr(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []
     }
 
     return thr;
-}
-
-pub fn getString(map: ZAPI.ZMap(?*const vs.Map), data_buff: []u8) StringProp {
-    const prop_in = map.getData("prop", 0) orelse "psm";
-    const data_len = data_buff.len / 3;
-    const diff_buff = data_buff[0..data_len];
-    const max_buff = data_buff[data_len..(2 * data_len)];
-    const min_buff = data_buff[(2 * data_len)..];
-
-    if (prop_in.len > (data_len - 5)) { // Diff\x00
-        @panic("arg 'prop' cant be longer than 27 characters");
-    }
-
-    return .{
-        .d = std.fmt.bufPrintZ(diff_buff, "{s}Diff", .{prop_in}) catch unreachable,
-        .ma = std.fmt.bufPrintZ(max_buff, "{s}Max", .{prop_in}) catch unreachable,
-        .mi = std.fmt.bufPrintZ(min_buff, "{s}Min", .{prop_in}) catch unreachable,
-    };
 }

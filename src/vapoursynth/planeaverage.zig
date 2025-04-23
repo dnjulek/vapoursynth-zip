@@ -19,7 +19,6 @@ const Data = struct {
     exclude: filter.Exclude = undefined,
     peak: f32 = 0,
     planes: [3]bool = .{ true, false, false },
-    prop_buff: [64]u8 = undefined,
     prop: StringProp = undefined,
 };
 
@@ -45,6 +44,8 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
                 const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx, core);
                 const dst = src.copyFrame();
                 const props = dst.getPropertiesRW();
+                props.deleteKey(d.prop.d);
+                props.deleteKey(d.prop.a);
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -88,6 +89,9 @@ export fn planeAverageFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?
         .f => allocator.free(d.exclude.f),
     }
 
+    allocator.free(d.prop.d);
+    allocator.free(d.prop.a);
+
     if (d.node2) |node| zapi.freeNode(node);
     zapi.freeNode(d.node1);
     allocator.destroy(d);
@@ -113,7 +117,12 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
     hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
     d.peak = @floatFromInt(hz.getPeak(d.vi));
 
-    d.prop = getString(map_in, &d.prop_buff);
+    const prop_in = map_in.getData("prop", 0) orelse "psm";
+    d.prop = .{
+        .d = std.fmt.allocPrintZ(allocator, "{s}Diff", .{prop_in}) catch unreachable,
+        .a = std.fmt.allocPrintZ(allocator, "{s}Avg", .{prop_in}) catch unreachable,
+    };
+
     const exclude_in = map_in.getIntArray("exclude");
     if (exclude_in) |ein| {
         if (d.vi.format.sampleType == .Float) {
@@ -147,20 +156,4 @@ pub export fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?
 
     const ndeps: usize = if (refb) 2 else 1;
     zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeAverageFree, .Parallel, deps[0..ndeps], data, core);
-}
-
-pub fn getString(map: ZAPI.ZMap(?*const vs.Map), data_buff: []u8) StringProp {
-    const prop_in = map.getData("prop", 0) orelse "psm";
-    const data_len = data_buff.len >> 1;
-    const diff_buff = data_buff[0..data_len];
-    const avg_buff = data_buff[data_len..];
-
-    if (prop_in.len > (data_len - 5)) { // Diff\x00
-        @panic("arg 'prop' cant be longer than 27 characters");
-    }
-
-    return .{
-        .d = std.fmt.bufPrintZ(diff_buff, "{s}Diff", .{prop_in}) catch unreachable,
-        .a = std.fmt.bufPrintZ(avg_buff, "{s}Avg", .{prop_in}) catch unreachable,
-    };
 }
