@@ -1,6 +1,7 @@
 const std = @import("std");
 const math = std.math;
 
+const filter = @import("../filters/limiter.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
@@ -21,9 +22,9 @@ const Data = struct {
     minf: [3]f32 = .{ 0, 0, 0 },
 };
 
-pub fn LimiterRT(comptime T: type, np: comptime_int) type {
+pub fn LimiterRT(comptime T: type, np: comptime_int, idx: comptime_int) type {
     return struct {
-        fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi);
@@ -37,6 +38,10 @@ pub fn LimiterRT(comptime T: type, np: comptime_int) type {
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
+                    if (!(comptime_planes[idx][plane])) {
+                        continue;
+                    }
+
                     const max: T = if (@typeInfo(T) == .int) @intCast(d.max[plane]) else @floatCast(d.maxf[plane]);
                     const min: T = if (@typeInfo(T) == .int) @intCast(d.min[plane]) else @floatCast(d.minf[plane]);
 
@@ -56,9 +61,9 @@ pub fn LimiterRT(comptime T: type, np: comptime_int) type {
     };
 }
 
-pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int) type {
+pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_int) type {
     return struct {
-        fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, frame_data: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             _ = frame_data;
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi);
@@ -72,6 +77,10 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int) type {
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
+                    if (!(comptime_planes[idx][plane])) {
+                        continue;
+                    }
+
                     for (
                         src.getReadSlice2(T, plane),
                         dst.getWriteSlice2(T, plane),
@@ -108,10 +117,13 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
 
     const min_in = map_in.getFloatArray("min");
     const max_in = map_in.getFloatArray("max");
-    const tv_range = map_in.getBool("tv_range") orelse false;
 
     const num_planes = d.vi.format.numPlanes;
     const peak = hz.getPeak(d.vi);
+
+    var planes: [3]bool = .{ true, true, true };
+    const nodes = [_]?*vs.Node{d.node};
+    hz.mapGetPlanes(map_in, map_out, &nodes, &planes, num_planes, filter_name, &zapi) catch return;
 
     var has_min = false;
     if (min_in) |arr| {
@@ -179,81 +191,19 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
 
     const bps = BPSType.select(map_out, d.node, d.vi, filter_name) catch return;
 
-    const full8 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 255, 255, 255 } };
-    const full9 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 511, 511, 511 } };
-    const full10 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 1023, 1023, 1023 } };
-    const full12 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 4095, 4095, 4095 } };
-    const full14 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 16383, 16383, 16383 } };
-    const full16 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 65535, 65535, 65535 } };
-    const full32 = [2][3]comptime_int{ .{ 0, 0, 0 }, .{ 4294967295, 4294967295, 4294967295 } };
+    var i: u32 = 0;
+    const idx: u32 = while (i < comptime_planes.len) : (i += 1) {
+        if (std.mem.eql(bool, &comptime_planes[i], &planes)) break i;
+    } else 0;
 
-    const yuv8 = [2][3]comptime_int{ .{ 16, 16, 16 }, .{ 235, 240, 240 } };
-    const yuv9 = [2][3]comptime_int{ .{ 32, 32, 32 }, .{ 470, 480, 480 } };
-    const yuv10 = [2][3]comptime_int{ .{ 64, 64, 64 }, .{ 940, 960, 960 } };
-    const yuv12 = [2][3]comptime_int{ .{ 256, 256, 256 }, .{ 3760, 3840, 3840 } };
-    const yuv14 = [2][3]comptime_int{ .{ 1024, 1024, 1024 }, .{ 15040, 15360, 15360 } };
-    const yuv16 = [2][3]comptime_int{ .{ 4096, 4096, 4096 }, .{ 60160, 61440, 61440 } };
-    const yuv32 = [2][3]comptime_int{ .{ 268435456, 268435456, 268435456 }, .{ 3942645760, 4026531840, 4026531840 } };
-
-    const rgb8 = [2][3]comptime_int{ .{ 16, 16, 16 }, .{ 235, 235, 235 } };
-    const rgb9 = [2][3]comptime_int{ .{ 32, 32, 32 }, .{ 470, 470, 470 } };
-    const rgb10 = [2][3]comptime_int{ .{ 64, 64, 64 }, .{ 940, 940, 940 } };
-    const rgb12 = [2][3]comptime_int{ .{ 256, 256, 256 }, .{ 3760, 3760, 3760 } };
-    const rgb14 = [2][3]comptime_int{ .{ 1024, 1024, 1024 }, .{ 15040, 15040, 15040 } };
-    const rgb16 = [2][3]comptime_int{ .{ 4096, 4096, 4096 }, .{ 60160, 60160, 60160 } };
-    const rgb32 = [2][3]comptime_int{ .{ 268435456, 268435456, 268435456 }, .{ 3942645760, 3942645760, 3942645760 } };
-
-    const yuvf = [2][3]comptime_float{ .{ 0, -0.5, -0.5 }, .{ 1, 0.5, 0.5 } };
-    const rgbf = [2][3]comptime_float{ .{ 0, 0, 0 }, .{ 1, 1, 1 } };
-
-    const use_rt = (has_max) or (has_min);
-    const yuv = d.vi.format.colorFamily == .YUV;
-    var get_frame: vs.FilterGetFrame = undefined;
-
-    if (use_rt) {
-        get_frame = switch (num_planes) {
-            inline 1...3 => |np| switch (bps) {
-                .U8 => &LimiterRT(u8, np).getFrame,
-                .U9, .U10, .U12, .U14, .U16 => &LimiterRT(u16, np).getFrame,
-                .U32 => &LimiterRT(u32, np).getFrame,
-                .F16 => &LimiterRT(f16, np).getFrame,
-                .F32 => &LimiterRT(f32, np).getFrame,
-            },
-            else => unreachable,
-        };
-    } else {
-        if (tv_range) {
-            get_frame = switch (num_planes) {
-                inline 1...3 => |np| switch (bps) {
-                    .U8 => if (yuv) &Limiter(u8, yuv8, np).getFrame else &Limiter(u8, rgb8, np).getFrame,
-                    .U9 => if (yuv) &Limiter(u16, yuv9, np).getFrame else &Limiter(u16, rgb9, np).getFrame,
-                    .U10 => if (yuv) &Limiter(u16, yuv10, np).getFrame else &Limiter(u16, rgb10, np).getFrame,
-                    .U12 => if (yuv) &Limiter(u16, yuv12, np).getFrame else &Limiter(u16, rgb12, np).getFrame,
-                    .U14 => if (yuv) &Limiter(u16, yuv14, np).getFrame else &Limiter(u16, rgb14, np).getFrame,
-                    .U16 => if (yuv) &Limiter(u16, yuv16, np).getFrame else &Limiter(u16, rgb16, np).getFrame,
-                    .U32 => if (yuv) &Limiter(u32, yuv32, np).getFrame else &Limiter(u32, rgb32, np).getFrame,
-                    .F16 => if (yuv) &Limiter(f16, yuvf, np).getFrame else &Limiter(f16, rgbf, np).getFrame,
-                    .F32 => if (yuv) &Limiter(f32, yuvf, np).getFrame else &Limiter(f32, rgbf, np).getFrame,
-                },
-                else => unreachable,
-            };
-        } else {
-            get_frame = switch (num_planes) {
-                inline 1...3 => |np| switch (bps) {
-                    .U8 => &Limiter(u8, full8, np).getFrame,
-                    .U9 => &Limiter(u16, full9, np).getFrame,
-                    .U10 => &Limiter(u16, full10, np).getFrame,
-                    .U12 => &Limiter(u16, full12, np).getFrame,
-                    .U14 => &Limiter(u16, full14, np).getFrame,
-                    .U16 => &Limiter(u16, full16, np).getFrame,
-                    .U32 => &Limiter(u32, full32, np).getFrame,
-                    .F16 => if (yuv) &Limiter(f16, yuvf, np).getFrame else &Limiter(f16, rgbf, np).getFrame,
-                    .F32 => if (yuv) &Limiter(f32, yuvf, np).getFrame else &Limiter(f32, rgbf, np).getFrame,
-                },
-                else => unreachable,
-            };
-        }
-    }
+    const get_frame: vs.FilterGetFrame = filter.getFrame(
+        (has_max or has_min),
+        map_in.getBool("tv_range") orelse false,
+        d.vi.format.colorFamily == .YUV,
+        num_planes,
+        bps,
+        idx,
+    );
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
@@ -264,3 +214,16 @@ pub export fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyo
 
     zapi.createVideoFilter(out, filter_name, d.vi, get_frame, limiterFree, .Parallel, &deps, data, core);
 }
+
+pub const comptime_planes: [8][3]bool = .{
+    .{ true, false, false },
+    .{ false, true, false },
+    .{ false, false, true },
+
+    .{ false, true, true },
+    .{ true, false, true },
+    .{ true, true, false },
+
+    .{ true, true, true },
+    .{ false, false, false },
+};

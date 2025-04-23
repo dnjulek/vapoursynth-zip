@@ -74,7 +74,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
     );
     _ = vspapi.registerFunction.?(
         limiter.filter_name,
-        "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;",
+        "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;planes:int[]:opt;",
         "clip:vnode;",
         limiter.limiterCreate,
         null,
