@@ -90,3 +90,6 @@ jobs:
 
     - name: Run rfs_mismatch.vpy
       run: vspipe ./test/rfs_mismatch.vpy .
+
+    - name: Run props.vpy
+      run: vspipe ./test/props.vpy .
