@@ -34,7 +34,7 @@ pub fn LimiterRT(comptime T: type, np: comptime_int, idx: comptime_int) type {
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node, n, frame_ctx, core);
                 defer src.deinit();
-                const dst = src.newVideoFrame();
+                const dst = src.newVideoFrame2(comptime_planes[idx]);
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
@@ -73,7 +73,7 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node, n, frame_ctx, core);
                 defer src.deinit();
-                const dst = src.newVideoFrame();
+                const dst = src.newVideoFrame2(comptime_planes[idx]);
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
