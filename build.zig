@@ -19,6 +19,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zigimg_dependency = b.dependency("zigimg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    lib.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
+
     const vapoursynth_dep = b.dependency("vapoursynth", .{
         .target = target,
         .optimize = optimize,

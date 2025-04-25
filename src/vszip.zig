@@ -1,4 +1,5 @@
 pub const vapoursynth = @import("vapoursynth");
+pub const zigimg = @import("zigimg");
 const vs = vapoursynth.vapoursynth4;
 
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
@@ -7,6 +8,7 @@ const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
+const image_read = @import("vapoursynth/image_read.zig");
 const limiter = @import("vapoursynth/limiter.zig");
 const metrics = @import("vapoursynth/metrics.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
@@ -69,6 +71,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;thY1:int:opt;thY2:int:opt;",
         "clip:vnode;",
         comb_mask_mt.combMaskMTCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        image_read.filter_name,
+        "path:data[];",
+        "clip:vnode;",
+        image_read.readCreate,
         null,
         plugin,
     );
