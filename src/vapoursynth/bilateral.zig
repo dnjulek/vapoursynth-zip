@@ -54,9 +54,7 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
                 const dst = src.newVideoFrame2(d.planes);
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    if (!(d.planes[plane])) {
-                        continue;
-                    }
+                    if (!(d.planes[plane])) continue;
 
                     const srcp = src.getReadSlice2(T, plane);
                     const refp = if (join) ref.getReadSlice2(T, plane) else srcp;

@@ -35,9 +35,7 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
 
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node1, frame_ctx);
-                if (refb) {
-                    zapi.requestFrameFilter(n, d.node2, frame_ctx);
-                }
+                if (refb) zapi.requestFrameFilter(n, d.node2, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node1, n, frame_ctx, core);
                 const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx, core);
@@ -48,9 +46,7 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    if (!(d.planes[plane])) {
-                        continue;
-                    }
+                    if (!(d.planes[plane])) continue;
 
                     const srcp = src.getReadSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
@@ -64,6 +60,7 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
                     } else {
                         avg = filter.average(T, srcp, stride, w, h, d.exclude, d.peak);
                     }
+
                     props.setFloat(d.prop.a, avg, .Append);
                 }
 

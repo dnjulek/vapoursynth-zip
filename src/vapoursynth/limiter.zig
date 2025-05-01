@@ -37,9 +37,7 @@ pub fn LimiterRT(comptime T: type, np: comptime_int, idx: comptime_int) type {
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
-                    if (!(comptime_planes[idx][plane])) {
-                        continue;
-                    }
+                    if (!(comptime_planes[idx][plane])) continue;
 
                     const max: T = if (@typeInfo(T) == .int) @intCast(d.max[plane]) else @floatCast(d.maxf[plane]);
                     const min: T = if (@typeInfo(T) == .int) @intCast(d.min[plane]) else @floatCast(d.minf[plane]);
@@ -75,9 +73,7 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
 
                 comptime var plane = 0;
                 inline while (plane < np) : (plane += 1) {
-                    if (!(comptime_planes[idx][plane])) {
-                        continue;
-                    }
+                    if (!(comptime_planes[idx][plane])) continue;
 
                     for (
                         src.getReadSlice2(T, plane),

@@ -73,9 +73,8 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
     }
 
     d.limit = map_in.getInt(u32, "limit") orelse 7;
-    const in_arr = map_in.getIntArray("tiles");
     const df_arr = [2]i64{ 3, 3 };
-    const tiles_arr = if ((in_arr == null) or (in_arr.?.len == 0)) &df_arr else in_arr.?;
+    const tiles_arr = map_in.getIntArray("tiles") orelse &df_arr;
     d.tiles[0] = @intCast(tiles_arr[0]);
     switch (tiles_arr.len) {
         1 => {

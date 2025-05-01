@@ -39,9 +39,7 @@ pub fn BoxBlurCT(comptime T: type, radius: comptime_int) type {
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    if (!(d.planes[plane])) {
-                        continue;
-                    }
+                    if (!(d.planes[plane])) continue;
 
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);
@@ -77,9 +75,7 @@ fn BoxBlurRT(comptime T: type) type {
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    if (!(d.planes[plane])) {
-                        continue;
-                    }
+                    if (!(d.planes[plane])) continue;
 
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);

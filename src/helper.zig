@@ -188,7 +188,7 @@ pub fn getPeak(vi: *const vs.VideoInfo) u16 {
 
 pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, zapi: *const ZAPI) ?*vs.Node {
     const vi = zapi.getVideoInfo(node);
-    if ((vi.format.colorFamily == .RGB) and (vi.format.sampleType == .Float)) {
+    if (zapi.getVideoFormatID(vi, core) == .RGBS) {
         return node;
     }
 
