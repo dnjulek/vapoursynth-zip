@@ -11,6 +11,7 @@ const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limiter = @import("vapoursynth/limiter.zig");
 const metrics = @import("vapoursynth/metrics.zig");
+const packrgb = @import("vapoursynth/packrgb.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
@@ -95,6 +96,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "reference:vnode;distorted:vnode;mode:int:opt;",
         "clip:vnode;",
         metrics.metricsCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        packrgb.filter_name,
+        "clip:vnode;",
+        "clip:vnode;",
+        packrgb.packrgbCreate,
         null,
         plugin,
     );
