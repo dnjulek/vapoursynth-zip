@@ -20,14 +20,14 @@ const Data = struct {
 
 fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     if (activation_reason == .Initial) {
         zapi.requestFrameFilter(n, d.node, frame_ctx);
         zapi.requestFrameFilter(n, d.node2, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        const src = zapi.initZFrame(d.node, n, frame_ctx, core);
-        const src2 = zapi.initZFrame(d.node2, n, frame_ctx, core);
+        const src = zapi.initZFrame(d.node, n, frame_ctx);
+        const src2 = zapi.initZFrame(d.node2, n, frame_ctx);
 
         defer src.deinit();
         defer src2.deinit();
@@ -62,9 +62,9 @@ fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
     return null;
 }
 
-fn adaptiveBinarizeFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn adaptiveBinarizeFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     zapi.freeNode(d.node);
     zapi.freeNode(d.node2);
@@ -73,7 +73,7 @@ fn adaptiveBinarizeFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const
 
 pub fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
@@ -103,5 +103,5 @@ pub fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque,
         .{ .source = d.node2, .requestPattern = .StrictSpatial },
     };
 
-    zapi.createVideoFilter(out, filter_name, d.vi, adaptiveBinarizeGetFrame, adaptiveBinarizeFree, .Parallel, &deps, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, adaptiveBinarizeGetFrame, adaptiveBinarizeFree, .Parallel, &deps, data);
 }

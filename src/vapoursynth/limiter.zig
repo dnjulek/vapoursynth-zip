@@ -26,12 +26,12 @@ pub fn LimiterRT(comptime T: type, np: comptime_int, idx: comptime_int) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi);
+            const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
+                const src = zapi.initZFrame(d.node, n, frame_ctx);
                 defer src.deinit();
                 const dst = src.newVideoFrame2(comptime_planes[idx]);
 
@@ -62,12 +62,12 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi);
+            const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
+                const src = zapi.initZFrame(d.node, n, frame_ctx);
                 defer src.deinit();
                 const dst = src.newVideoFrame2(comptime_planes[idx]);
 
@@ -91,9 +91,9 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
     };
 }
 
-fn limiterFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn limiterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     zapi.freeNode(d.node);
     allocator.destroy(d);
@@ -102,7 +102,7 @@ fn limiterFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) 
 pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip");
@@ -204,7 +204,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    zapi.createVideoFilter(out, filter_name, d.vi, get_frame, limiterFree, .Parallel, &deps, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, get_frame, limiterFree, .Parallel, &deps, data);
 }
 
 pub const comptime_planes: [8][3]bool = .{

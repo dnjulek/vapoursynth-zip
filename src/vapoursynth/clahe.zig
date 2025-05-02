@@ -23,12 +23,12 @@ fn CLAHE(comptime T: type) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi);
+            const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n, frame_ctx, core);
+                const src = zapi.initZFrame(d.node, n, frame_ctx);
                 defer src.deinit();
                 const dst = src.newVideoFrame();
 
@@ -50,9 +50,9 @@ fn CLAHE(comptime T: type) type {
     };
 }
 
-fn claheFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn claheFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     zapi.freeNode(d.node);
     allocator.destroy(d);
@@ -61,7 +61,7 @@ fn claheFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) ca
 pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip");
@@ -98,5 +98,5 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
     };
 
     const getFrame = if (d.vi.format.bytesPerSample == 1) &CLAHE(u8).getFrame else &CLAHE(u16).getFrame;
-    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, claheFree, .Parallel, &deps, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, claheFree, .Parallel, &deps, data);
 }

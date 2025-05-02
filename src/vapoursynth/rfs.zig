@@ -17,9 +17,9 @@ const Data = struct {
     replace: []bool = undefined,
 };
 
-fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     if (activation_reason == .Initial) {
         zapi.requestFrameFilter(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
@@ -30,9 +30,9 @@ fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: 
     return null;
 }
 
-fn rfsFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
@@ -43,7 +43,7 @@ fn rfsFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) call
 pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1 = map_in.getNode("clipa").?;
@@ -84,7 +84,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
             args.setIntArray("planes", &pl);
             args.setInt("colorfamily", @intFromEnum(vi.format.colorFamily), .Replace);
 
-            const stdplugin = zapi.getPluginByID2(.Std, core);
+            const stdplugin = zapi.getPluginByID2(.Std);
             const ret = args.invoke(stdplugin, "ShufflePlanes");
             args.free();
             zapi.freeNode(d.node2);
@@ -109,7 +109,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
         .{ .source = d.node2, .requestPattern = .General },
     };
 
-    zapi.createVideoFilter(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, data, core);
+    zapi.createVideoFilter(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, data);
 }
 
 const rfsInputError = error{

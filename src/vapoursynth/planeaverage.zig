@@ -31,14 +31,14 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi);
+            const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node1, frame_ctx);
                 if (refb) zapi.requestFrameFilter(n, d.node2, frame_ctx);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node1, n, frame_ctx, core);
-                const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx, core);
+                const src = zapi.initZFrame(d.node1, n, frame_ctx);
+                const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx);
                 const dst = src.copyFrame();
                 const props = dst.getPropertiesRW();
                 props.deleteKey(d.prop.d);
@@ -75,9 +75,9 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
     };
 }
 
-fn planeAverageFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn planeAverageFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     switch (d.exclude) {
         .i => allocator.free(d.exclude.i),
@@ -95,7 +95,7 @@ fn planeAverageFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.
 pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clipa");
@@ -149,5 +149,5 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
     };
 
     const ndeps: usize = if (refb) 2 else 1;
-    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeAverageFree, .Parallel, deps[0..ndeps], data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeAverageFree, .Parallel, deps[0..ndeps], data);
 }

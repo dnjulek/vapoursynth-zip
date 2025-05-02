@@ -85,14 +85,14 @@ fn Read(comptime alpha: bool) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi);
+            const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
                 var image = Image.fromFilePath(allocator, d.paths[@intCast(n)]) catch unreachable;
                 defer image.deinit();
 
-                const dst = zapi.initZFrameFromVi(&d.vi, frame_ctx, core, .{});
-                const adst = if (alpha) zapi.initZFrameFromVi(&d.vi, frame_ctx, core, .{ .cf = .Gray });
+                const dst = zapi.initZFrameFromVi(&d.vi, frame_ctx, null, .{});
+                const adst = if (alpha) zapi.initZFrameFromVi(&d.vi, frame_ctx, null, .{ .cf = .Gray });
 
                 switch (image.pixels) {
                     .grayscale1 => |src| {
@@ -174,7 +174,8 @@ fn Read(comptime alpha: bool) type {
     };
 }
 
-fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callconv(.C) void {
+fn readFree(instance_data: ?*anyopaque, core: ?*vs.Core, _: ?*const vs.API) callconv(.C) void {
+    _ = core; // autofix
     const d: *Data = @ptrCast(@alignCast(instance_data));
     allocator.free(d.paths);
     allocator.destroy(d);
@@ -183,7 +184,7 @@ fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callcon
 pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
@@ -247,7 +248,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     const st: vs.SampleType = if (pi.variant == .float) .Float else .Integer;
     const bps: i32 = @max(pi.bits_per_channel, 8);
 
-    _ = zapi.queryVideoFormat(&d.vi.format, cf, st, bps, 0, 0, core);
+    _ = zapi.queryVideoFormat(&d.vi.format, cf, st, bps, 0, 0);
 
     switch (pf) {
         .grayscale1, .grayscale2, .grayscale4, .grayscale8, .grayscale16, .grayscale8Alpha, .grayscale16Alpha, .rgb24, .rgba32, .bgr24, .bgra32, .rgb48, .rgba64, .indexed1, .indexed2, .indexed4, .indexed8, .indexed16, .float32 => {},
@@ -265,5 +266,5 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     const alpha = (pi.channel_count == 4) or (pi.channel_count == 2) or pf.isIndexed();
     const gf: vs.FilterGetFrame = if (alpha) &Read(true).getFrame else &Read(false).getFrame;
 
-    zapi.createVideoFilter(out, filter_name, &d.vi, gf, readFree, .Unordered, null, data, core);
+    zapi.createVideoFilter(out, filter_name, &d.vi, gf, readFree, .Unordered, null, data);
 }

@@ -21,12 +21,12 @@ const Data = struct {
 
 fn combMaskMTGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     if (activation_reason == .Initial) {
         zapi.requestFrameFilter(n, d.node, frame_ctx);
     } else if (activation_reason == .AllFramesReady) {
-        const src = zapi.initZFrame(d.node, n, frame_ctx, core);
+        const src = zapi.initZFrame(d.node, n, frame_ctx);
 
         defer src.deinit();
 
@@ -46,9 +46,9 @@ fn combMaskMTGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance
     return null;
 }
 
-fn combMaskMTFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn combMaskMTFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
 
     zapi.freeNode(d.node);
     allocator.destroy(d);
@@ -57,7 +57,7 @@ fn combMaskMTFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.AP
 pub fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi);
+    const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip");
@@ -95,5 +95,5 @@ pub fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    zapi.createVideoFilter(out, filter_name, d.vi, combMaskMTGetFrame, combMaskMTFree, .Parallel, &deps, data, core);
+    zapi.createVideoFilter(out, filter_name, d.vi, combMaskMTGetFrame, combMaskMTFree, .Parallel, &deps, data);
 }

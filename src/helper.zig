@@ -22,7 +22,7 @@ pub const BPSType = enum {
         var err_msg: ?[:0]const u8 = null;
         errdefer {
             map.setError(err_msg.?);
-            map.api.freeNode(node);
+            map.zapi.freeNode(node);
         }
 
         if (vi.format.sampleType == .Integer) {
@@ -62,7 +62,7 @@ pub const DataType = enum {
         var err_msg: ?[:0]const u8 = null;
         errdefer {
             map.setError(err_msg.?);
-            map.api.freeNode(node);
+            map.zapi.freeNode(node);
         }
 
         if (vi.format.sampleType == .Integer) {
@@ -186,9 +186,9 @@ pub fn getPeak(vi: *const vs.VideoInfo) u16 {
     }
 }
 
-pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, zapi: *const ZAPI) ?*vs.Node {
+pub fn toRGBS(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     const vi = zapi.getVideoInfo(node);
-    if (zapi.getVideoFormatID(vi, core) == .RGBS) {
+    if (zapi.getVideoFormatID(vi) == .RGBS) {
         return node;
     }
 
@@ -198,7 +198,7 @@ pub fn toRGBS(node: ?*vs.Node, core: ?*vs.Core, zapi: *const ZAPI) ?*vs.Node {
     args.setInt("matrix_in", matrix, .Replace);
     args.setInt("format", @intFromEnum(vs.PresetVideoFormat.RGBS), .Replace);
 
-    const vsplugin = zapi.getPluginByID2(.Resize, core);
+    const vsplugin = zapi.getPluginByID2(.Resize);
     const ret = args.invoke(vsplugin, "Bicubic");
     const out = args.getNode("clip");
     ret.free();
