@@ -12,7 +12,7 @@ pub const filter_name = "ImageRead";
 
 const Data = struct {
     vi: vs.VideoInfo = undefined,
-    paths: [][]const u8 = undefined,
+    paths: [][]u8 = undefined,
 };
 
 pub const ImgFormat = enum {
@@ -174,9 +174,13 @@ fn Read(comptime alpha: bool) type {
     };
 }
 
-fn readFree(instance_data: ?*anyopaque, core: ?*vs.Core, _: ?*const vs.API) callconv(.C) void {
-    _ = core; // autofix
+fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
+
+    for (d.paths) |path| {
+        allocator.free(path);
+    }
+
     allocator.free(d.paths);
     allocator.destroy(d);
 }
@@ -188,7 +192,15 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
-    d.paths = map_in.getDataArray("path", allocator).?;
+    const paths_in = map_in.getDataArray("path", allocator).?;
+    d.paths = allocator.alloc([]u8, paths_in.len) catch unreachable;
+
+    for (paths_in, 0..) |path, i| {
+        d.paths[i] = allocator.alloc(u8, path.len) catch unreachable;
+        @memcpy(d.paths[i], path);
+    }
+
+    allocator.free(paths_in);
 
     var image_0 = Image.fromFilePath(allocator, d.paths[0]) catch |err| {
         const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[0], err }) catch unreachable;
