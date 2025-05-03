@@ -88,7 +88,13 @@ fn Read(comptime alpha: bool) type {
             const zapi = ZAPI.init(vsapi, core);
 
             if (activation_reason == .Initial) {
-                var image = Image.fromFilePath(allocator, d.paths[@intCast(n)]) catch unreachable;
+                var image = Image.fromFilePath(allocator, d.paths[@intCast(n)]) catch |err| {
+                    const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[@intCast(n)], err }) catch unreachable;
+                    zapi.setFilterError(err_msg, frame_ctx);
+                    allocator.free(err_msg);
+                    return null;
+                };
+
                 defer image.deinit();
 
                 const dst = zapi.initZFrameFromVi(&d.vi, frame_ctx, null, .{});
