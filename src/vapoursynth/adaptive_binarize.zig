@@ -15,7 +15,7 @@ const Data = struct {
     node: ?*vs.Node = null,
     node2: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    tab: [768]u8 = undefined,
+    tab: [255 * 2 + 1]u8 = undefined,
 };
 
 fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
