@@ -7,6 +7,7 @@ const bilateral = @import("vapoursynth/bilateral.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
+const color_map = @import("vapoursynth/color_map.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limiter = @import("vapoursynth/limiter.zig");
@@ -64,6 +65,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;limit:int:opt;tiles:int[]:opt",
         "clip:vnode;",
         clahe.claheCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        color_map.filter_name,
+        "clip:vnode;color:int:opt;",
+        "clip:vnode;",
+        color_map.colorMapCreate,
         null,
         plugin,
     );
