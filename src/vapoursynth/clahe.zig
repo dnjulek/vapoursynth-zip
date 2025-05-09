@@ -64,7 +64,7 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
     const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
-    d.node, d.vi = map_in.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip").?;
 
     if ((d.vi.format.sampleType != .Integer)) {
         map_out.setError(filter_name ++ ": only 8-16 bit int formats supported.");

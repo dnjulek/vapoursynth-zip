@@ -97,7 +97,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
-    d.node1, d.vi = map_in.getNodeVi("clip");
+    d.node1, d.vi = map_in.getNodeVi("clip").?;
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);

@@ -84,7 +84,7 @@ pub fn packrgbCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
-    d.node, const in_vi = map_in.getNodeVi("clip");
+    d.node, const in_vi = map_in.getNodeVi("clip").?;
     d.out_vi = in_vi.*;
 
     const id = zapi.getVideoFormatID(in_vi);

@@ -109,7 +109,7 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
-    d.node1, d.vi = map_in.getNodeVi("clipa");
+    d.node1, d.vi = map_in.getNodeVi("clipa").?;
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
 
     d.node2 = map_in.getNode("clipb");

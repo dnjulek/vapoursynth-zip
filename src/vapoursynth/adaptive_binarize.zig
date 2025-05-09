@@ -77,7 +77,7 @@ pub fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque,
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
-    d.node, d.vi = map_in.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip").?;
     d.node2 = map_in.getNode("clip2");
 
     const nodes = [_]?*vs.Node{ d.node, d.node2 };

@@ -71,8 +71,8 @@ pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
-    d.node1, const vi1 = map_in.getNodeVi("reference");
-    d.node2, const vi2 = map_in.getNodeVi("distorted");
+    d.node1, const vi1 = map_in.getNodeVi("reference").?;
+    d.node2, const vi2 = map_in.getNodeVi("distorted").?;
 
     if ((vi1.width != vi2.width) or (vi1.height != vi2.height)) {
         map_out.setError(filter_name ++ " : clips must have the same dimensions.");

@@ -107,7 +107,7 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const zapi = ZAPI.init(vsapi, core);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
-    d.node, d.vi = map_in.getNodeVi("clip");
+    d.node, d.vi = map_in.getNodeVi("clip").?;
     const dt = helper.DataType.select(map_out, d.node, d.vi, filter_name) catch return;
 
     d.tmp_size = @intCast(@max(d.vi.width, d.vi.height));
