@@ -38,7 +38,7 @@ pub fn process(srcp: []const u8, dstp: []u8, stride: u32, width: u32, height: u3
                 @select(i32, prod > thressup_v, peak, gray),
             );
 
-            d[x..][0..vec_len].* = @as(vec_u8, @intCast(sel));
+            d[x..][0..vec_len].* = @as(vec_u8, @intCast(@min(sel, peak)));
         }
 
         su = su[stride..];
