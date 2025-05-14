@@ -30,7 +30,7 @@ pub fn process(srcp: []const u8, dstp: []u8, stride: u32, width: u32, height: u3
             prod = (@as(vec_i32, su[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*)) *
                 (@as(vec_i32, sd[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*));
 
-            const gray: vec_i32 = if (same_thr) floor else ((prod - thresinf_v) * u8_len / thr_diff);
+            const gray: vec_i32 = if (same_thr) floor else @min(((prod - thresinf_v) * u8_len / thr_diff), peak);
             const sel: vec_i32 = @select(
                 i32,
                 prod < thresinf_v,
@@ -38,7 +38,7 @@ pub fn process(srcp: []const u8, dstp: []u8, stride: u32, width: u32, height: u3
                 @select(i32, prod > thressup_v, peak, gray),
             );
 
-            d[x..][0..vec_len].* = @as(vec_u8, @intCast(@min(sel, peak)));
+            d[x..][0..vec_len].* = @as(vec_u8, @intCast(sel));
         }
 
         su = su[stride..];
