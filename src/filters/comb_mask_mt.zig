@@ -6,6 +6,7 @@ const vec_i32 = @Vector(vec_len, i32);
 const vec_u8 = @Vector(vec_len, u8);
 const floor: vec_u8 = @splat(0);
 const peak: vec_u8 = @splat(255);
+const u8_len: vec_i32 = @splat(256);
 
 pub fn process(srcp: []const u8, dstp: []u8, stride: u32, width: u32, height: u32, thresinf: u8, thressup: u8) void {
     const thresinf_v: vec_u8 = @splat(thresinf);
@@ -29,7 +30,7 @@ pub fn process(srcp: []const u8, dstp: []u8, stride: u32, width: u32, height: u3
             prod = (@as(vec_i32, su[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*)) *
                 (@as(vec_i32, sd[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*));
 
-            const gray: vec_i32 = if (same_thr) floor else ((prod - thresinf_v) * peak / thr_diff);
+            const gray: vec_i32 = if (same_thr) floor else ((prod - thresinf_v) * u8_len / thr_diff);
             const sel: vec_i32 = @select(
                 i32,
                 prod < thresinf_v,
