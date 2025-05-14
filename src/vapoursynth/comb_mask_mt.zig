@@ -15,8 +15,8 @@ pub const filter_name = "CombMaskMT";
 const Data = struct {
     node: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    thy1: i16 = 0,
-    thy2: i16 = 0,
+    thy1: u8 = 0,
+    thy2: u8 = 0,
 };
 
 fn combMaskMTGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
@@ -67,26 +67,29 @@ pub fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         return;
     }
 
-    d.thy1 = map_in.getInt(i16, "thY1") orelse 30;
-    d.thy2 = map_in.getInt(i16, "thY2") orelse 30;
+    const thy1 = map_in.getInt(i16, "thY1") orelse 30;
+    const thy2 = map_in.getInt(i16, "thY2") orelse 30;
 
-    if (d.thy1 > 255 or d.thy1 < 0) {
+    if (thy1 > 255 or thy1 < 0) {
         map_out.setError(filter_name ++ ": thY1 value should be in range [0;255]");
         zapi.freeNode(d.node);
         return;
     }
 
-    if (d.thy2 > 255 or d.thy2 < 0) {
+    if (thy2 > 255 or thy2 < 0) {
         map_out.setError(filter_name ++ ": thY2 value should be in range [0;255]");
         zapi.freeNode(d.node);
         return;
     }
 
-    if (d.thy1 > d.thy2) {
+    if (thy1 > thy2) {
         map_out.setError(filter_name ++ ": thY1 can't be greater than thY2");
         zapi.freeNode(d.node);
         return;
     }
+
+    d.thy1 = @intCast(thy1);
+    d.thy2 = @intCast(thy2);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
