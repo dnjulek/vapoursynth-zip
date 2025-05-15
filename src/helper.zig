@@ -200,7 +200,7 @@ pub fn toRGBS(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
 
     const vsplugin = zapi.getPluginByID2(.Resize);
     const ret = args.invoke(vsplugin, "Bicubic");
-    const out = args.getNode("clip");
+    const out = ret.getNode("clip");
     ret.free();
     args.free();
     return out;
