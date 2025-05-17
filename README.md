@@ -42,7 +42,7 @@ src.vszip.BoxBlur(hradius=13, hpasses=5, vradius=13, vpasses=5).set_output(6)
 ## Building
 
 - Via manual download:\
-Put [zig-master](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
+Put [zig-0.14.0](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
 - Via automated scripts:\
 Run the script in [build-help](/build-help).
 - Via AUR (for Arch Linux):\

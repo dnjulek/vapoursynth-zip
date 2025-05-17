@@ -1,10 +1,9 @@
 const std = @import("std");
 
-pub const min_zig_version = std.SemanticVersion{
+pub const required_zig_version = std.SemanticVersion{
     .major = 0,
-    .minor = 15,
+    .minor = 14,
     .patch = 0,
-    .pre = "dev.355",
 };
 
 pub fn build(b: *std.Build) void {
@@ -45,21 +44,21 @@ fn ensureZigVersion() !void {
     var installed_ver = @import("builtin").zig_version;
     installed_ver.build = null;
 
-    if (installed_ver.order(min_zig_version) == .lt) {
+    if (installed_ver.order(required_zig_version).compare(.neq)) {
         std.log.err("\n" ++
             \\---------------------------------------------------------------------------
             \\
-            \\Installed Zig compiler version is too old.
+            \\Installed Zig compiler version is not supported.
             \\
-            \\Min. required version: {any}
+            \\Required version: {any}
             \\Installed version: {any}
             \\
-            \\Please install newer version and try again.
-            \\Latest version can be found here: https://ziglang.org/download/
+            \\Please install version {any} and try again.
+            \\https://ziglang.org/download/
             \\
             \\---------------------------------------------------------------------------
             \\
-        , .{ min_zig_version, installed_ver });
-        return error.ZigIsTooOld;
+        , .{ required_zig_version, installed_ver, required_zig_version });
+        return error.ZigVersion;
     }
 }

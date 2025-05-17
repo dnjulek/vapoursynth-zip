@@ -27,7 +27,7 @@ pub fn minMaxInt(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, 
     var srcp: []const T = src;
     const total: f64 = @floatFromInt(w * h);
 
-    const accum_buf = allocator.alignedAlloc(u32, .@"32", 65536) catch unreachable;
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
     for (accum_buf) |*i| {
@@ -66,7 +66,7 @@ pub fn minMaxFloat(comptime T: type, src: []const T, stride: u32, w: u32, h: u32
     var srcp: []const T = src;
     const total: f64 = @floatFromInt(w * h);
 
-    const accum_buf = allocator.alignedAlloc(u32, .@"32", 65536) catch unreachable;
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
     for (accum_buf) |*i| {
@@ -109,7 +109,7 @@ pub fn minMaxIntRef(comptime T: type, src: []const T, ref: []const T, stride: u3
     const total: f64 = @floatFromInt(w * h);
     var diffacc: u64 = 0;
 
-    const accum_buf = allocator.alignedAlloc(u32, .@"32", 65536) catch unreachable;
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
     for (accum_buf) |*i| {
@@ -153,7 +153,7 @@ pub fn minMaxFloatRef(comptime T: type, src: []const T, ref: []const T, stride: 
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
 
-    const accum_buf = allocator.alignedAlloc(u32, .@"32", 65536) catch unreachable;
+    const accum_buf = allocator.alignedAlloc(u32, 32, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
     for (accum_buf) |*i| {
