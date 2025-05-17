@@ -1,6 +1,6 @@
 .{
     .name = .vszip,
-    .version = "5.0.0",
+    .version = "6.0.0",
     .paths = .{""},
     .fingerprint = 0x7466a154dbe09310,
     .dependencies = .{
