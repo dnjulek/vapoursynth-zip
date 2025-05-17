@@ -10,18 +10,15 @@ src16 = src.resize.Bilinear(format=vs.GRAY16, matrix=1).std.RemoveFrameProps("_M
 
 out0 = src16.vszip.CLAHE(limit=15, tiles=3)
 p0 = out0.std.PlaneStats().get_frame(0).props
-print(p0)
-assert p0.PlaneStatsAverage == 0.6039824106244517
+assert p0.PlaneStatsAverage == 0.6039824106244517, f"prop is: {p0.PlaneStatsAverage}"
 
 out1 = src16.vszip.CLAHE(limit=15)
 p1 = out1.std.PlaneStats(out0).get_frame(0).props
-print(p1)
-assert p1.PlaneStatsDiff == 0.0
+assert p1.PlaneStatsDiff == 0.0, f"prop is: {p1.PlaneStatsDiff}"
 
 out2 = src16.vszip.CLAHE(limit=15, tiles=[3, 3])
 p2 = out2.std.PlaneStats(out0).get_frame(0).props
-print(p2)
-assert p2.PlaneStatsDiff == 0.0
+assert p2.PlaneStatsDiff == 0.0, f"prop is: {p2.PlaneStatsDiff}"
 
 
 out2.set_output()

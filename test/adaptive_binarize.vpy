@@ -12,16 +12,13 @@ srcb = src.std.BoxBlur(hradius=5, vradius=5)
 
 out0 = src.vszip.AdaptiveBinarize(srcb)
 p0 = out0.std.PlaneStats().get_frame(0).props
-print(p0)
-assert p0.PlaneStatsAverage == 0.45087890625
+assert p0.PlaneStatsAverage == 0.45087890625, f"prop is: {p0.PlaneStatsAverage}"
 
 # stride test
 st1 = out0.std.Crop(left=27)
 st2 = src.std.Crop(left=27).vszip.AdaptiveBinarize(srcb.std.Crop(left=27))
 pst = st2.std.PlaneStats(st1).get_frame(0).props
-
-print(pst)
-assert pst.PlaneStatsDiff == 0.0
+assert pst.PlaneStatsDiff == 0.0, f"prop is: {pst.PlaneStatsDiff}"
 
 
 st2.set_output()

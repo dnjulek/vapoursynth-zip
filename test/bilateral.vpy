@@ -12,31 +12,25 @@ src16 = src.resize.Bilinear(format=vs.GRAY16, matrix=1).std.RemoveFrameProps("_M
 
 out32 = core.vszip.Bilateral(src32, ref=None, sigmaS=2, sigmaR=2)
 p32 = out32.std.PlaneStats().get_frame(0).props
-print(p32)
-assert p32.PlaneStatsAverage == 0.4959264570310188
+assert p32.PlaneStatsAverage == 0.4959264570310188, f"prop is: {p32.PlaneStatsAverage}"
 
 out32r = core.vszip.Bilateral(src32, ref=src32.std.BoxBlur(hradius=5, vradius=5))
 p32r = out32r.std.PlaneStats().get_frame(0).props
-print(p32r)
-assert p32r.PlaneStatsAverage == 0.4959947573716272
+assert p32r.PlaneStatsAverage == 0.4959947573716272, f"prop is: {p32r.PlaneStatsAverage}"
 
 out16 = core.vszip.Bilateral(src16, ref=None, sigmaS=2, sigmaR=2)
 p16 = out16.std.PlaneStats().get_frame(0).props
-print(p16)
-assert p16.PlaneStatsAverage == 0.4867585293312972
+assert p16.PlaneStatsAverage == 0.4867585293312972, f"prop is: {p16.PlaneStatsAverage}"
 
 out16r = core.vszip.Bilateral(src16, ref=src16.std.BoxBlur(hradius=5, vradius=5))
 p16r = out16r.std.PlaneStats().get_frame(0).props
-print(p16r)
-assert p16r.PlaneStatsAverage == 0.4867979883572471
+assert p16r.PlaneStatsAverage == 0.4867979883572471, f"prop is: {p16r.PlaneStatsAverage}"
 
 # stride test
 st1 = out16.std.Crop(left=27)
 st2 = core.vszip.Bilateral(src16.std.Crop(left=27), ref=None, sigmaS=2, sigmaR=2)
 pst = st2.std.PlaneStats(st1).get_frame(0).props
-
-print(pst)
-assert pst.PlaneStatsDiff == 8.92147154721379e-05
+assert pst.PlaneStatsDiff == 8.92147154721379e-05, f"prop is: {pst.PlaneStatsDiff}"
 
 st2.set_output()
 

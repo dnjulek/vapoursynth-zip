@@ -11,14 +11,12 @@ props = core.vszip.PlaneMinMax(clipa=props, minthr=0.2, maxthr=0.3)
 props = core.vszip.PlaneMinMax(clipa=props, minthr=0.2, maxthr=0.3, prop="mm_test")
 
 p = props.get_frame(0).props
-print(p)
-
-assert p.psmMin == 6777
-assert p.psmMax == 6777
-assert p.mm_testMin == 6777
-assert p.mm_testMax == 6777
-assert p.psmAvg == 0.10341039139391164
-assert p.avg_testAvg == 0.10341039139391164
+assert p.psmMin == 6777, f"prop is: {p.psmMin}"
+assert p.psmMax == 6777, f"prop is: {p.psmMax}"
+assert p.mm_testMin == 6777, f"prop is: {p.mm_testMin}"
+assert p.mm_testMax == 6777, f"prop is: {p.mm_testMax}"
+assert p.psmAvg == 0.10341039139391164, f"prop is: {p.psmAvg}"
+assert p.avg_testAvg == 0.10341039139391164, f"prop is: {p.avg_testAvg}"
 
 props.set_output()
 
