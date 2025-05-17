@@ -70,7 +70,7 @@ jobs:
         fi
 
     - name: install zig
-      run: sudo snap install zig --classic --edge
+      run: sudo snap install zig --beta --classic
 
     - name: build plugin
       run: |
