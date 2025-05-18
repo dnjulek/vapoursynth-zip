@@ -8,3 +8,4 @@ build-help/zig-*
 *.h
 *.cpp
 *.so
+build/
