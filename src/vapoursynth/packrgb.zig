@@ -31,9 +31,7 @@ fn Pack(comptime is_rgb24: bool) type {
                 const h: u32 = @intCast(d.out_vi.height);
 
                 if (is_rgb24) {
-                    const src_r = src.getReadSlice(0);
-                    const src_g = src.getReadSlice(1);
-                    const src_b = src.getReadSlice(2);
+                    const srcp = src.getReadSlices();
                     const src_stride = src.getStride(0);
                     const dstp = dst.getWriteSlice(0);
 
@@ -42,16 +40,14 @@ fn Pack(comptime is_rgb24: bool) type {
                             const i_src = y * src_stride + x;
                             const i_dst = (y * w + x) * 4;
 
-                            dstp[i_dst + 0] = src_b[i_src];
-                            dstp[i_dst + 1] = src_g[i_src];
-                            dstp[i_dst + 2] = src_r[i_src];
+                            dstp[i_dst + 0] = srcp[2][i_src];
+                            dstp[i_dst + 1] = srcp[1][i_src];
+                            dstp[i_dst + 2] = srcp[0][i_src];
                             dstp[i_dst + 3] = 255;
                         }
                     }
                 } else {
-                    const src_r = src.getReadSlice2(u16, 0);
-                    const src_g = src.getReadSlice2(u16, 1);
-                    const src_b = src.getReadSlice2(u16, 2);
+                    const srcp = src.getReadSlices2(u16);
                     const src_stride = src.getStride2(u16, 0);
                     const dstp = dst.getWriteSlice2(u32, 0);
 
@@ -59,7 +55,7 @@ fn Pack(comptime is_rgb24: bool) type {
                         for (0..w) |x| {
                             const i_src = y * src_stride + x;
                             const i_dst = (y * w + x);
-                            dstp[i_dst] = @as(u32, src_b[i_src]) | (@as(u32, src_g[i_src]) << 10) | (@as(u32, src_r[i_src]) << 20) | (0b11 << 30);
+                            dstp[i_dst] = @as(u32, srcp[2][i_src]) | (@as(u32, srcp[1][i_src]) << 10) | (@as(u32, srcp[0][i_src]) << 20) | (0b11 << 30);
                         }
                     }
                 }
