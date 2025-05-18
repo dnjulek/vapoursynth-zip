@@ -8,5 +8,6 @@ vspipe -p ./clahe.vpy .
 vspipe -p ./color_map.vpy .
 vspipe -p ./comb_mask_mt.vpy .
 vspipe -p ./metrics_ssimu2.vpy .
+vspipe -p ./packrgb.vpy .
 vspipe -p ./plane_props.vpy .
 vspipe -p ./rfs_mismatch.vpy .
