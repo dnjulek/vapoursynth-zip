@@ -99,7 +99,7 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clipa").?;
-    const dt = hz.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
+    const dt = hz.DataType.select(map_out, d.node1, d.vi, filter_name, true) catch return;
 
     d.node2 = map_in.getNode("clipb");
     const refb = d.node2 != null;
@@ -109,7 +109,7 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
     }
 
     hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
-    d.peak = @floatFromInt(hz.getPeak(d.vi));
+    d.peak = @floatFromInt(math.shl(u64, 1, d.vi.format.bitsPerSample) - 1);
 
     const prop_in = map_in.getData("prop", 0) orelse "psm";
     d.prop = .{
@@ -141,13 +141,14 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
         .{ .source = d.node2, .requestPattern = rp2 },
     };
 
-    const getFrame = switch (dt) {
+    const gf: vs.FilterGetFrame = switch (dt) {
         .U8 => if (refb) &PlaneAverage(u8, true).getFrame else &PlaneAverage(u8, false).getFrame,
         .U16 => if (refb) &PlaneAverage(u16, true).getFrame else &PlaneAverage(u16, false).getFrame,
+        .U32 => if (refb) &PlaneAverage(u32, true).getFrame else &PlaneAverage(u32, false).getFrame,
         .F16 => if (refb) &PlaneAverage(f16, true).getFrame else &PlaneAverage(f16, false).getFrame,
         .F32 => if (refb) &PlaneAverage(f32, true).getFrame else &PlaneAverage(f32, false).getFrame,
     };
 
     const ndeps: usize = if (refb) 2 else 1;
-    zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeAverageFree, .Parallel, deps[0..ndeps], data);
+    zapi.createVideoFilter(out, filter_name, d.vi, gf, planeAverageFree, .Parallel, deps[0..ndeps], data);
 }

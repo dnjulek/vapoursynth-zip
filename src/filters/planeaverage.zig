@@ -26,7 +26,7 @@ fn result(comptime T: type, acc: anytype, total: f64, peak: f32) f64 {
 pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, exclude_union: Exclude, peak: f32) f64 {
     var srcp: []const T = src;
     const exclude = if (@typeInfo(T) == .float) exclude_union.f else exclude_union.i;
-    var total: i64 = @intCast(w * h);
+    var total: u32 = @intCast(w * h);
     var acc: if (@typeInfo(T) == .float) f64 else u64 = 0;
 
     for (0..h) |_| {
@@ -52,7 +52,7 @@ pub fn averageRef(comptime T: type, src: []const T, ref: []const T, stride: u32,
     var refp: []const T = ref;
 
     const exclude = if (@typeInfo(T) == .float) exclude_union.f else exclude_union.i;
-    const _total: i64 = @intCast(w * h);
+    const _total: u32 = @intCast(w * h);
     var total = _total;
     const T2 = if (@typeInfo(T) == .float) f64 else u64;
     var acc: T2 = 0;

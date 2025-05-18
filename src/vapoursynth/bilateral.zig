@@ -98,7 +98,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clip").?;
-    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name) catch return;
+    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
     const peak: u32 = helper.getPeak(d.vi);
@@ -282,6 +282,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         .U16 => if (refb) &Bilateral(u16, true).getFrame else &Bilateral(u16, false).getFrame,
         .F16 => if (refb) &Bilateral(f16, true).getFrame else &Bilateral(f16, false).getFrame,
         .F32 => if (refb) &Bilateral(f32, true).getFrame else &Bilateral(f32, false).getFrame,
+        .U32 => unreachable,
     };
 
     const ndeps: usize = if (refb) 2 else 1;

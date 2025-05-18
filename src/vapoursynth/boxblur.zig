@@ -108,7 +108,7 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip").?;
-    const dt = helper.DataType.select(map_out, d.node, d.vi, filter_name) catch return;
+    const dt = helper.DataType.select(map_out, d.node, d.vi, filter_name, false) catch return;
 
     d.tmp_size = @intCast(@max(d.vi.width, d.vi.height));
 
@@ -143,6 +143,7 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
             .U16 => &BoxBlurRT(u16).getFrame,
             .F16 => &BoxBlurRT(f16).getFrame,
             .F32 => &BoxBlurRT(f32).getFrame,
+            .U32 => unreachable,
         };
     } else {
         get_frame = switch (d.hradius) {
@@ -151,6 +152,7 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
                 .U16 => &BoxBlurCT(u16, r).getFrame,
                 .F16 => &BoxBlurCT(f16, r).getFrame,
                 .F32 => &BoxBlurCT(f32, r).getFrame,
+                .U32 => unreachable,
             },
             else => unreachable,
         };

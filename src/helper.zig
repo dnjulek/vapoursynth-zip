@@ -55,11 +55,13 @@ pub const BPSType = enum {
 pub const DataType = enum {
     U8,
     U16,
+    U32,
     F16,
     F32,
 
-    pub fn select(map: ZAPI.ZMap(?*vs.Map), node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8) !DataType {
+    pub fn select(map: ZAPI.ZMap(?*vs.Map), node: ?*vs.Node, vi: *const vs.VideoInfo, comptime name: []const u8, enable_u32: bool) !DataType {
         var err_msg: ?[:0]const u8 = null;
+
         errdefer {
             map.setError(err_msg.?);
             map.zapi.freeNode(node);
@@ -69,7 +71,11 @@ pub const DataType = enum {
             switch (vi.format.bytesPerSample) {
                 1 => return .U8,
                 2 => return .U16,
-                else => return {
+                4 => if (enable_u32) return .U32 else {
+                    err_msg = name ++ ": not supported Int format.";
+                    return error.format;
+                },
+                else => {
                     err_msg = name ++ ": not supported Int format.";
                     return error.format;
                 },
@@ -78,7 +84,7 @@ pub const DataType = enum {
             switch (vi.format.bytesPerSample) {
                 2 => return .F16,
                 4 => return .F32,
-                else => return {
+                else => {
                     err_msg = name ++ ": not supported Float format.";
                     return error.format;
                 },
