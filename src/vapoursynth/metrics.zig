@@ -40,13 +40,8 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         const dst = src1.copyFrame();
         const w, const h, const stride = src1.getDimensions2(f32, 0);
 
-        var srcp1: [3][]const f32 = undefined;
-        var srcp2: [3][]const f32 = undefined;
-        for (0..3) |i| {
-            srcp1[i] = src1.getReadSlice2(f32, i);
-            srcp2[i] = src2.getReadSlice2(f32, i);
-        }
-
+        const srcp1 = src1.getReadSlices2(f32);
+        const srcp2 = src2.getReadSlices2(f32);
         const val = filter_ssim.process(srcp1, srcp2, stride, w, h);
         const dst_prop = dst.getPropertiesRW();
         dst_prop.setFloat("_SSIMULACRA2", val, .Replace);
