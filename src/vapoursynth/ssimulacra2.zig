@@ -1,7 +1,7 @@
 const std = @import("std");
 const math = std.math;
 
-const filter_ssim = @import("../filters/metric_ssimulacra2.zig");
+const filter_ssim = @import("../filters/ssimulacra2.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
@@ -12,16 +12,11 @@ const vsc = vapoursynth.vsconstants;
 const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "Metrics";
+pub const filter_name = "SSIMULACRA2";
 
 const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
-};
-
-const Mode = enum(i32) {
-    SSIMU2 = 0,
-    XPSNR = 1,
 };
 
 fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
@@ -50,7 +45,7 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
     return null;
 }
 
-fn MetricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core);
 
@@ -59,7 +54,7 @@ fn MetricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.AP
     allocator.destroy(d);
 }
 
-pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core);
@@ -83,14 +78,6 @@ pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         return;
     }
 
-    const mode = map_in.getInt(i32, "mode") orelse 0;
-    if (mode != 0) {
-        map_out.setError(filter_name ++ " : only mode=0 is implemented.");
-        zapi.freeNode(d.node1);
-        zapi.freeNode(d.node2);
-        return;
-    }
-
     d.node1 = hz.toRGBS(d.node1, &zapi);
     d.node2 = hz.toRGBS(d.node2, &zapi);
     d.node1 = sRGBtoLinearRGB(d.node1, &zapi);
@@ -105,7 +92,7 @@ pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         .{ .source = d.node2, .requestPattern = .StrictSpatial },
     };
 
-    zapi.createVideoFilter(out, filter_name, vi_out, ssimulacra2GetFrame, MetricsFree, .Parallel, &deps, data);
+    zapi.createVideoFilter(out, filter_name, vi_out, ssimulacra2GetFrame, ssimulacraFree, .Parallel, &deps, data);
 }
 
 pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {

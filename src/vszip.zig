@@ -11,11 +11,12 @@ const color_map = @import("vapoursynth/color_map.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limiter = @import("vapoursynth/limiter.zig");
-const metrics = @import("vapoursynth/metrics.zig");
 const packrgb = @import("vapoursynth/packrgb.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
+const ssimulacra2 = @import("vapoursynth/ssimulacra2.zig");
+const xpsnr = @import("vapoursynth/xpsnr.zig");
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     _ = vspapi.configPlugin.?(
@@ -101,14 +102,6 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         plugin,
     );
     _ = vspapi.registerFunction.?(
-        metrics.filter_name,
-        "reference:vnode;distorted:vnode;mode:int:opt;",
-        "clip:vnode;",
-        metrics.metricsCreate,
-        null,
-        plugin,
-    );
-    _ = vspapi.registerFunction.?(
         packrgb.filter_name,
         "clip:vnode;",
         "clip:vnode;",
@@ -137,6 +130,22 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clipa:vnode;clipb:vnode;frames:int[];mismatch:int:opt;planes:int[]:opt;",
         "clip:vnode;",
         rfs.rfsCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        ssimulacra2.filter_name,
+        "reference:vnode;distorted:vnode;",
+        "clip:vnode;",
+        ssimulacra2.ssimulacraCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        xpsnr.filter_name,
+        "reference:vnode;distorted:vnode;",
+        "clip:vnode;",
+        xpsnr.xpsnrCreate,
         null,
         plugin,
     );
