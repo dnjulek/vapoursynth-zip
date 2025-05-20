@@ -39,7 +39,7 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         const srcp2 = src2.getReadSlices2(f32);
         const val = filter_ssim.process(srcp1, srcp2, stride, w, h);
         const dst_prop = dst.getPropertiesRW();
-        dst_prop.setFloat("_SSIMULACRA2", val, .Replace);
+        dst_prop.setFloat("SSIMULACRA2", val, .Replace);
         return dst.frame;
     }
     return null;
