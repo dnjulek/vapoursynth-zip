@@ -87,7 +87,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
     );
     _ = vspapi.registerFunction.?(
         image_read.filter_name,
-        "path:data[];",
+        "path:data[];validate:int:opt;",
         "clip:vnode;",
         image_read.readCreate,
         null,

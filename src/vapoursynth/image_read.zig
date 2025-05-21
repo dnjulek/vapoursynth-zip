@@ -216,40 +216,9 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     };
     defer image_0.deinit();
 
-    const pf = image_0.pixelFormat();
-
-    for (d.paths[1..]) |path| {
-        var image = Image.fromFilePath(allocator, path) catch |err| {
-            const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }) catch unreachable;
-            map_out.setError(err_msg);
-            allocator.free(err_msg);
-            return;
-        };
-
-        if (image_0.width != image.width or image_0.height != image.height) {
-            const err_msg = std.fmt.allocPrintZ(
-                allocator,
-                "{s}: Dimensions do not match ({}x{} != {}x{}):\n{s}\n{s}",
-                .{ filter_name, image_0.width, image_0.height, image.width, image.height, d.paths[0], path },
-            ) catch unreachable;
-            map_out.setError(err_msg);
-            allocator.free(err_msg);
-            return;
-        }
-
-        const pf2 = image.pixelFormat();
-        if (pf != pf2) {
-            const err_msg = std.fmt.allocPrintZ(
-                allocator,
-                "{s}: Pixel formats do not match ({s} != {s}):\n{s}\n{s}",
-                .{ filter_name, @tagName(pf), @tagName(pf2), d.paths[0], path },
-            ) catch unreachable;
-            map_out.setError(err_msg);
-            allocator.free(err_msg);
-            return;
-        }
-
-        image.deinit();
+    const validate = map_in.getBool("validate") orelse false;
+    if (validate and d.paths.len > 1) {
+        validatePaths(d.paths, map_out, image_0) catch return;
     }
 
     d.vi = .{
@@ -261,6 +230,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         .numFrames = @intCast(d.paths.len),
     };
 
+    const pf = image_0.pixelFormat();
     const pi = pf.info();
     const cf: vs.ColorFamily = if (pf.isGrayscale()) .Gray else .RGB;
     const st: vs.SampleType = if (pi.variant == .float) .Float else .Integer;
@@ -285,4 +255,42 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     const gf: vs.FilterGetFrame = if (alpha) &Read(true).getFrame else &Read(false).getFrame;
 
     zapi.createVideoFilter(out, filter_name, &d.vi, gf, readFree, .Unordered, null, data);
+}
+
+fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
+    const pf = image_0.pixelFormat();
+
+    for (paths[1..]) |path| {
+        var image = Image.fromFilePath(allocator, path) catch |err| {
+            const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }) catch unreachable;
+            map_out.setError(err_msg);
+            allocator.free(err_msg);
+            return error.openFile;
+        };
+
+        if (image_0.width != image.width or image_0.height != image.height) {
+            const err_msg = std.fmt.allocPrintZ(
+                allocator,
+                "{s}: Dimensions do not match ({}x{} != {}x{}):\n{s}\n{s}",
+                .{ filter_name, image_0.width, image_0.height, image.width, image.height, paths[0], path },
+            ) catch unreachable;
+            map_out.setError(err_msg);
+            allocator.free(err_msg);
+            return error.dimensions;
+        }
+
+        const pf2 = image.pixelFormat();
+        if (pf != pf2) {
+            const err_msg = std.fmt.allocPrintZ(
+                allocator,
+                "{s}: Pixel formats do not match ({s} != {s}):\n{s}\n{s}",
+                .{ filter_name, @tagName(pf), @tagName(pf2), paths[0], path },
+            ) catch unreachable;
+            map_out.setError(err_msg);
+            allocator.free(err_msg);
+            return error.pixelFormat;
+        }
+
+        image.deinit();
+    }
 }
