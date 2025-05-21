@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -e
+
 vspipe -p ./adaptive_binarize.vpy .
 vspipe -p ./bilateral.vpy .
 vspipe -p ./boxblur.vpy .

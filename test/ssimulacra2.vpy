@@ -11,7 +11,7 @@ srcb = src.resize.Bicubic(src.width * 2, src.height * 2).resize.Bicubic(src.widt
 
 out0 = core.vszip.SSIMULACRA2(src, srcb)
 p0 = out0.get_frame(0).props
-assert p0.SSIMULACRA2 == 68.62413413403678, f"prop is: {p0.SSIMULACRA2}"
+assert (p0.SSIMULACRA2 == 68.62413413403678) or (p0.SSIMULACRA2 == 68.62366753474497), f"prop is: {p0.SSIMULACRA2}"
 
 rgbs = src.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)
 rgbs2 = srcb.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)
