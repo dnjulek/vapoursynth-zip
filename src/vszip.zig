@@ -11,6 +11,7 @@ const color_map = @import("vapoursynth/color_map.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limiter = @import("vapoursynth/limiter.zig");
+const metrics = @import("vapoursynth/metrics.zig");
 const packrgb = @import("vapoursynth/packrgb.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
@@ -98,6 +99,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;planes:int[]:opt;",
         "clip:vnode;",
         limiter.limiterCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        metrics.filter_name,
+        "reference:vnode;distorted:vnode;mode:int:opt;",
+        "clip:vnode;",
+        metrics.metricsCreate,
         null,
         plugin,
     );
