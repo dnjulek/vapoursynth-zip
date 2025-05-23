@@ -60,6 +60,7 @@ fn metricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.AP
 }
 
 pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+    deprecated();
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core);
@@ -138,4 +139,17 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     ret.free();
     args.free();
     return out;
+}
+
+fn deprecated() void {
+    var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
+    const stdout = bw.writer();
+    stdout.print(
+        "\n!!!WARNING!!!\nYou are using a deprecated filter!\n" ++
+            "It will be removed in the next few months!\n" ++
+            "Update \"vszip.Metrics\" => \"vszip.SSIMULACRA2\" filter\n" ++
+            "and \"_SSIMULACRA2\" => \"SSIMULACRA2\" frame prop\n\n",
+        .{},
+    ) catch unreachable;
+    bw.flush() catch unreachable;
 }
