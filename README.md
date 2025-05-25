@@ -12,11 +12,12 @@
 - [CombMaskMT](https://github.com/dnjulek/vapoursynth-zip/wiki/CombMaskMT): Port of MTCombMask [from AviSynth](http://avisynth.nl/index.php/MTCombMask).
 - [ImageRead](https://github.com/dnjulek/vapoursynth-zip/wiki/ImageRead): Load image using [Zig Image library](https://github.com/zigimg/zigimg).
 - [Limiter](https://github.com/dnjulek/vapoursynth-zip/wiki/Limiter): A faster version of [core.std.Limiter](https://www.vapoursynth.com/doc/functions/video/limiter.html).
-- [Metrics](https://github.com/dnjulek/vapoursynth-zip/wiki/Metrics): Image metrics like [SSIMULACRA2](https://github.com/cloudinary/ssimulacra2) and [XPSNR](https://github.com/fraunhoferhhi/xpsnr).
 - [PackRGB](https://github.com/dnjulek/vapoursynth-zip/wiki/PackRGB): Planar to interleaved RGB filter.
 - [PlaneAverage](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneAverage): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [RFS](https://github.com/dnjulek/vapoursynth-zip/wiki/RFS): Replace frames plugin.
+- [SSIMULACRA2](https://github.com/dnjulek/vapoursynth-zip/wiki/SSIMULACRA2): Image metric [SSIMULACRA2](https://github.com/cloudinary/ssimulacra2).
+- [XPSNR](https://github.com/dnjulek/vapoursynth-zip/wiki/XPSNR): Image metric [XPSNR](https://github.com/fraunhoferhhi/xpsnr).
 
 # BENCHMARK
 
@@ -42,7 +43,7 @@ src.vszip.BoxBlur(hradius=13, hpasses=5, vradius=13, vpasses=5).set_output(6)
 ## Building
 
 - Via manual download:\
-Put [zig-0.14.0](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
+Put [zig-0.14.1](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
 - Via automated scripts:\
 Run the script in [build-help](/build-help).
 - Via AUR (for Arch Linux):\

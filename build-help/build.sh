@@ -17,7 +17,7 @@ then
     echo "Using cached ${ZNAME}"
 else
     echo "Downloading ${ZNAME}..."
-    wget "https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz"
+    wget "https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
     tar -xf "${ZNAME}.tar.xz"
 fi
 
