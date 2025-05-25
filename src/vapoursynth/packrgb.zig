@@ -33,7 +33,7 @@ fn Pack(comptime is_rgb24: bool) type {
                 if (is_rgb24) {
                     const srcp = src.getReadSlices();
                     const src_stride = src.getStride(0);
-                    const dst_stride = dst.getStride(0);
+                    const dst_stride = dst.getStride2(u32, 0);
                     const dstp = dst.getWriteSlice(0);
 
                     for (0..h) |y| {
