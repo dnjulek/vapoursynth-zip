@@ -33,12 +33,13 @@ fn Pack(comptime is_rgb24: bool) type {
                 if (is_rgb24) {
                     const srcp = src.getReadSlices();
                     const src_stride = src.getStride(0);
+                    const dst_stride = dst.getStride(0);
                     const dstp = dst.getWriteSlice(0);
 
                     for (0..h) |y| {
                         for (0..w) |x| {
                             const i_src = y * src_stride + x;
-                            const i_dst = (y * w + x) * 4;
+                            const i_dst = (y * dst_stride + x) * 4;
 
                             dstp[i_dst + 0] = srcp[2][i_src];
                             dstp[i_dst + 1] = srcp[1][i_src];
@@ -49,12 +50,13 @@ fn Pack(comptime is_rgb24: bool) type {
                 } else {
                     const srcp = src.getReadSlices2(u16);
                     const src_stride = src.getStride2(u16, 0);
+                    const dst_stride = dst.getStride2(u32, 0);
                     const dstp = dst.getWriteSlice2(u32, 0);
 
                     for (0..h) |y| {
                         for (0..w) |x| {
                             const i_src = y * src_stride + x;
-                            const i_dst = (y * w + x);
+                            const i_dst = (y * dst_stride + x);
                             dstp[i_dst] = @as(u32, srcp[2][i_src]) | (@as(u32, srcp[1][i_src]) << 10) | (@as(u32, srcp[0][i_src]) << 20) | (0b11 << 30);
                         }
                     }
