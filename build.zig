@@ -50,7 +50,7 @@ fn ensureZigVersion() !void {
     var installed_ver = @import("builtin").zig_version;
     installed_ver.build = null;
 
-    if (installed_ver.order(zig_min_version).compare(.lt) or installed_ver.order(zig_min_version).compare(.gt)) {
+    if (installed_ver.order(zig_min_version).compare(.lt) or installed_ver.order(zig_max_version).compare(.gt)) {
         std.log.err("\n" ++
             \\---------------------------------------------------------------------------
             \\
