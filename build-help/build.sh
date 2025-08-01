@@ -10,7 +10,7 @@ if ! command -v jq > /dev/null; then
   exit 1
 fi
 
-ZNAME="zig-linux-x86_64-0.14.0"
+ZNAME="zig-x86_64-linux-0.14.1"
 
 if [ -e "${ZNAME}" ]
 then
