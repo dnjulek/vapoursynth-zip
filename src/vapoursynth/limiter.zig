@@ -188,14 +188,10 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         if (std.mem.eql(bool, &comptime_planes[i], &planes)) break i;
     } else 0;
 
-    const get_frame: vs.FilterGetFrame = filter.getFrame(
-        (has_max or has_min),
-        map_in.getBool("tv_range") orelse false,
-        d.vi.format.colorFamily == .YUV,
-        num_planes,
-        bps,
-        idx,
-    );
+    const tv_range = map_in.getBool("tv_range") orelse false;
+    const mask = map_in.getBool("mask") orelse false;
+    const yuv = (d.vi.format.colorFamily == .YUV) and !mask;
+    const get_frame: vs.FilterGetFrame = filter.getFrame(has_min, tv_range, yuv, num_planes, bps, idx);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
