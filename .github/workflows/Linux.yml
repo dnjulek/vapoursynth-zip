@@ -76,7 +76,7 @@ jobs:
 
     - name: build plugin
       run: |
-        zig build -Doptimize=Debug -Dtarget=x86_64-windows -Dcpu=x86_64_v3
+        zig build -Doptimize=Debug -Dcpu=x86_64_v3
 
     - name: export PATH
       run: export PATH="${{ runner.os }}-vapoursynth-build/vapoursynth:$PATH"
