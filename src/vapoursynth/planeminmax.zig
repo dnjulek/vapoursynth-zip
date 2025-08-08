@@ -17,6 +17,7 @@ pub const Data = struct {
     node2: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
     peak: u16 = 0,
+    peakf: f32 = 0,
     minthr: f32 = 0,
     maxthr: f32 = 0,
     hist_size: u32 = 0,
@@ -30,7 +31,7 @@ const StringProp = struct {
     mi: [:0]u8,
 };
 
-fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
+fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
@@ -54,28 +55,26 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool) type {
 
                     const srcp = src.getReadSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
-                    var stats: filter.Stats = undefined;
+
                     if (refb) {
                         const refp = ref.getReadSlice2(T, plane);
-                        stats = if (@typeInfo(T) == .int) filter.minMaxIntRef(T, srcp, refp, stride, w, h, d) else filter.minMaxFloatRef(T, srcp, refp, stride, w, h, d);
-
-                        _ = switch (stats) {
-                            .i => props.setFloat(d.prop.d, stats.i.diff, .Append),
-                            .f => props.setFloat(d.prop.d, stats.f.diff, .Append),
-                        };
+                        if (no_thr) {
+                            filter.minMaxNoThrRef(T, srcp, refp, stride, &props, w, h, d);
+                        } else {
+                            if (@typeInfo(T) == .int)
+                                filter.minMaxIntRef(T, srcp, refp, stride, &props, w, h, d)
+                            else
+                                filter.minMaxFloatRef(T, srcp, refp, stride, &props, w, h, d);
+                        }
                     } else {
-                        stats = if (@typeInfo(T) == .int) filter.minMaxInt(T, srcp, stride, w, h, d) else filter.minMaxFloat(T, srcp, stride, w, h, d);
-                    }
-
-                    switch (stats) {
-                        .i => {
-                            props.setInt(d.prop.ma, stats.i.max, .Append);
-                            props.setInt(d.prop.mi, stats.i.min, .Append);
-                        },
-                        .f => {
-                            props.setFloat(d.prop.ma, stats.f.max, .Append);
-                            props.setFloat(d.prop.mi, stats.f.min, .Append);
-                        },
+                        if (no_thr) {
+                            filter.minMaxNoThr(T, srcp, stride, &props, w, h, d);
+                        } else {
+                            if (@typeInfo(T) == .int)
+                                filter.minMaxInt(T, srcp, stride, &props, w, h, d)
+                            else
+                                filter.minMaxFloat(T, srcp, stride, &props, w, h, d);
+                        }
                     }
                 }
 
@@ -122,6 +121,7 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     helper.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
     d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
     d.peak = @intCast(d.hist_size - 1);
+    d.peakf = @floatFromInt(d.peak);
     d.maxthr = getThr(map_in, map_out, &nodes, "maxthr", &zapi) catch return;
     d.minthr = getThr(map_in, map_out, &nodes, "minthr", &zapi) catch return;
 
@@ -132,6 +132,19 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
         .mi = std.fmt.allocPrintZ(allocator, "{s}Min", .{prop_in}) catch unreachable,
     };
 
+    const no_thr = d.maxthr == 0 and d.minthr == 0;
+    const do_chroma = d.planes[1] or d.planes[2];
+
+    if (do_chroma and !no_thr and
+        (d.vi.format.colorFamily == .YUV) and
+        (d.vi.format.sampleType == .Float))
+    {
+        map_out.setError(filter_name ++ ": you can't use maxthr/minthr with float chroma, use planes=[0] or maxthr/minthr=0");
+        zapi.freeNode(d.node1);
+        if (refb) zapi.freeNode(d.node2);
+        return;
+    }
+
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
@@ -141,13 +154,24 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
         .{ .source = d.node2, .requestPattern = rp2 },
     };
 
-    const getFrame = switch (dt) {
-        .U8 => if (refb) &PlaneMinMax(u8, true).getFrame else &PlaneMinMax(u8, false).getFrame,
-        .U16 => if (refb) &PlaneMinMax(u16, true).getFrame else &PlaneMinMax(u16, false).getFrame,
-        .F16 => if (refb) &PlaneMinMax(f16, true).getFrame else &PlaneMinMax(f16, false).getFrame,
-        .F32 => if (refb) &PlaneMinMax(f32, true).getFrame else &PlaneMinMax(f32, false).getFrame,
-        .U32 => unreachable,
-    };
+    var getFrame: vs.FilterGetFrame = undefined;
+    if (no_thr) {
+        getFrame = switch (dt) {
+            .U8 => if (refb) &PlaneMinMax(u8, true, true).getFrame else &PlaneMinMax(u8, false, true).getFrame,
+            .U16 => if (refb) &PlaneMinMax(u16, true, true).getFrame else &PlaneMinMax(u16, false, true).getFrame,
+            .F16 => if (refb) &PlaneMinMax(f16, true, true).getFrame else &PlaneMinMax(f16, false, true).getFrame,
+            .F32 => if (refb) &PlaneMinMax(f32, true, true).getFrame else &PlaneMinMax(f32, false, true).getFrame,
+            .U32 => unreachable,
+        };
+    } else {
+        getFrame = switch (dt) {
+            .U8 => if (refb) &PlaneMinMax(u8, true, false).getFrame else &PlaneMinMax(u8, false, false).getFrame,
+            .U16 => if (refb) &PlaneMinMax(u16, true, false).getFrame else &PlaneMinMax(u16, false, false).getFrame,
+            .F16 => if (refb) &PlaneMinMax(f16, true, false).getFrame else &PlaneMinMax(f16, false, false).getFrame,
+            .F32 => if (refb) &PlaneMinMax(f32, true, false).getFrame else &PlaneMinMax(f32, false, false).getFrame,
+            .U32 => unreachable,
+        };
+    }
 
     const ndeps: usize = if (refb) 2 else 1;
     zapi.createVideoFilter(out, filter_name, d.vi, getFrame, planeMinMaxFree, .Parallel, deps[0..ndeps], data);

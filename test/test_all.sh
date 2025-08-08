@@ -12,5 +12,6 @@ vspipe -p ./comb_mask_mt.vpy .
 vspipe -p ./metrics_ssimu2.vpy .
 vspipe -p ./packrgb.vpy .
 vspipe -p ./plane_props.vpy .
+vspipe -p ./planeminmax.vpy .
 vspipe -p ./rfs_mismatch.vpy .
 vspipe -p ./ssimulacra2.vpy .
