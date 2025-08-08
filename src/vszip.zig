@@ -24,7 +24,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "com.julek.vszip",
         "vszip",
         "VapourSynth Zig Image Process",
-        vs.makeVersion(7, 0),
+        vs.makeVersion(8, 0),
         vs.VAPOURSYNTH_API_VERSION,
         0,
         plugin,
