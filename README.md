@@ -12,6 +12,7 @@
 - [CombMaskMT](https://github.com/dnjulek/vapoursynth-zip/wiki/CombMaskMT): Port of MTCombMask [from AviSynth](http://avisynth.nl/index.php/MTCombMask).
 - [ImageRead](https://github.com/dnjulek/vapoursynth-zip/wiki/ImageRead): Load image using [Zig Image library](https://github.com/zigimg/zigimg).
 - [Limiter](https://github.com/dnjulek/vapoursynth-zip/wiki/Limiter): A faster version of [core.std.Limiter](https://www.vapoursynth.com/doc/functions/video/limiter.html).
+- [LimitFilter](https://github.com/dnjulek/vapoursynth-zip/wiki/LimitFilter): Performs a soft-limiting between two clips to limit the difference of filtering while avoiding artifacts.
 - [PackRGB](https://github.com/dnjulek/vapoursynth-zip/wiki/PackRGB): Planar to interleaved RGB filter.
 - [PlaneAverage](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneAverage): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.

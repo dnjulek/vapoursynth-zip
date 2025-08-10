@@ -10,6 +10,7 @@ const clahe = @import("vapoursynth/clahe.zig");
 const color_map = @import("vapoursynth/color_map.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const image_read = @import("vapoursynth/image_read.zig");
+const limit_filter = @import("vapoursynth/limit_filter.zig");
 const limiter = @import("vapoursynth/limiter.zig");
 const metrics = @import("vapoursynth/metrics.zig");
 const packrgb = @import("vapoursynth/packrgb.zig");
@@ -91,6 +92,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "path:data[];validate:int:opt;",
         "clip:vnode;",
         image_read.readCreate,
+        null,
+        plugin,
+    );
+    _ = vspapi.registerFunction.?(
+        limit_filter.filter_name,
+        "flt:vnode;src:vnode;ref:vnode:opt;dark_thr:float:opt;bright_thr:float:opt;elast:float:opt;",
+        "clip:vnode;",
+        limit_filter.limitFilterCreate,
         null,
         plugin,
     );
