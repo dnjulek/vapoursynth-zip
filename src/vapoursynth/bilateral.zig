@@ -101,8 +101,8 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
-    const peak: u32 = helper.getPeak(d.vi);
-    d.peak = @floatFromInt(peak);
+    const hist_len: u32 = helper.getHistLen(d.vi);
+    d.peak = @floatFromInt(hist_len - 1);
 
     var i: u32 = 0;
     var m = map_in.numElements("sigmaS") orelse 0;
@@ -256,8 +256,8 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     i = 0;
     while (i < 3) : (i += 1) {
         if (d.planes[i]) {
-            d.gr_lut[i] = allocator.alloc(f32, peak + 1) catch unreachable;
-            filter.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], peak, d.sigmaR[i]);
+            d.gr_lut[i] = allocator.alloc(f32, hist_len) catch unreachable;
+            filter.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], d.peak, d.sigmaR[i]);
         }
     }
 

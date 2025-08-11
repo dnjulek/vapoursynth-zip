@@ -91,6 +91,9 @@ pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     d.bright_thr = map_in.getFloat(f32, "bright_thr") orelse 1;
     d.elast = map_in.getFloat(f32, "elast") orelse 2;
 
+    d.dark_thr = hz.scaleValue(d.dark_thr, d.flt, &zapi, .{});
+    d.bright_thr = hz.scaleValue(d.bright_thr, d.flt, &zapi, .{});
+
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 

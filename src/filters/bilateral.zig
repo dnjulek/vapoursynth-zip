@@ -519,20 +519,18 @@ pub fn gaussianFunctionSpatialLUTGeneration(gs_lut: []f32, upper: u32, sigmaS: f
     }
 }
 
-pub fn gaussianFunctionRangeLUTGeneration(gr_lut: []f32, range: u32, sigmaR: f64) void {
-    const levels: u32 = range + 1;
-    const range_f: f64 = @floatFromInt(range);
-    const upper: u32 = @intFromFloat(@min(range_f, (sigmaR * 8.0 * range_f + 0.5)));
+pub fn gaussianFunctionRangeLUTGeneration(gr_lut: []f32, range: f64, sigmaR: f64) void {
+    const upper: u32 = @intFromFloat(@min(range, (sigmaR * 8.0 * range + 0.5)));
 
     var i: u32 = 0;
     while (i <= upper) : (i += 1) {
-        const j: f64 = @as(f64, @floatFromInt(i)) / range_f;
+        const j: f64 = @as(f64, @floatFromInt(i)) / range;
         gr_lut[i] = math.lossyCast(f32, normalizedGaussianFunction(j, sigmaR));
     }
 
-    if (i < levels) {
+    if (i < gr_lut.len) {
         const upperLUTvalue: f32 = gr_lut[upper];
-        while (i < levels) : (i += 1) {
+        while (i < gr_lut.len) : (i += 1) {
             gr_lut[i] = upperLUTvalue;
         }
     }

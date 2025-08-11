@@ -5,6 +5,7 @@ const vszip = @import("vszip.zig");
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
+const vsc = vapoursynth.vsconstants;
 const ZAPI = vapoursynth.ZAPI;
 
 pub const BPSType = enum {
@@ -184,11 +185,11 @@ pub fn compareNodes(out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, len: Cli
     }
 }
 
-pub fn getPeak(vi: *const vs.VideoInfo) u16 {
+pub fn getHistLen(vi: *const vs.VideoInfo) u32 {
     if (vi.format.sampleType == .Integer) {
-        return @intCast(math.shl(u32, 1, vi.format.bitsPerSample) - 1);
+        return math.shl(u32, 1, vi.format.bitsPerSample);
     } else {
-        return math.maxInt(u16);
+        return math.maxInt(u16) + 1;
     }
 }
 
@@ -226,4 +227,83 @@ pub fn getVal2(comptime T: type, ptr: anytype, x: u32, y: u32) T {
     const uadr: usize = @intCast(adr + ix - iy);
     const ptr2: [*]const T = @ptrFromInt(uadr);
     return ptr2[0];
+}
+
+pub fn getColorRange(node: *vs.Node, zapi: *const ZAPI) vsc.ColorRange {
+    const frame = zapi.getFrame(0, node, null, 0);
+    defer zapi.freeFrame(frame);
+
+    if (frame) |f| {
+        const props = zapi.getFramePropertiesRO(f);
+        if (props) |p| {
+            const color_range = zapi.initZMap(p).getColorRange();
+            if (color_range) |cr| return cr;
+        }
+    }
+
+    const vi = zapi.getVideoInfo(node);
+    if (vi.format.colorFamily == .RGB) {
+        return .FULL;
+    } else {
+        return .LIMITED;
+    }
+}
+
+pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.ColorRange) f32 {
+    if (fmt.sampleType == .Float) {
+        return if (chroma) -0.5 else 0.0;
+    }
+
+    if (range == .LIMITED) {
+        return @floatFromInt(math.shl(i32, 16, fmt.bitsPerSample - 8));
+    }
+
+    return 0;
+}
+
+pub fn getPeakValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.ColorRange) f32 {
+    if (fmt.sampleType == .Float) {
+        return if (chroma) 0.5 else 1.0;
+    }
+
+    if (range == .LIMITED) {
+        const a: i32 = if (chroma) 240 else 235;
+        return @floatFromInt(math.shl(i32, a, fmt.bitsPerSample - 8));
+    }
+
+    return @floatFromInt(math.shl(i32, 1, fmt.bitsPerSample) - 1);
+}
+
+const ScaleValue = struct {
+    depth_in: i32 = 8,
+    sample_type_in: vs.SampleType = .Integer,
+    chroma: bool = false,
+};
+
+pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleValue) f32 {
+    const depth_in = opt.depth_in;
+    const chroma = opt.chroma;
+
+    const fmt_out = zapi.getVideoInfo(target).format;
+    var fmt_in = fmt_out;
+    fmt_in.bitsPerSample = depth_in;
+    fmt_in.sampleType = opt.sample_type_in;
+
+    var out_value = value;
+    if (depth_in == fmt_out.bitsPerSample) {
+        return out_value;
+    }
+
+    const range = getColorRange(target, zapi);
+    const input_peak = getPeakValue(&fmt_in, chroma, range);
+    const input_lowest = getLowestValue(&fmt_in, chroma, range);
+    const output_peak = getPeakValue(&fmt_out, chroma, range);
+    const output_lowest = getLowestValue(&fmt_out, chroma, range);
+    out_value *= (output_peak - output_lowest) / (input_peak - input_lowest);
+
+    if (fmt_out.sampleType == .Integer) {
+        out_value = @max(@min(@round(out_value), getPeakValue(&fmt_out, false, .FULL)), 0);
+    }
+
+    return out_value;
 }

@@ -111,7 +111,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const max_in = map_in.getFloatArray("max");
 
     const num_planes = d.vi.format.numPlanes;
-    const peak = hz.getPeak(d.vi);
+    const peak = hz.getPeakValue(&d.vi.format, false, .FULL);
 
     var planes: [3]bool = .{ true, true, true };
     const nodes = [_]?*vs.Node{d.node};
@@ -156,7 +156,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
             if (d.vi.format.sampleType == .Integer) {
                 const val: i64 = @intFromFloat(arr[i]);
 
-                if (val > peak) {
+                if (arr[i] > peak) {
                     map_out.setError(filter_name ++ ": max value must be less than or equal to peak value.");
                     zapi.freeNode(d.node);
                     return;
