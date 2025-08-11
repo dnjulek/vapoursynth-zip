@@ -8,6 +8,8 @@ const vsh = vapoursynth.vshelper;
 const vsc = vapoursynth.vsconstants;
 const ZAPI = vapoursynth.ZAPI;
 
+const allocator = std.heap.c_allocator;
+
 pub const BPSType = enum {
     U8,
     U9,
@@ -149,6 +151,8 @@ pub fn compareNodes(out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, len: Cli
     }
 
     for (nodes[1..]) |node| {
+        if (node == null) continue;
+
         const vi = zapi.getVideoInfo(node);
         if (!vsh.isConstantVideoFormat(vi)) {
             err_msg = name ++ ": all input clips must have constant format.";
@@ -306,4 +310,59 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
     }
 
     return out_value;
+}
+
+pub fn getArray(
+    comptime T: type,
+    default: T,
+    min: T,
+    max: T,
+    comptime key: [:0]const u8,
+    comptime filter_name: [:0]const u8,
+    in: ZAPI.ZMap(?*const vs.Map),
+    out: ZAPI.ZMap(?*vs.Map),
+    nodes: []const ?*vs.Node,
+    zapi: *const ZAPI,
+) ![3]T {
+    var err_msg: ?[:0]const u8 = null;
+    errdefer {
+        out.setError(err_msg.?);
+        for (nodes) |node| {
+            if (node) |n| zapi.freeNode(n);
+        }
+        allocator.free(err_msg.?);
+    }
+
+    var array: [3]T = undefined;
+    const len = in.numElements(key) orelse 0;
+    var i: u8 = 0;
+    while (i < 3) : (i += 1) {
+        if (i < len) {
+            array[i] = if (@typeInfo(T) == .int) in.getInt2(T, key, i).? else in.getFloat2(T, key, i).?;
+        } else if (i == 0) {
+            array[i] = default;
+        } else {
+            array[i] = array[i - 1];
+        }
+
+        if (array[i] < min) {
+            err_msg = std.fmt.allocPrintZ(
+                allocator,
+                "{s}: {s} value {d} is below minimum {d}.",
+                .{ filter_name, key, array[i], min },
+            ) catch return error.outOfMemory;
+            return error.invalidArgument;
+        }
+
+        if (array[i] > max) {
+            err_msg = std.fmt.allocPrintZ(
+                allocator,
+                "{s}: {s} value {d} is above maximum {d}.",
+                .{ filter_name, key, array[i], max },
+            ) catch return error.outOfMemory;
+            return error.invalidArgument;
+        }
+    }
+
+    return array;
 }

@@ -97,7 +97,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
     );
     _ = vspapi.registerFunction.?(
         limit_filter.filter_name,
-        "flt:vnode;src:vnode;ref:vnode:opt;dark_thr:float:opt;bright_thr:float:opt;elast:float:opt;",
+        "flt:vnode;src:vnode;ref:vnode:opt;dark_thr:float[]:opt;bright_thr:float[]:opt;elast:float[]:opt;planes:int[]:opt;",
         "clip:vnode;",
         limit_filter.limitFilterCreate,
         null,

@@ -18,9 +18,10 @@ const Data = struct {
     ref: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
 
-    dark_thr: f32 = 1,
-    bright_thr: f32 = 1,
-    elast: f32 = 2,
+    dark_thr: [3]f32 = @splat(1),
+    bright_thr: [3]f32 = @splat(1),
+    elast: [3]f32 = @splat(1),
+    planes: [3]bool = .{ true, true, true },
 };
 
 fn LimitFilter(comptime T: type, comptime refb: bool) type {
@@ -37,16 +38,27 @@ fn LimitFilter(comptime T: type, comptime refb: bool) type {
                 const src = zapi.initZFrame(d.src, n, frame_ctx);
                 const flt = zapi.initZFrame(d.flt, n, frame_ctx);
                 const ref = if (refb) zapi.initZFrame(d.ref, n, frame_ctx);
-                const dst = src.newVideoFrame();
+                const dst = src.newVideoFrame2(d.planes);
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    if (!(d.planes[plane])) continue;
+
                     const fltp = flt.getReadSlice2(T, plane);
                     const srcp = src.getReadSlice2(T, plane);
                     const refp = if (refb) ref.getReadSlice2(T, plane) else srcp;
                     const dstp = dst.getWriteSlice2(T, plane);
 
-                    filter.process(T, fltp, srcp, refp, dstp, d.dark_thr, d.bright_thr, d.elast);
+                    filter.process(
+                        T,
+                        fltp,
+                        srcp,
+                        refp,
+                        dstp,
+                        d.dark_thr[plane],
+                        d.bright_thr[plane],
+                        d.elast[plane],
+                    );
                 }
 
                 flt.deinit();
@@ -86,13 +98,15 @@ pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
 
     const nodes = [_]?*vs.Node{ d.flt, d.src, d.ref };
     hz.compareNodes(map_out, &nodes, .SAME_LEN, filter_name, &zapi) catch return;
+    hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
+    d.dark_thr = hz.getArray(f32, 1, 0, 255, "dark_thr", filter_name, map_in, map_out, &nodes, &zapi) catch return;
+    d.bright_thr = hz.getArray(f32, 1, 0, 255, "bright_thr", filter_name, map_in, map_out, &nodes, &zapi) catch return;
+    d.elast = hz.getArray(f32, 2, 0, math.maxInt(u16), "elast", filter_name, map_in, map_out, &nodes, &zapi) catch return;
 
-    d.dark_thr = map_in.getFloat(f32, "dark_thr") orelse 1;
-    d.bright_thr = map_in.getFloat(f32, "bright_thr") orelse 1;
-    d.elast = map_in.getFloat(f32, "elast") orelse 2;
-
-    d.dark_thr = hz.scaleValue(d.dark_thr, d.flt, &zapi, .{});
-    d.bright_thr = hz.scaleValue(d.bright_thr, d.flt, &zapi, .{});
+    for (0..3) |i| {
+        d.dark_thr[i] = hz.scaleValue(d.dark_thr[i], d.flt, &zapi, .{});
+        d.bright_thr[i] = hz.scaleValue(d.bright_thr[i], d.flt, &zapi, .{});
+    }
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
