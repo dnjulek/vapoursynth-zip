@@ -33,6 +33,8 @@ pub const Data = struct {
     sum_xpsnr: [3]f64 = .{ 0, 0, 0 },
     width: [3]u32 = .{ 0, 0, 0 },
     height: [3]u32 = .{ 0, 0, 0 },
+    temporal: bool = true,
+    verbose: bool = true,
 };
 
 fn XPSNR(comptime T: type) type {
@@ -65,7 +67,7 @@ fn XPSNR(comptime T: type) type {
                     strides[c] = src1.getStride2(T, c);
                 }
 
-                filter.getWSSE(T, orgp, recp, d.og_m1, d.og_m2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate);
+                filter.getWSSE(T, orgp, recp, d.og_m1, d.og_m2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate, d.temporal);
 
                 var i: u32 = 0;
                 while (i < d.num_comps) : (i += 1) {
@@ -92,18 +94,20 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core);
 
-    var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
-    const stdout = bw.writer();
-    stdout.print("XPSNR average, {} frames  ", .{d.vi.numFrames}) catch unreachable;
-    const char = [_]u8{ 'y', 'u', 'v' };
+    if (d.verbose) {
+        var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
+        const stdout = bw.writer();
+        stdout.print("XPSNR average, {} frames  ", .{d.vi.numFrames}) catch unreachable;
+        const char = [_]u8{ 'y', 'u', 'v' };
 
-    for (0..d.num_comps) |i| {
-        const xpsnr = filter.getAvgXPSNR(d.sum_wdist[i], d.sum_xpsnr[i], d.width[i], d.height[i], d.max_error_64, d.num_frames_64);
-        stdout.print("{c}: {d:.04}  ", .{ char[i], xpsnr }) catch unreachable;
+        for (0..d.num_comps) |i| {
+            const xpsnr = filter.getAvgXPSNR(d.sum_wdist[i], d.sum_xpsnr[i], d.width[i], d.height[i], d.max_error_64, d.num_frames_64);
+            stdout.print("{c}: {d:.04}  ", .{ char[i], xpsnr }) catch unreachable;
+        }
+
+        stdout.print("\n", .{}) catch unreachable;
+        bw.flush() catch unreachable;
     }
-
-    stdout.print("\n", .{}) catch unreachable;
-    bw.flush() catch unreachable;
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
@@ -145,6 +149,10 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
 
     d.vi = zapi.getVideoInfo(d.node1);
     helper.compareNodes(map_out, &.{ d.node1, d.node2 }, .SAME_LEN, filter_name, &zapi) catch return;
+
+    d.temporal = map_in.getBool("temporal") orelse true;
+    
+    d.verbose = map_in.getBool("verbose") orelse true;
 
     d.depth = @intCast(d.vi.format.bitsPerSample);
     d.max_error_64 = math.shl(u64, 1, d.depth) - 1;
