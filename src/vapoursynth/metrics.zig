@@ -84,7 +84,7 @@ pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         return;
     }
 
-    const mode = map_in.getInt(i32, "mode") orelse 0;
+    const mode = map_in.getValue(i32, "mode") orelse 0;
     if (mode != 0) {
         map_out.setError(filter_name ++ " : only mode=0 is implemented.");
         zapi.freeNode(d.node1);

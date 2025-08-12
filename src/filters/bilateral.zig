@@ -1,7 +1,7 @@
 const std = @import("std");
 const math = std.math;
 
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const Data = @import("../vapoursynth/bilateral.zig").Data;
 
 const allocator = std.heap.c_allocator;
@@ -62,7 +62,7 @@ fn bilateralAlg1(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, 
             var i = stride * j;
             const upper = i + width;
             while (i < upper) : (i += 1) {
-                wk[i] = gr_lut[helper.absDiff(PBFICk[k], refp[i])];
+                wk[i] = gr_lut[hz.absDiff(PBFICk[k], refp[i])];
                 jk[i] = wk[i] * @as(f32, @floatFromInt(srcp[i]));
             }
         }
@@ -138,10 +138,10 @@ fn bilateralAlg2(comptime T: type, src: []const T, dst: []T, gs_lut: []f32, gr_l
                     const cxx4f: f32 = @floatFromInt(cxx4);
 
                     const swei = gs_lut[yy * radius2 + xx];
-                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1)];
-                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2)];
-                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3)];
-                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4)];
+                    const rwei1 = gr_lut[hz.absDiff(cx, cxx1)];
+                    const rwei2 = gr_lut[hz.absDiff(cx, cxx2)];
+                    const rwei3 = gr_lut[hz.absDiff(cx, cxx3)];
+                    const rwei4 = gr_lut[hz.absDiff(cx, cxx4)];
                     weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
                     sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
                 }
@@ -189,10 +189,10 @@ fn bilateralAlg2Ref(comptime T: type, src: []const T, ref: []const T, dst: []T, 
                     const cxx4f: f32 = @floatFromInt(line_b[x - xx]);
 
                     const swei = gs_lut[yy * radius2 + xx];
-                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1r)];
-                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2r)];
-                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3r)];
-                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4r)];
+                    const rwei1 = gr_lut[hz.absDiff(cx, cxx1r)];
+                    const rwei2 = gr_lut[hz.absDiff(cx, cxx2r)];
+                    const rwei3 = gr_lut[hz.absDiff(cx, cxx3r)];
+                    const rwei4 = gr_lut[hz.absDiff(cx, cxx4r)];
                     weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
                     sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
                 }
@@ -432,10 +432,10 @@ fn alg2Edges(
                     const cxx4f: f32 = @floatFromInt(line_b[xxb]);
 
                     const swei = gs_lut[yy * radius2 + xx];
-                    const rwei1 = gr_lut[helper.absDiff(cx, cxx1)];
-                    const rwei2 = gr_lut[helper.absDiff(cx, cxx2)];
-                    const rwei3 = gr_lut[helper.absDiff(cx, cxx3)];
-                    const rwei4 = gr_lut[helper.absDiff(cx, cxx4)];
+                    const rwei1 = gr_lut[hz.absDiff(cx, cxx1)];
+                    const rwei2 = gr_lut[hz.absDiff(cx, cxx2)];
+                    const rwei3 = gr_lut[hz.absDiff(cx, cxx3)];
+                    const rwei4 = gr_lut[hz.absDiff(cx, cxx4)];
                     weight_sum += swei * (rwei1 + rwei2 + rwei3 + rwei4);
                     sum += swei * (cxx1f * rwei1 + cxx2f * rwei2 + cxx3f * rwei3 + cxx4f * rwei4);
                 }

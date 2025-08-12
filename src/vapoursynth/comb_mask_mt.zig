@@ -2,7 +2,6 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/comb_mask_mt.zig");
-const helper = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -67,8 +66,8 @@ pub fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         return;
     }
 
-    const thy1 = map_in.getInt(i16, "thY1") orelse 30;
-    const thy2 = map_in.getInt(i16, "thY2") orelse 30;
+    const thy1 = map_in.getValue(i16, "thY1") orelse 30;
+    const thy2 = map_in.getValue(i16, "thY2") orelse 30;
 
     if (thy1 > 255 or thy1 < 0) {
         map_out.setError(filter_name ++ ": thY1 value should be in range [0;255]");

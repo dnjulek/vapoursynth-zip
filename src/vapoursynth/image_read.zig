@@ -202,8 +202,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     d.paths = allocator.alloc([]u8, paths_in.len) catch unreachable;
 
     for (paths_in, 0..) |path, i| {
-        d.paths[i] = allocator.alloc(u8, path.len) catch unreachable;
-        @memcpy(d.paths[i], path);
+        d.paths[i] = allocator.dupe(u8, path) catch unreachable;
     }
 
     allocator.free(paths_in);

@@ -25,7 +25,7 @@ fn Pack(comptime is_rgb24: bool) type {
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node, n, frame_ctx);
                 defer src.deinit();
-                const dst = zapi.initZFrameFromVi(&d.out_vi, frame_ctx, src.frame, .{});
+                const dst = src.newVideoFrame3(.{ .format = &d.out_vi.format });
 
                 const w: u32 = @intCast(d.out_vi.width);
                 const h: u32 = @intCast(d.out_vi.height);

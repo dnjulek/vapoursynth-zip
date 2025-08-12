@@ -2,7 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/planeminmax.zig");
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -109,16 +109,16 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clipa").?;
-    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
+    const dt = hz.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
 
     d.node2 = map_in.getNode("clipb");
     const refb = d.node2 != null;
     const nodes = [_]?*vs.Node{ d.node1, d.node2 };
     if (refb) {
-        helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
+        hz.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
     }
 
-    helper.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
+    hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
     d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
     d.peak = @intCast(d.hist_size - 1);
     d.peakf = @floatFromInt(d.peak);
@@ -188,7 +188,7 @@ pub fn getThr(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []
         }
     }
 
-    const thr = in.getFloat(f32, key) orelse 0;
+    const thr = in.getValue(f32, key) orelse 0;
     if (thr < 0 or thr > 1) {
         err_msg = filter_name ++ ": " ++ key ++ " should be a float between 0.0 and 1.0";
         return error.ValidationError;

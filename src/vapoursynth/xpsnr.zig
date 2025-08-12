@@ -2,7 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/xpsnr.zig");
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -148,10 +148,10 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     }
 
     d.vi = zapi.getVideoInfo(d.node1);
-    helper.compareNodes(map_out, &.{ d.node1, d.node2 }, .SAME_LEN, filter_name, &zapi) catch return;
+    hz.compareNodes(map_out, &.{ d.node1, d.node2 }, .SAME_LEN, filter_name, &zapi) catch return;
 
     d.temporal = map_in.getBool("temporal") orelse true;
-    
+
     d.verbose = map_in.getBool("verbose") orelse true;
 
     d.depth = @intCast(d.vi.format.bitsPerSample);

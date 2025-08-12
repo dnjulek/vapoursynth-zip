@@ -1,7 +1,7 @@
 const std = @import("std");
 const math = std.math;
 
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -81,7 +81,7 @@ pub fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque,
     d.node2 = map_in.getNode("clip2");
 
     const nodes = [_]?*vs.Node{ d.node, d.node2 };
-    helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
+    hz.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
 
     if ((d.vi.format.sampleType != .Integer) or (d.vi.format.bitsPerSample != 8)) {
         map_out.setError(filter_name ++ ": only 8 bit int format supported.");
@@ -90,7 +90,7 @@ pub fn adaptiveBinarizeCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque,
         return;
     }
 
-    const c_param = map_in.getInt(i32, "c") orelse 3;
+    const c_param = map_in.getValue(i32, "c") orelse 3;
     for (&d.tab, 0..) |*i, n| {
         i.* = if (@as(i32, @intCast(n)) - 255 <= -c_param) 255 else 0;
     }

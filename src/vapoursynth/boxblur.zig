@@ -3,7 +3,7 @@ const math = std.math;
 
 const boxblur_ct = @import("../filters/boxblur_comptime.zig");
 const boxblur_rt = @import("../filters/boxblur_runtime.zig");
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -108,17 +108,17 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip").?;
-    const dt = helper.DataType.select(map_out, d.node, d.vi, filter_name, false) catch return;
+    const dt = hz.DataType.select(map_out, d.node, d.vi, filter_name, false) catch return;
 
     d.tmp_size = @intCast(@max(d.vi.width, d.vi.height));
 
     var nodes = [_]?*vs.Node{d.node};
-    helper.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
+    hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
 
-    d.hradius = map_in.getInt(u32, "hradius") orelse 1;
-    d.vradius = map_in.getInt(u32, "vradius") orelse 1;
-    d.hpasses = map_in.getInt(i32, "hpasses") orelse 1;
-    d.vpasses = map_in.getInt(i32, "vpasses") orelse 1;
+    d.hradius = map_in.getValue(u32, "hradius") orelse 1;
+    d.vradius = map_in.getValue(u32, "vradius") orelse 1;
+    d.hpasses = map_in.getValue(i32, "hpasses") orelse 1;
+    d.vpasses = map_in.getValue(i32, "vpasses") orelse 1;
 
     const vblur = (d.vradius > 0) and (d.vpasses > 0);
     const hblur = (d.hradius > 0) and (d.hpasses > 0);

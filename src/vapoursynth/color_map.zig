@@ -28,7 +28,7 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
         const src = zapi.initZFrame(d.node, n, frame_ctx);
         defer src.deinit();
 
-        const dst = zapi.initZFrameFromVi(&d.vi, frame_ctx, src.frame, .{});
+        const dst = src.newVideoFrame3(.{ .format = &d.vi.format });
         const w, const h, const stride = src.getDimensions(0);
         const srcp = src.getReadSlice(0);
         const dstp = dst.getWriteSlices();
@@ -74,7 +74,7 @@ pub fn colorMapCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
         return;
     }
 
-    const icolor = map_in.getInt(i32, "color") orelse 20;
+    const icolor = map_in.getValue(i32, "color") orelse 20;
     if (icolor < 0 or icolor > 21) {
         map_out.setError(filter_name ++ ": \"color\" should be between 0 and 21.");
         zapi.freeNode(d.node);

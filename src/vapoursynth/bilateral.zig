@@ -2,7 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/bilateral.zig");
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -98,14 +98,14 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clip").?;
-    const dt = helper.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
+    const dt = hz.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
-    const hist_len: u32 = helper.getHistLen(d.vi);
+    const hist_len: u32 = hz.getHistLen(d.vi);
     d.peak = @floatFromInt(hist_len - 1);
 
     var i: u32 = 0;
-    var m = map_in.numElements("sigmaS") orelse 0;
+    const m = map_in.numElements("sigmaS") orelse 0;
     while (i < 3) : (i += 1) {
         const ssw: i32 = d.vi.format.subSamplingW;
         const ssh: i32 = d.vi.format.subSamplingH;
@@ -127,25 +127,10 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         }
     }
 
-    i = 0;
-    m = map_in.numElements("sigmaR") orelse 0;
-    while (i < 3) : (i += 1) {
-        if (i < m) {
-            d.sigmaR[i] = map_in.getFloat2(f64, "sigmaR", i).?;
-        } else if (i == 0) {
-            d.sigmaR[i] = 0.02;
-        } else {
-            d.sigmaR[i] = d.sigmaR[i - 1];
-        }
-
-        if (d.sigmaR[i] < 0) {
-            map_out.setError("Bilateral: Invalid \"sigmaR\" assigned, must be non-negative float number");
-            zapi.freeNode(d.node1);
-            return;
-        }
-    }
-
-    helper.mapGetPlanes(map_in, map_out, &.{d.node1}, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
+    d.sigmaR = hz.getArray(f64, 0.02, 0, math.floatMax(f64), "sigmaR", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    d.algorithm = hz.getArray(i32, 0, 0, 2, "algorithm", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    d.PBFICnum = hz.getArray(u32, 0, 0, 256, "PBFICnum", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    hz.mapGetPlanes(map_in, map_out, &.{d.node1}, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
 
     i = 0;
     while (i < 3) : (i += 1) {
@@ -154,36 +139,8 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         }
     }
 
-    i = 0;
-    m = map_in.numElements("algorithm") orelse 0;
-    while (i < 3) : (i += 1) {
-        if (i < m) {
-            d.algorithm[i] = map_in.getInt2(i32, "algorithm", i).?;
-        } else if (i == 0) {
-            d.algorithm[i] = 0;
-        } else {
-            d.algorithm[i] = d.algorithm[i - 1];
-        }
-
-        if ((d.algorithm[i] < 0) or (d.algorithm[i] > 2)) {
-            map_out.setError("Bilateral: Invalid \"algorithm\" assigned, must be integer ranges in [0,2]");
-            zapi.freeNode(d.node1);
-            return;
-        }
-    }
-
-    i = 0;
-    m = map_in.numElements("PBFICnum") orelse 0;
-    while (i < 3) : (i += 1) {
-        if (i < m) {
-            d.PBFICnum[i] = map_in.getInt2(u32, "PBFICnum", i).?;
-        } else if (i == 0) {
-            d.PBFICnum[i] = 0;
-        } else {
-            d.PBFICnum[i] = d.PBFICnum[i - 1];
-        }
-
-        if ((d.PBFICnum[i] < 0) or (d.PBFICnum[i] == 1) or (d.PBFICnum[i] > 256)) {
+    for (d.PBFICnum) |num| {
+        if (num == 1) {
             map_out.setError("Bilateral: Invalid \"PBFICnum\" assigned, must be integer ranges in [0,256] except 1");
             zapi.freeNode(d.node1);
             return;
@@ -265,7 +222,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const refb = d.node2 != null;
     const nodes = [_]?*vs.Node{ d.node1, d.node2 };
     if (refb) {
-        helper.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
+        hz.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;

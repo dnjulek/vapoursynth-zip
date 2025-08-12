@@ -114,9 +114,9 @@ pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         return;
     }
 
-    d.thr = map_in.getInt(i32, "thr") orelse 12;
-    d.tmax = map_in.getInt(i32, "tmax") orelse 12;
-    d.tthr2 = map_in.getInt(i32, "tthr2") orelse 0;
+    d.thr = map_in.getValue(i32, "thr") orelse 12;
+    d.tmax = map_in.getValue(i32, "tmax") orelse 12;
+    d.tthr2 = map_in.getValue(i32, "tthr2") orelse 0;
 
     if ((d.tmax < 1) or (d.tmax > 255)) {
         map_out.setError(filter_name ++ ": tmax value should be in range [1;255].");

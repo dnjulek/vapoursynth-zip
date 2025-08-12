@@ -1,5 +1,5 @@
 const std = @import("std");
-const helper = @import("../helper.zig");
+const hz = @import("../helper.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -70,7 +70,7 @@ pub fn averageRef(comptime T: type, src: []const T, ref: []const T, stride: u32,
                 acc += v;
             }
 
-            diffacc += helper.absDiff(v, j);
+            diffacc += hz.absDiff(v, j);
         }
         srcp = srcp[stride..];
         refp = refp[stride..];

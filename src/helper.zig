@@ -116,7 +116,7 @@ pub fn mapGetPlanes(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nod
 
     var i: u32 = 0;
     while (i < num_e) : (i += 1) {
-        const e = in.getInt2(i32, "planes", i).?;
+        const e = in.getValue2(i32, "planes", i).?;
         if ((e < 0) or (e >= num_planes)) {
             err_msg = name ++ ": plane index out of range";
             return error.ValidationError;
@@ -338,7 +338,7 @@ pub fn getArray(
     var i: u8 = 0;
     while (i < 3) : (i += 1) {
         if (i < len) {
-            array[i] = if (@typeInfo(T) == .int) in.getInt2(T, key, i).? else in.getFloat2(T, key, i).?;
+            array[i] = in.getValue2(T, key, i).?;
         } else if (i == 0) {
             array[i] = default;
         } else {

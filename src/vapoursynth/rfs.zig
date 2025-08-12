@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const helper = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
-
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
@@ -62,7 +60,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
         var nodes = [3]*vs.Node{ d.node1, d.node1, d.node1 };
         i = 0;
         while (i < ne) : (i += 1) {
-            const e = map_in.getInt2(i32, "planes", i).?;
+            const e = map_in.getValue2(i32, "planes", i).?;
             if ((e < 0) or (e >= np)) {
                 map_out.setError(filter_name ++ ": plane index out of range.");
                 zapi.freeNode(d.node1);
@@ -98,7 +96,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     i = 0;
     ne = map_in.numElements("frames") orelse 0;
     while (i < ne) : (i += 1) {
-        d.replace[map_in.getInt2(usize, "frames", i).?] = true;
+        d.replace[map_in.getValue2(usize, "frames", i).?] = true;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
