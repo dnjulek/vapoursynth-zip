@@ -161,7 +161,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
     );
     _ = vspapi.registerFunction.?(
         xpsnr.filter_name,
-        "reference:vnode;distorted:vnode;",
+        "reference:vnode;distorted:vnode;temporal:int:opt;verbose:int:opt;",
         "clip:vnode;",
         xpsnr.xpsnrCreate,
         null,

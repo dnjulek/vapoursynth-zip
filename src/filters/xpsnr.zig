@@ -123,6 +123,7 @@ inline fn calcSquaredErrorAndWeight(
     ms_act: *f64,
     width: [3]u32,
     height: [3]u32,
+    temporal: bool,
 ) f64 {
     const uo: usize = stride;
     const o: i32 = @intCast(uo);
@@ -166,38 +167,40 @@ inline fn calcSquaredErrorAndWeight(
 
     ms_act.* = @as(f64, @floatFromInt(saAct)) / (@as(f64, @floatFromInt(w_act - x_act)) * @as(f64, @floatFromInt(h_act - y_act)));
 
-    if (b_val > 1) {
-        if (frame_rate <= 32) {
-            taAct = diff1st(T, block_width, block_height, o_m0, o_m1, uo);
-        } else {
-            taAct = diff2nd(T, block_width, block_height, o_m0, o_m1, o_m2, uo);
-        }
-    } else {
-        if (frame_rate <= 32) {
-            var y: usize = 0;
-            while (y < block_height) : (y += 1) {
-                var x: usize = 0;
-                while (x < block_width) : (x += 1) {
-                    const t: i32 = @as(i32, o_m0[y * uo + x]) - @as(i32, o_m1[y * uo + x]);
-                    taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
-                    o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
-                }
+    if (temporal) {
+        if (b_val > 1) {
+            if (frame_rate <= 32) {
+                taAct = diff1st(T, block_width, block_height, o_m0, o_m1, uo);
+            } else {
+                taAct = diff2nd(T, block_width, block_height, o_m0, o_m1, o_m2, uo);
             }
         } else {
-            var y: usize = 0;
-            while (y < block_height) : (y += 1) {
-                var x: usize = 0;
-                while (x < block_width) : (x += 1) {
-                    const t: i32 = @as(i32, o_m0[y * uo + x]) - 2 * @as(i32, o_m1[y * uo + x]) + @as(i32, o_m2[y * uo + x]);
-                    taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
-                    o_m2[y * uo + x] = o_m1[y * uo + x];
-                    o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
+            if (frame_rate <= 32) {
+                var y: usize = 0;
+                while (y < block_height) : (y += 1) {
+                    var x: usize = 0;
+                    while (x < block_width) : (x += 1) {
+                        const t: i32 = @as(i32, o_m0[y * uo + x]) - @as(i32, o_m1[y * uo + x]);
+                        taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
+                        o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
+                    }
+                }
+            } else {
+                var y: usize = 0;
+                while (y < block_height) : (y += 1) {
+                    var x: usize = 0;
+                    while (x < block_width) : (x += 1) {
+                        const t: i32 = @as(i32, o_m0[y * uo + x]) - 2 * @as(i32, o_m1[y * uo + x]) + @as(i32, o_m2[y * uo + x]);
+                        taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
+                        o_m2[y * uo + x] = o_m1[y * uo + x];
+                        o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
+                    }
                 }
             }
         }
-    }
 
-    ms_act.* += @as(f64, @floatFromInt(taAct)) / (@as(f64, @floatFromInt(block_width)) * @as(f64, @floatFromInt(block_height)));
+        ms_act.* += @as(f64, @floatFromInt(taAct)) / (@as(f64, @floatFromInt(block_width)) * @as(f64, @floatFromInt(block_height)));
+    }
 
     const sft: usize = @as(usize, 1) << (depth - 6);
     if (ms_act.* < @as(f64, @floatFromInt(sft))) {
@@ -239,6 +242,7 @@ pub fn getWSSE(
     depth: u6,
     num_comps: u8,
     frame_rate: u32,
+    temporal: bool,
 ) void {
     const w: u32 = width[0];
     const h: u32 = height[0];
@@ -294,6 +298,7 @@ pub fn getWSSE(
                     &ms_act,
                     width,
                     height,
+                    temporal,
                 );
 
                 weights[idx_blk] = 1.0 / @sqrt(ms_act);
