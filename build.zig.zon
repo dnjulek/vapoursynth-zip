@@ -10,10 +10,11 @@
             .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#7bb42c377bf8094b3d2c7e398666862094976339",
             .hash = "vapoursynth-4.0.0-jLYMQ5ORAgDTNkAckZJ2-VlAfCjJryGPI2WS_YOvoszD",
         },
+
         .zigimg = .{
-            // zig fetch --save git+https://github.com/coisos/zigimg.git
-            .url = "git+https://github.com/coisos/zigimg.git#466c86ee48f372a2b863af2a2c22c6a818e98242",
-            .hash = "zigimg-0.1.0-KQznM1DpEQDNy_LQY61CLTIpC2phVjxmvXasAvjY-zc9",
+            // zig fetch --save git+https://github.com/zigimg/zigimg.git
+            .url = "git+https://github.com/zigimg/zigimg.git#b1c5beea3b200a949fe7edf15ba8317cb9253efe",
+            .hash = "zigimg-0.1.0-8_eo2lrXEgBlEihqJdiw_ZtxgL-vO72ajJpmOdO59qxp",
         },
     },
 }
