@@ -116,9 +116,10 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
+    const rp2: vs.RequestPattern = if (vi.numFrames <= zapi.getVideoInfo(d.node2).numFrames) .StrictSpatial else .FrameReuseLastOnly;
     var deps = [_]vs.FilterDependency{
-        .{ .source = d.node1, .requestPattern = .General },
-        .{ .source = d.node2, .requestPattern = .General },
+        .{ .source = d.node1, .requestPattern = .StrictSpatial },
+        .{ .source = d.node2, .requestPattern = rp2 },
     };
 
     zapi.createVideoFilter(out, filter_name, &vi, rfsGetFrame, rfsFree, .Parallel, &deps, data);
