@@ -96,7 +96,21 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     i = 0;
     ne = map_in.numElements("frames") orelse 0;
     while (i < ne) : (i += 1) {
-        d.replace[map_in.getValue2(usize, "frames", i).?] = true;
+        const in_frame: u32 = map_in.getValue2(u32, "frames", i).?;
+        if (in_frame >= vi.numFrames) {
+            const msg = std.fmt.allocPrintZ(
+                allocator,
+                "{s}: frame index ({}) > last frame index ({}).",
+                .{ filter_name, in_frame, vi.numFrames - 1 },
+            ) catch unreachable;
+            map_out.setError(msg);
+            zapi.freeNode(d.node1);
+            zapi.freeNode(d.node2);
+            allocator.free(d.replace);
+            allocator.free(msg);
+            return;
+        }
+        d.replace[in_frame] = true;
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
