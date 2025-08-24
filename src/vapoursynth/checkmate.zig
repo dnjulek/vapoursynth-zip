@@ -23,25 +23,25 @@ const Data = struct {
 
 fn Checkmate(comptime use_tthr2: bool) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(@max(0, n - 1), d.node, frame_ctx);
-                zapi.requestFrameFilter(n, d.node, frame_ctx);
-                zapi.requestFrameFilter(@min(n + 1, d.vi.numFrames - 1), d.node, frame_ctx);
+                zapi.requestFrameFilter(@max(0, n - 1), d.node);
+                zapi.requestFrameFilter(n, d.node);
+                zapi.requestFrameFilter(@min(n + 1, d.vi.numFrames - 1), d.node);
 
                 if (use_tthr2) {
-                    zapi.requestFrameFilter(@max(0, n - 2), d.node, frame_ctx);
-                    zapi.requestFrameFilter(@min(n + 2, d.vi.numFrames - 1), d.node, frame_ctx);
+                    zapi.requestFrameFilter(@max(0, n - 2), d.node);
+                    zapi.requestFrameFilter(@min(n + 2, d.vi.numFrames - 1), d.node);
                 }
             } else if (activation_reason == .AllFramesReady) {
-                const src_p1 = zapi.initZFrame(d.node, @max(0, n - 1), frame_ctx);
-                const src = zapi.initZFrame(d.node, n, frame_ctx);
-                const src_n1 = zapi.initZFrame(d.node, @min(n + 1, d.vi.numFrames - 1), frame_ctx);
-                const src_p2 = if (use_tthr2) zapi.initZFrame(d.node, @max(0, n - 2), frame_ctx);
-                const src_n2 = if (use_tthr2) zapi.initZFrame(d.node, @min(n + 2, d.vi.numFrames - 1), frame_ctx);
+                const src_p1 = zapi.initZFrame(d.node, @max(0, n - 1));
+                const src = zapi.initZFrame(d.node, n);
+                const src_n1 = zapi.initZFrame(d.node, @min(n + 1, d.vi.numFrames - 1));
+                const src_p2 = if (use_tthr2) zapi.initZFrame(d.node, @max(0, n - 2));
+                const src_n2 = if (use_tthr2) zapi.initZFrame(d.node, @min(n + 2, d.vi.numFrames - 1));
                 const dst = src.newVideoFrame();
 
                 var plane: u32 = 0;
@@ -92,18 +92,18 @@ fn Checkmate(comptime use_tthr2: bool) type {
     };
 }
 
-fn checkmateFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn checkmateFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.node);
     allocator.destroy(d);
 }
 
-pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip").?;

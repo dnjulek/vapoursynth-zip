@@ -2,13 +2,13 @@ const std = @import("std");
 
 pub const zig_min_version = std.SemanticVersion{
     .major = 0,
-    .minor = 14,
-    .patch = 0,
+    .minor = 15,
+    .patch = 1,
 };
 
 pub const zig_max_version = std.SemanticVersion{
     .major = 0,
-    .minor = 14,
+    .minor = 15,
     .patch = 99,
 };
 
@@ -17,11 +17,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addSharedLibrary(.{
+    const lib = b.addLibrary(.{
         .name = "vszip",
-        .root_source_file = b.path("src/vszip.zig"),
-        .target = target,
-        .optimize = optimize,
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/vszip.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const zigimg_dependency = b.dependency("zigimg", .{

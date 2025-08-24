@@ -26,14 +26,14 @@ pub const Data = struct {
 
 pub fn BoxBlurCT(comptime T: type, radius: comptime_int) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.node, frame_ctx);
+                zapi.requestFrameFilter(n, d.node);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n, frame_ctx);
+                const src = zapi.initZFrame(d.node, n);
                 defer src.deinit();
                 const dst = src.newVideoFrame2(d.planes);
 
@@ -57,14 +57,14 @@ pub fn BoxBlurCT(comptime T: type, radius: comptime_int) type {
 
 fn BoxBlurRT(comptime T: type) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.node, frame_ctx);
+                zapi.requestFrameFilter(n, d.node);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n, frame_ctx);
+                const src = zapi.initZFrame(d.node, n);
                 const dst = src.newVideoFrame2(d.planes);
                 defer src.deinit();
 
@@ -93,18 +93,18 @@ fn BoxBlurRT(comptime T: type) type {
     };
 }
 
-fn boxBlurFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn boxBlurFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.node);
     allocator.destroy(d);
 }
 
-pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip").?;

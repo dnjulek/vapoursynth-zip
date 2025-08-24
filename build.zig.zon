@@ -3,18 +3,18 @@
     .version = "9.0.0",
     .paths = .{""},
     .fingerprint = 0x7466a154dbe09310,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .vapoursynth = .{
             // zig fetch --save git+https://github.com/dnjulek/vapoursynth-zig.git
-            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#7bb42c377bf8094b3d2c7e398666862094976339",
-            .hash = "vapoursynth-4.0.0-jLYMQ5ORAgDTNkAckZJ2-VlAfCjJryGPI2WS_YOvoszD",
+            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#fc31398349c401961a0e5e98251bcd8e43882976",
+            .hash = "vapoursynth-4.0.0-jLYMQ7-VAgCYZTJA5gEHKya57kxJgpZlbBWff5C9F--Y",
         },
 
         .zigimg = .{
             // zig fetch --save git+https://github.com/zigimg/zigimg.git
-            .url = "git+https://github.com/zigimg/zigimg.git#b1c5beea3b200a949fe7edf15ba8317cb9253efe",
-            .hash = "zigimg-0.1.0-8_eo2lrXEgBlEihqJdiw_ZtxgL-vO72ajJpmOdO59qxp",
+            .url = "git+https://github.com/zigimg/zigimg.git#70a3abe922d65ec13b488b0890970edcf11e0006",
+            .hash = "zigimg-0.1.0-8_eo2oFJEwDQjDFXp7mdV7KXQiMIRAYCl7Y0z91NdxG2",
         },
     },
 }

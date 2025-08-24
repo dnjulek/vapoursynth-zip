@@ -33,16 +33,16 @@ const StringProp = struct {
 
 fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.node1, frame_ctx);
-                if (refb) zapi.requestFrameFilter(n, d.node2, frame_ctx);
+                zapi.requestFrameFilter(n, d.node1);
+                if (refb) zapi.requestFrameFilter(n, d.node2);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node1, n, frame_ctx);
-                const ref = if (refb) zapi.initZFrame(d.node2, n, frame_ctx);
+                const src = zapi.initZFrame(d.node1, n);
+                const ref = if (refb) zapi.initZFrame(d.node2, n);
                 const dst = src.copyFrame();
                 const props = dst.getPropertiesRW();
                 props.deleteKey(d.prop.d);
@@ -89,9 +89,9 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
     };
 }
 
-fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     allocator.free(d.prop.d);
     allocator.free(d.prop.ma);
@@ -102,10 +102,10 @@ fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const v
     allocator.destroy(d);
 }
 
-pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1, d.vi = map_in.getNodeVi("clipa").?;
@@ -127,9 +127,9 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
 
     const prop_in = map_in.getData("prop", 0) orelse "psm";
     d.prop = .{
-        .d = std.fmt.allocPrintZ(allocator, "{s}Diff", .{prop_in}) catch unreachable,
-        .ma = std.fmt.allocPrintZ(allocator, "{s}Max", .{prop_in}) catch unreachable,
-        .mi = std.fmt.allocPrintZ(allocator, "{s}Min", .{prop_in}) catch unreachable,
+        .d = std.fmt.allocPrintSentinel(allocator, "{s}Diff", .{prop_in}, 0) catch unreachable,
+        .ma = std.fmt.allocPrintSentinel(allocator, "{s}Max", .{prop_in}, 0) catch unreachable,
+        .mi = std.fmt.allocPrintSentinel(allocator, "{s}Min", .{prop_in}, 0) catch unreachable,
     };
 
     const no_thr = d.maxthr == 0 and d.minthr == 0;

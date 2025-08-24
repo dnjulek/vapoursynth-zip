@@ -346,19 +346,21 @@ pub fn getArray(
         }
 
         if (array[i] < min) {
-            err_msg = std.fmt.allocPrintZ(
+            err_msg = std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}: {s} value {d} is below minimum {d}.",
                 .{ filter_name, key, array[i], min },
+                0,
             ) catch return error.outOfMemory;
             return error.invalidArgument;
         }
 
         if (array[i] > max) {
-            err_msg = std.fmt.allocPrintZ(
+            err_msg = std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}: {s} value {d} is above maximum {d}.",
                 .{ filter_name, key, array[i], max },
+                0,
             ) catch return error.outOfMemory;
             return error.invalidArgument;
         }

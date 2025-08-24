@@ -15,22 +15,22 @@ const Data = struct {
     replace: []bool = undefined,
 };
 
-fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn rfsGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
     if (activation_reason == .Initial) {
-        zapi.requestFrameFilter(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
+        zapi.requestFrameFilter(n, if (d.replace[@intCast(n)]) d.node2 else d.node1);
     } else if (activation_reason == .AllFramesReady) {
-        return zapi.getFrameFilter(n, if (d.replace[@intCast(n)]) d.node2 else d.node1, frame_ctx);
+        return zapi.getFrameFilter(n, if (d.replace[@intCast(n)]) d.node2 else d.node1);
     }
 
     return null;
 }
 
-fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
@@ -38,10 +38,10 @@ fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) c
     allocator.destroy(d);
 }
 
-pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
     d.node1 = map_in.getNode("clipa").?;
@@ -98,10 +98,11 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     while (i < ne) : (i += 1) {
         const in_frame: u32 = map_in.getValue2(u32, "frames", i).?;
         if (in_frame >= vi.numFrames) {
-            const msg = std.fmt.allocPrintZ(
+            const msg = std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}: frame index ({}) > last frame index ({}).",
                 .{ filter_name, in_frame, vi.numFrames - 1 },
+                0,
             ) catch unreachable;
             map_out.setError(msg);
             zapi.freeNode(d.node1);
