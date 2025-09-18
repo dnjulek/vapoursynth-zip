@@ -167,8 +167,8 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.height = whv.h;
 
     const wh: u32 = whv.w[0] * whv.h[0];
-    d.og_m1 = allocator.alignedAlloc(i16, .@"32", wh) catch unreachable;
-    d.og_m2 = allocator.alignedAlloc(i16, .@"32", wh) catch unreachable;
+    d.og_m1 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
+    d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     @memset(d.og_m1, 0);
     @memset(d.og_m2, 0);
 

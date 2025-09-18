@@ -19,6 +19,10 @@ const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
 const ssimulacra2 = @import("vapoursynth/ssimulacra2.zig");
 const xpsnr = @import("vapoursynth/xpsnr.zig");
+const std = @import("std");
+
+pub const vec_len = std.simd.suggestVectorLength(u8) orelse 32;
+pub const alignment = std.mem.Alignment.fromByteUnits(vec_len);
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     _ = vspapi.configPlugin.?(

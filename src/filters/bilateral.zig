@@ -3,6 +3,7 @@ const math = std.math;
 
 const hz = @import("../helper.zig");
 const Data = @import("../vapoursynth/bilateral.zig").Data;
+const vszip = @import("../vszip.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -51,13 +52,13 @@ fn bilateralAlg1(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, 
     recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
 
     const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
-    const wk: []f32 = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
-    const jk: []f32 = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
+    const wk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const jk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
     defer allocator.free(wk);
     defer allocator.free(jk);
 
     for (0..PBFICnum) |k| {
-        PBFIC[k] = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
+        PBFIC[k] = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
         for (0..height) |j| {
             var i = stride * j;
             const upper = i + width;
@@ -229,13 +230,13 @@ fn bilateralAlg1Float(comptime T: type, srcp: []const T, refp: []const T, dstp: 
     recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
 
     const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
-    const wk: []f32 = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
-    const jk: []f32 = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
+    const wk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const jk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
     defer allocator.free(wk);
     defer allocator.free(jk);
 
     for (0..PBFICnum) |k| {
-        PBFIC[k] = allocator.alignedAlloc(f32, .@"32", pcount) catch unreachable;
+        PBFIC[k] = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
         for (0..height) |j| {
             var i = stride * j;
             const upper = i + width;
