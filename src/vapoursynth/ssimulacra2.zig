@@ -19,16 +19,16 @@ const Data = struct {
     node2: ?*vs.Node = null,
 };
 
-fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
     if (activation_reason == .Initial) {
-        zapi.requestFrameFilter(n, d.node1, frame_ctx);
-        zapi.requestFrameFilter(n, d.node2, frame_ctx);
+        zapi.requestFrameFilter(n, d.node1);
+        zapi.requestFrameFilter(n, d.node2);
     } else if (activation_reason == .AllFramesReady) {
-        const src1 = zapi.initZFrame(d.node1, n, frame_ctx);
-        const src2 = zapi.initZFrame(d.node2, n, frame_ctx);
+        const src1 = zapi.initZFrame(d.node1, n);
+        const src2 = zapi.initZFrame(d.node2, n);
         defer src1.deinit();
         defer src2.deinit();
 
@@ -45,19 +45,19 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
     return null;
 }
 
-fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
     allocator.destroy(d);
 }
 
-pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 

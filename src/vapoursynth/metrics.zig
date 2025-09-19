@@ -24,16 +24,16 @@ const Mode = enum(i32) {
     XPSNR = 1,
 };
 
-fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
     if (activation_reason == .Initial) {
-        zapi.requestFrameFilter(n, d.node1, frame_ctx);
-        zapi.requestFrameFilter(n, d.node2, frame_ctx);
+        zapi.requestFrameFilter(n, d.node1);
+        zapi.requestFrameFilter(n, d.node2);
     } else if (activation_reason == .AllFramesReady) {
-        const src1 = zapi.initZFrame(d.node1, n, frame_ctx);
-        const src2 = zapi.initZFrame(d.node2, n, frame_ctx);
+        const src1 = zapi.initZFrame(d.node1, n);
+        const src2 = zapi.initZFrame(d.node2, n);
         defer src1.deinit();
         defer src2.deinit();
 
@@ -50,20 +50,20 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
     return null;
 }
 
-fn metricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn metricsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
     allocator.destroy(d);
 }
 
-pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn metricsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     deprecated();
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
@@ -142,14 +142,14 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
 }
 
 fn deprecated() void {
-    var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
-    const stdout = bw.writer();
-    stdout.print(
-        "\n!!!WARNING!!!\nYou are using a deprecated filter!\n" ++
-            "It will be removed in the next few months!\n" ++
-            "Update \"vszip.Metrics\" => \"vszip.SSIMULACRA2\" filter\n" ++
-            "and \"_SSIMULACRA2\" => \"SSIMULACRA2\" frame prop\n\n",
-        .{},
-    ) catch unreachable;
-    bw.flush() catch unreachable;
+    const txt = "\n!!!WARNING!!!\nYou are using a deprecated filter!\n" ++
+        "It will be removed in the next few months!\n" ++
+        "Update \"vszip.Metrics\" => \"vszip.SSIMULACRA2\" filter\n" ++
+        "and \"_SSIMULACRA2\" => \"SSIMULACRA2\" frame prop\n\n";
+
+    var stdout_buffer: [txt.len + 1]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    stdout.print(txt, .{}) catch unreachable;
+    stdout.flush() catch unreachable;
 }

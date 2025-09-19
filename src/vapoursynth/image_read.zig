@@ -12,6 +12,7 @@ pub const filter_name = "ImageRead";
 
 const Data = struct {
     vi: vs.VideoInfo = undefined,
+    vi_gray: vs.VideoInfo = undefined,
     paths: [][]u8 = undefined,
 };
 
@@ -83,22 +84,23 @@ pub fn copyPixelsIndexed(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Fr
 
 fn Read(comptime alpha: bool) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                var image = Image.fromFilePath(allocator, d.paths[@intCast(n)]) catch |err| {
-                    const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[@intCast(n)], err }) catch unreachable;
-                    zapi.setFilterError(err_msg, frame_ctx);
+                var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+                var image = Image.fromFilePath(allocator, d.paths[@intCast(n)], read_buffer[0..]) catch |err| {
+                    const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[@intCast(n)], err }, 0) catch unreachable;
+                    zapi.setFilterError(err_msg);
                     allocator.free(err_msg);
                     return null;
                 };
 
                 defer image.deinit();
 
-                const dst = zapi.initZFrameFromVi(&d.vi, frame_ctx, null, .{});
-                const adst = if (alpha) zapi.initZFrameFromVi(&d.vi, frame_ctx, null, .{ .cf = .Gray });
+                const dst = zapi.initZFrameFromVi(&d.vi, null);
+                const adst = if (alpha) zapi.initZFrameFromVi(&d.vi_gray, null);
 
                 switch (image.pixels) {
                     .grayscale1 => |src| {
@@ -180,7 +182,7 @@ fn Read(comptime alpha: bool) type {
     };
 }
 
-fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callconv(.C) void {
+fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
 
     for (d.paths) |path| {
@@ -191,10 +193,10 @@ fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callcon
     allocator.destroy(d);
 }
 
-pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
@@ -206,9 +208,9 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     }
 
     allocator.free(paths_in);
-
-    var image_0 = Image.fromFilePath(allocator, d.paths[0]) catch |err| {
-        const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[0], err }) catch unreachable;
+    var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+    var image_0 = Image.fromFilePath(allocator, d.paths[0], read_buffer[0..]) catch |err| {
+        const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[0], err }, 0) catch unreachable;
         map_out.setError(err_msg);
         allocator.free(err_msg);
         return;
@@ -237,10 +239,14 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
 
     _ = zapi.queryVideoFormat(&d.vi.format, cf, st, bps, 0, 0);
 
+    d.vi_gray = d.vi;
+    d.vi_gray.format.numPlanes = 1;
+    d.vi_gray.format.colorFamily = .Gray;
+
     switch (pf) {
         .grayscale1, .grayscale2, .grayscale4, .grayscale8, .grayscale16, .grayscale8Alpha, .grayscale16Alpha, .rgb24, .rgba32, .bgr24, .bgra32, .rgb48, .rgba64, .indexed1, .indexed2, .indexed4, .indexed8, .indexed16, .float32 => {},
         .invalid, .bgr555, .rgb332, .rgb555, .rgb565 => |f| {
-            const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Unsupported pixel format '{s}'", .{ filter_name, @tagName(f) }) catch unreachable;
+            const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Unsupported pixel format '{s}'", .{ filter_name, @tagName(f) }, 0) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);
             return;
@@ -260,18 +266,20 @@ fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
     const pf = image_0.pixelFormat();
 
     for (paths[1..]) |path| {
-        var image = Image.fromFilePath(allocator, path) catch |err| {
-            const err_msg = std.fmt.allocPrintZ(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }) catch unreachable;
+        var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+        var image = Image.fromFilePath(allocator, path, read_buffer[0..]) catch |err| {
+            const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }, 0) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);
             return error.openFile;
         };
 
         if (image_0.width != image.width or image_0.height != image.height) {
-            const err_msg = std.fmt.allocPrintZ(
+            const err_msg = std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}: Dimensions do not match ({}x{} != {}x{}):\n{s}\n{s}",
                 .{ filter_name, image_0.width, image_0.height, image.width, image.height, paths[0], path },
+                0,
             ) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);
@@ -280,10 +288,11 @@ fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
 
         const pf2 = image.pixelFormat();
         if (pf != pf2) {
-            const err_msg = std.fmt.allocPrintZ(
+            const err_msg = std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}: Pixel formats do not match ({s} != {s}):\n{s}\n{s}",
                 .{ filter_name, @tagName(pf), @tagName(pf2), paths[0], path },
+                0,
             ) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);

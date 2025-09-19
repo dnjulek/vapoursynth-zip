@@ -39,19 +39,19 @@ pub const Data = struct {
 
 fn XPSNR(comptime T: type) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.node1, frame_ctx);
-                zapi.requestFrameFilter(n, d.node2, frame_ctx);
+                zapi.requestFrameFilter(n, d.node1);
+                zapi.requestFrameFilter(n, d.node2);
             } else if (activation_reason == .AllFramesReady) {
                 d.mutex.lock();
                 defer d.mutex.unlock();
 
-                const src1 = zapi.initZFrame(d.node1, n, frame_ctx);
-                const src2 = zapi.initZFrame(d.node2, n, frame_ctx);
+                const src1 = zapi.initZFrame(d.node1, n);
+                const src2 = zapi.initZFrame(d.node2, n);
                 defer src1.deinit();
                 defer src2.deinit();
                 const dst = src2.copyFrame();
@@ -90,13 +90,14 @@ fn XPSNR(comptime T: type) type {
     };
 }
 
-fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     if (d.verbose) {
-        var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
-        const stdout = bw.writer();
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        const stdout = &stdout_writer.interface;
         stdout.print("XPSNR average, {} frames  ", .{d.vi.numFrames}) catch unreachable;
         const char = [_]u8{ 'y', 'u', 'v' };
 
@@ -106,7 +107,7 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
         }
 
         stdout.print("\n", .{}) catch unreachable;
-        bw.flush() catch unreachable;
+        stdout.flush() catch unreachable;
     }
 
     zapi.freeNode(d.node1);
@@ -117,10 +118,10 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
     allocator.destroy(d);
 }
 
-pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = user_data;
     var d: Data = .{};
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
@@ -166,8 +167,8 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.height = whv.h;
 
     const wh: u32 = whv.w[0] * whv.h[0];
-    d.og_m1 = allocator.alignedAlloc(i16, 32, wh) catch unreachable;
-    d.og_m2 = allocator.alignedAlloc(i16, 32, wh) catch unreachable;
+    d.og_m1 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
+    d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     @memset(d.og_m1, 0);
     @memset(d.og_m2, 0);
 

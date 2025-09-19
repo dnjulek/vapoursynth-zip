@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = std.math;
+const vszip = @import("../vszip.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -8,7 +9,7 @@ const radius = 4;
 
 pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32) f64 {
     const wh: u32 = stride * h;
-    const temp_alloc = allocator.alignedAlloc(f32, 32, wh * 18) catch unreachable;
+    const temp_alloc = allocator.alignedAlloc(f32, vszip.alignment, wh * 18) catch unreachable;
     defer allocator.free(temp_alloc);
     var temp = temp_alloc[0..];
 
@@ -241,7 +242,7 @@ pub inline fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) vo
         const dstp: []f32 = dst[(ui * stride)..];
         const dist_from_bottom: i32 = ih - 1 - i;
 
-        const tmp = allocator.alignedAlloc(f32, 32, w) catch unreachable;
+        const tmp = allocator.alignedAlloc(f32, vszip.alignment, w) catch unreachable;
         defer allocator.free(tmp);
 
         var k: i32 = 0;

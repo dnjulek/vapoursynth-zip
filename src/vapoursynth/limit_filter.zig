@@ -26,18 +26,18 @@ const Data = struct {
 
 fn LimitFilter(comptime T: type, comptime refb: bool) type {
     return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) ?*const vs.Frame {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core);
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.flt, frame_ctx);
-                zapi.requestFrameFilter(n, d.src, frame_ctx);
-                if (refb) zapi.requestFrameFilter(n, d.ref, frame_ctx);
+                zapi.requestFrameFilter(n, d.flt);
+                zapi.requestFrameFilter(n, d.src);
+                if (refb) zapi.requestFrameFilter(n, d.ref);
             } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.src, n, frame_ctx);
-                const flt = zapi.initZFrame(d.flt, n, frame_ctx);
-                const ref = if (refb) zapi.initZFrame(d.ref, n, frame_ctx);
+                const src = zapi.initZFrame(d.src, n);
+                const flt = zapi.initZFrame(d.flt, n);
+                const ref = if (refb) zapi.initZFrame(d.ref, n);
                 const dst = src.newVideoFrame2(d.planes);
 
                 var plane: u32 = 0;
@@ -72,9 +72,9 @@ fn LimitFilter(comptime T: type, comptime refb: bool) type {
     };
 }
 
-fn limitFilterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+fn limitFilterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
 
     zapi.freeNode(d.flt);
     zapi.freeNode(d.src);
@@ -82,10 +82,10 @@ fn limitFilterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const v
     allocator.destroy(d);
 }
 
-pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.C) void {
+pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
-    const zapi = ZAPI.init(vsapi, core);
+    const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
     const map_out = zapi.initZMap(out);
 
