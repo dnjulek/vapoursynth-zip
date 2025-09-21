@@ -8,6 +8,7 @@ vspipe -p ./boxblur.vpy .
 vspipe -p ./checkmate.vpy .
 vspipe -p ./clahe.vpy .
 vspipe -p ./color_map.vpy .
+vspipe -p ./comb_mask.vpy .
 vspipe -p ./comb_mask_mt.vpy .
 vspipe -p ./limit_filter.vpy .
 vspipe -p ./limiter.vpy .

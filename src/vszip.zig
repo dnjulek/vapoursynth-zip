@@ -12,6 +12,7 @@ const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
 const color_map = @import("vapoursynth/color_map.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
+const comb_mask = @import("vapoursynth/comb_mask.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limit_filter = @import("vapoursynth/limit_filter.zig");
 const limiter = @import("vapoursynth/limiter.zig");
@@ -82,6 +83,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;thY1:int:opt;thY2:int:opt;",
         "clip:vnode;",
         comb_mask_mt.combMaskMTCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        comb_mask.filter_name,
+        "clip:vnode;cthresh:int:opt;mthresh:int:opt;expand:int:opt;metric:int:opt;",
+        "clip:vnode;",
+        comb_mask.create,
         plugin,
         vspapi,
     );
