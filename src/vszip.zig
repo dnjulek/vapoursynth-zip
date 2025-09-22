@@ -6,6 +6,7 @@ pub const zigimg = @import("zigimg");
 const zon = @import("zon");
 
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
+const adg = @import("vapoursynth/adg.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
@@ -35,6 +36,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;clip2:vnode;c:int:opt;",
         "clip:vnode;",
         adaptive_binarize.adaptiveBinarizeCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        adg.filter_name,
+        "clip:vnode;clip2:vnode;c:int:opt;",
+        "clip:vnode;",
+        adg.create,
         plugin,
         vspapi,
     );

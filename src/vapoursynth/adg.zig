@@ -1,0 +1,161 @@
+const std = @import("std");
+const math = std.math;
+
+// const filter = @import("../filters/adg.zig");
+const vszip = @import("../vszip.zig");
+const hz = @import("../helper.zig");
+
+const vapoursynth = vszip.vapoursynth;
+const vs = vapoursynth.vapoursynth4;
+const ZAPI = vapoursynth.ZAPI;
+
+const allocator = std.heap.c_allocator;
+pub const filter_name = "ADG";
+
+const Data = struct {
+    node: ?*vs.Node = null,
+    vi: *const vs.VideoInfo = undefined,
+    wxh: f32 = 0,
+    shift: u4 = 0,
+    peak: f32 = 0,
+    scaling: f32 = 0,
+    float_range: [256]f32 = undefined,
+};
+
+pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, wxh: f32, peak: f32) f32 {
+    var srcp: []const T = src;
+    var acc: if (@typeInfo(T) == .float) f64 else u64 = 0;
+
+    for (0..h) |_| {
+        for (srcp[0..w]) |v| {
+            acc += v;
+        }
+        srcp = srcp[stride..];
+    }
+
+    if (@typeInfo(T) == .float) {
+        return @floatCast(acc / wxh);
+    } else {
+        return @floatCast(@as(f64, @floatFromInt(acc)) / wxh / peak);
+    }
+}
+
+pub fn process(
+    comptime T: type,
+    src: []const T,
+    dst: []T,
+    stride: u32,
+    w: u32,
+    h: u32,
+    float_range: [256]f32,
+    shift: u4,
+    _scaling: f32,
+    wxh: f32,
+    peak: f32,
+) void {
+    var srcp = src;
+    _ = srcp; // autofix
+    var dstp = dst;
+
+    const avg = average(T, src, stride, w, h, wxh, peak);
+    const scaling = avg * avg * _scaling;
+    var lut: [256]T = undefined;
+
+    for (&lut, float_range) |*i, r| {
+        const dd = @max(std.math.pow(f32, r, scaling) * peak + 0.5, 0);
+        _ = dd; // autofix
+        i.* = 0;
+    }
+    _ = dstp; // autofix
+    _ = shift; // autofix
+
+    //
+
+}
+
+fn ADG(comptime T: type) type {
+    return struct {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
+            const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi, core, frame_ctx);
+
+            if (activation_reason == .Initial) {
+                zapi.requestFrameFilter(n, d.node);
+            } else if (activation_reason == .AllFramesReady) {
+                const src = zapi.initZFrame(d.node, n);
+                defer src.deinit();
+                const dst = src.newVideoFrame();
+
+                var plane: u32 = 0;
+                while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    const srcp = src.getReadSlice2(T, plane);
+                    const dstp = dst.getWriteSlice2(T, plane);
+                    const width, const height, const stride = src.getDimensions2(T, plane);
+
+                    process(
+                        T,
+                        srcp,
+                        dstp,
+                        stride,
+                        width,
+                        height,
+                        d.float_range,
+                        d.shift,
+                        d.scaling,
+                        d.wxh,
+                        d.peak,
+                    );
+                }
+
+                const dst_prop = dst.getPropertiesRW();
+                dst_prop.setColorRange(.FULL);
+                return dst.frame;
+            }
+
+            return null;
+        }
+    };
+}
+
+fn free(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+    const d: *Data = @ptrCast(@alignCast(instance_data));
+    const zapi = ZAPI.init(vsapi, core, null);
+
+    zapi.freeNode(d.node);
+    allocator.destroy(d);
+}
+
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+    var d: Data = .{};
+
+    const zapi = ZAPI.init(vsapi, core, null);
+    const map_in = zapi.initZMap(in);
+    const map_out = zapi.initZMap(out);
+    _ = map_out; // autofix
+    d.node, d.vi = map_in.getNodeVi("clip").?;
+
+    d.scaling = map_in.getValue(f32, "luma_scaling") orelse 10;
+    d.shift = @intCast(@min(d.vi.format.bitsPerSample, 16) - 8);
+    d.peak = hz.getPeakValue(&d.vi.format, false, .FULL);
+    d.wxh = @floatFromInt(d.vi.width * d.vi.height);
+    for (0..256) |i| {
+        const x = @as(f32, @floatFromInt(i)) / 256;
+        d.float_range[i] = (1 - (x * ((x * ((x * ((x * ((x * 18.188) - 45.47)) + 36.624)) - 9.466)) + 1.124)));
+    }
+
+    const data: *Data = allocator.create(Data) catch unreachable;
+    data.* = d;
+
+    var deps = [_]vs.FilterDependency{
+        .{ .source = d.node, .requestPattern = .StrictSpatial },
+    };
+
+    const gf: vs.FilterGetFrame = switch (d.vi.format.bytesPerSample) {
+        1 => &ADG(u8).getFrame,
+        2 => if (d.vi.format.sampleType == .Integer) &ADG(u16).getFrame else &ADG(f16).getFrame,
+        4 => &ADG(f32).getFrame,
+        else => unreachable,
+    };
+
+    zapi.createVideoFilter(out, filter_name, d.vi, gf, free, .Parallel, &deps, data);
+}
