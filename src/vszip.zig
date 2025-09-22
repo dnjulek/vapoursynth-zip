@@ -41,7 +41,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
     );
     ZAPI.Plugin.function(
         adg.filter_name,
-        "clip:vnode;clip2:vnode;c:int:opt;",
+        "clip:vnode;luma_scaling:float:opt;relative:int:opt;",
         "clip:vnode;",
         adg.create,
         plugin,

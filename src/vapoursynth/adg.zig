@@ -10,7 +10,7 @@ const vs = vapoursynth.vapoursynth4;
 const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "ADG";
+pub const filter_name = "ADGMask";
 
 const Data = struct {
     node: ?*vs.Node = null,
@@ -22,7 +22,7 @@ const Data = struct {
     float_range: [256]f32 = undefined,
 };
 
-pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, wxh: f32, peak: f32) f32 {
+fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, wxh: f32, peak: f32) f32 {
     var srcp: []const T = src;
     var acc: if (@typeInfo(T) == .float) f64 else u64 = 0;
 
@@ -40,37 +40,39 @@ pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, wx
     }
 }
 
-pub fn process(
+pub inline fn process(
     comptime T: type,
     src: []const T,
     dst: []T,
     stride: u32,
     w: u32,
     h: u32,
-    float_range: [256]f32,
+    float_range: *[256]f32,
     shift: u4,
-    _scaling: f32,
+    scaling: f32,
     wxh: f32,
     peak: f32,
 ) void {
-    var srcp = src;
-    _ = srcp; // autofix
-    var dstp = dst;
-
     const avg = average(T, src, stride, w, h, wxh, peak);
-    const scaling = avg * avg * _scaling;
-    var lut: [256]T = undefined;
+    const scaling2 = avg * avg * scaling;
 
+    const Lt: type = if (@typeInfo(T) == .int) T else u16;
+    var lut: [256]Lt = undefined;
     for (&lut, float_range) |*i, r| {
-        const dd = @max(std.math.pow(f32, r, scaling) * peak + 0.5, 0);
-        _ = dd; // autofix
-        i.* = 0;
+        const x: f32 = @min(@max(@mulAdd(f32, @exp(scaling2 * @log(r)), peak, 0.5), 0), peak);
+        i.* = @intFromFloat(x);
     }
-    _ = dstp; // autofix
-    _ = shift; // autofix
 
-    //
-
+    if (@typeInfo(T) == .int) {
+        for (src, dst) |sx, *dx| {
+            dx.* = lut[@as(usize, sx) >> shift];
+        }
+    } else {
+        for (src, dst) |sx, *dx| {
+            const idx = @as(usize, @intFromFloat(sx * peak)) >> shift;
+            dx.* = @as(T, @floatFromInt(lut[idx])) / peak;
+        }
+    }
 }
 
 fn ADG(comptime T: type) type {
@@ -99,7 +101,7 @@ fn ADG(comptime T: type) type {
                         stride,
                         width,
                         height,
-                        d.float_range,
+                        &d.float_range,
                         d.shift,
                         d.scaling,
                         d.wxh,
@@ -107,8 +109,6 @@ fn ADG(comptime T: type) type {
                     );
                 }
 
-                const dst_prop = dst.getPropertiesRW();
-                dst_prop.setColorRange(.FULL);
                 return dst.frame;
             }
 
@@ -134,9 +134,13 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     _ = map_out; // autofix
     d.node, d.vi = map_in.getNodeVi("clip").?;
 
-    d.scaling = map_in.getValue(f32, "luma_scaling") orelse 10;
+    d.scaling = map_in.getValue(f32, "luma_scaling") orelse 8;
     d.shift = @intCast(@min(d.vi.format.bitsPerSample, 16) - 8);
     d.peak = hz.getPeakValue(&d.vi.format, false, .FULL);
+    if (d.vi.format.sampleType == .Float) {
+        d.peak = std.math.maxInt(u16);
+    }
+
     d.wxh = @floatFromInt(d.vi.width * d.vi.height);
     for (0..256) |i| {
         const x = @as(f32, @floatFromInt(i)) / 256;
@@ -152,7 +156,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
 
     const gf: vs.FilterGetFrame = switch (d.vi.format.bytesPerSample) {
         1 => &ADG(u8).getFrame,
-        2 => if (d.vi.format.sampleType == .Integer) &ADG(u16).getFrame else &ADG(f16).getFrame,
+        2 => &ADG(u16).getFrame,
         4 => &ADG(f32).getFrame,
         else => unreachable,
     };
