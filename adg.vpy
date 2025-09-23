@@ -1,17 +1,16 @@
 import vapoursynth as vs
-from vsmasktools import adg_mask
 core = vs.core
 
 
 core.std.LoadPlugin("./zig-out/lib/libvszip.so")
 
-# src = core.vszip.ImageRead("./test/image.png") * 5000
-# src = src.resize.Point(1920, 1080, format=vs.GRAYS, matrix=1).std.RemoveFrameProps("_Matrix") 
+src = core.vszip.ImageRead("./test/image.png") * 5000
+src = src.resize.Point(1920, 1080, format=vs.GRAYS, matrix=1).std.RemoveFrameProps("_Matrix") 
 
-src = core.std.BlankClip(None, 1920, 1080, vs.GRAY16, 5000)
+# src = core.std.BlankClip(None, 1920, 1080, vs.GRAYS, 5000)
 
 a2 = src.vszip.ADGMask()
-a3 = adg_mask(src)
+a3 = src.std.PlaneStats().adg.Mask()
 a4 = core.std.Expr([a2, a3], "x y - abs")
 
 src.set_output(1)
