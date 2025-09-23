@@ -23,16 +23,30 @@ const Data = struct {
 };
 
 fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, wxh: f32, peak: f32) f32 {
-    var srcp: []const T = src;
     var acc: if (@typeInfo(T) == .float) f64 else u64 = 0;
-
-    for (0..h) |_| {
-        for (srcp[0..w]) |v| {
-            acc += v;
+    var acc2: if (@typeInfo(T) == .float) f64 else u64 = 0;
+    var srcp = src;
+    var y: u32 = 0;
+    while (y < (h - 1)) : (y += 2) {
+        const srcp2 = srcp[stride..];
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
+            acc += srcp[x];
+            acc2 += srcp2[x];
         }
-        srcp = srcp[stride..];
+
+        srcp = srcp[(stride << 1)..];
     }
 
+    if (h % 2 != 0) {
+        srcp = src[(stride * (h - 1))..];
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
+            acc += srcp[x];
+        }
+    }
+
+    acc += acc2;
     if (@typeInfo(T) == .float) {
         return @floatCast(acc / wxh);
     } else {
@@ -56,8 +70,8 @@ pub inline fn process(
     const avg = average(T, src, stride, w, h, wxh, peak);
     const scaling2 = avg * avg * scaling;
 
-    const Lt: type = if (@typeInfo(T) == .int) T else u16;
-    var lut: [256]Lt = undefined;
+    const LT: type = if (@typeInfo(T) == .int) T else u16;
+    var lut: [256]LT = undefined;
     for (&lut, float_range) |*i, r| {
         const x: f32 = @min(@max(@mulAdd(f32, @exp(scaling2 * @log(r)), peak, 0.5), 0), peak);
         i.* = @intFromFloat(x);

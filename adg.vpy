@@ -5,8 +5,10 @@ core = vs.core
 
 core.std.LoadPlugin("./zig-out/lib/libvszip.so")
 
-src = core.vszip.ImageRead("./test/image.png") * 1500
-src = src.resize.Point(format=vs.GRAYS, matrix=1).std.RemoveFrameProps("_Matrix") 
+# src = core.vszip.ImageRead("./test/image.png") * 5000
+# src = src.resize.Point(1920, 1080, format=vs.GRAYS, matrix=1).std.RemoveFrameProps("_Matrix") 
+
+src = core.std.BlankClip(None, 1920, 1080, vs.GRAY16, 5000)
 
 a2 = src.vszip.ADGMask()
 a3 = adg_mask(src)
