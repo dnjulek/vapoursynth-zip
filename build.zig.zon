@@ -13,8 +13,8 @@
 
         .zigimg = .{
             // zig fetch --save git+https://github.com/zigimg/zigimg.git
-            .url = "https://github.com/zigimg/zigimg/archive/d7b7ab0ba0899643831ef042bd73289510b39906.zip",
-            .hash = "zigimg-0.1.0-8_eo2vHnEwCIVW34Q14Ec-xUlzIoVg86-7FU2ypPtxms",
+            .url = "git+https://github.com/zigimg/zigimg.git#362cdd6bce109f7bc674be134cddd378f52da5d4",
+            .hash = "zigimg-0.1.0-8_eo2jNrFQD4mu3EAUkfQRmCkyfprdIXc8JQ6uyxhjSQ",
         },
     },
 }

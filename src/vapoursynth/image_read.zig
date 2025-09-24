@@ -97,7 +97,7 @@ fn Read(comptime alpha: bool) type {
                     return null;
                 };
 
-                defer image.deinit();
+                defer image.deinit(allocator);
 
                 const dst = zapi.initZFrameFromVi(&d.vi, null);
                 const adst = if (alpha) zapi.initZFrameFromVi(&d.vi_gray, null);
@@ -215,7 +215,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         allocator.free(err_msg);
         return;
     };
-    defer image_0.deinit();
+    defer image_0.deinit(allocator);
 
     const validate = map_in.getBool("validate") orelse false;
     if (validate and d.paths.len > 1) {
@@ -299,6 +299,6 @@ fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
             return error.pixelFormat;
         }
 
-        image.deinit();
+        image.deinit(allocator);
     }
 }
