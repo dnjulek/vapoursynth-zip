@@ -1,5 +1,5 @@
-$version = '0.15.1'
-$zipUrl = "https://ziglang.org/download/0.15.1/zig-x86_64-windows-0.15.1.zip"
+$version = '0.15.2'
+$zipUrl = "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip"
 
 $parentFolder = Split-Path -Path $PSScriptRoot -Parent
 $zipFilePath = Join-Path $PSScriptRoot "zig-x86_64-windows-$version.zip"

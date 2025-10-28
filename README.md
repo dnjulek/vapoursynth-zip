@@ -45,7 +45,7 @@ src.vszip.BoxBlur(hradius=13, hpasses=5, vradius=13, vpasses=5).set_output(6)
 ## Building
 
 - Via manual download:\
-Put [zig-0.15.1](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
+Put [zig-0.15.2](https://ziglang.org/download/) in your PATH and run: ``zig build -Doptimize=ReleaseFast``.
 - Via automated scripts:
 ```ps
 git clone https://github.com/dnjulek/vapoursynth-zip
