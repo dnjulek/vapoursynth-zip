@@ -140,12 +140,12 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     }
 
     d.node2, const vi2 = map_in.getNodeVi("distorted").?;
-    const bps1: u6 = @intCast(vi1.format.bitsPerSample);
-    const bps2: u6 = @intCast(vi2.format.bitsPerSample);
+    const bps1: u32 = @intCast(vi1.format.bitsPerSample);
+    const bps2: u32 = @intCast(vi2.format.bitsPerSample);
     if (bps1 < bps2) {
-        d.node1 = bitDepth(bps2, d.node1, &zapi);
+        d.node1 = hz.bitDepth(bps2, d.node1, .none, &zapi);
     } else if (bps1 > bps2) {
-        d.node2 = bitDepth(bps1, d.node2, &zapi);
+        d.node2 = hz.bitDepth(bps1, d.node2, .none, &zapi);
     }
 
     d.vi = zapi.getVideoInfo(d.node1);
@@ -186,30 +186,6 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     zapi.createVideoFilter(out, filter_name, d.vi, gf, xpsnrFree, .Parallel, &deps, data);
 }
 
-pub fn bitDepth(bitdepth: u6, node: *vs.Node, zapi: *const ZAPI) *vs.Node {
-    const vf = zapi.getVideoInfo(node).format;
-    if (vf.bitsPerSample == bitdepth) {
-        return node;
-    }
-
-    const vf_out = vs.makeVideoID(
-        vf.colorFamily,
-        vf.sampleType,
-        bitdepth,
-        @intCast(vf.subSamplingW),
-        @intCast(vf.subSamplingH),
-    );
-
-    const args = zapi.createZMap();
-    _ = args.consumeNode("clip", node, .Replace);
-    args.setInt("format", vf_out, .Replace);
-    const vsplugin = zapi.getPluginByID2(.Resize);
-    const ret = args.invoke(vsplugin, "Point");
-    const out = ret.getNode("clip").?;
-    ret.free();
-    args.free();
-    return out;
-}
 fn whFromVi(vi: *const vs.VideoInfo) struct { w: [3]u32, h: [3]u32 } {
     const w: u32 = @intCast(vi.width);
     const h: u32 = @intCast(vi.height);

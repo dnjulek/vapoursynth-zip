@@ -368,3 +368,93 @@ pub fn getArray(
 
     return array;
 }
+
+pub const Maps = struct {
+    in: *const ZAPI.ZMap(?*const vs.Map),
+    out: *const ZAPI.ZMap(?*vs.Map),
+    name: [:0]const u8,
+
+    pub fn init(zin: *const ZAPI.ZMap(?*const vs.Map), zout: *const ZAPI.ZMap(?*vs.Map), filter_name: [:0]const u8) Maps {
+        return Maps{
+            .in = zin,
+            .out = zout,
+            .name = filter_name,
+        };
+    }
+
+    pub fn getValue(self: *const Maps, comptime T: type, comptime key: [:0]const u8, default: T, min: T, max: T) !T {
+        const is_int = @typeInfo(T) == .int;
+        const T2 = if (is_int) i64 else f64;
+        const val: T2 = self.in.getValue(T2, key) orelse default;
+        if (val < min or val > max) {
+            self.out.setError2("{s}: parameter \"{s}={d}\" out of range [{d}..{d}].", .{ self.name, key, val, min, max });
+            return error.ParameterOutOfRange;
+        }
+
+        return if (is_int) @intCast(val) else @floatCast(val);
+    }
+
+    pub fn getArray(self: *const Maps, comptime key: [:0]const u8, max_len: comptime_int, default: [3]f64, min: f64, max: f64) ![3]f64 {
+        if (self.in.getFloatArray(key)) |a| {
+            if (a.len > max_len) {
+                self.out.setError2("{s}: parameter \"{s}\" has too many elements (got {d}, max {d}).", .{ self.name, key, a.len, max_len });
+                return error.ParameterOutOfRange;
+            }
+            var out: [3]f64 = undefined;
+            for (0..3) |i| {
+                const val = a[@min(i, a.len - 1)];
+                if (val < min or val > max) {
+                    self.out.setError2("{s}: parameter \"{s}[{d}]={d}\" out of range [{d}..{d}].", .{ self.name, key, i, val, min, max });
+                    return error.ParameterOutOfRange;
+                }
+
+                out[i] = val;
+            }
+            return out;
+        }
+
+        return default;
+    }
+};
+
+pub const ditherType = enum {
+    none,
+    ordered,
+    random,
+    error_diffusion,
+
+    pub fn toString(self: ditherType) [:0]const u8 {
+        return switch (self) {
+            .none => "none",
+            .ordered => "ordered",
+            .random => "random",
+            .error_diffusion => "error_diffusion",
+        };
+    }
+};
+
+pub fn bitDepth(bitdepth: u32, node: *vs.Node, dither: ditherType, zapi: *const ZAPI) *vs.Node {
+    const vf = zapi.getVideoInfo(node).format;
+    if (vf.bitsPerSample == bitdepth) {
+        return node;
+    }
+
+    const vf_out = vs.makeVideoID(
+        vf.colorFamily,
+        vf.sampleType,
+        bitdepth,
+        @intCast(vf.subSamplingW),
+        @intCast(vf.subSamplingH),
+    );
+
+    const args = zapi.createZMap();
+    _ = args.consumeNode("clip", node, .Replace);
+    args.setInt("format", vf_out, .Replace);
+    args.setData("dither_type", dither.toString(), .Utf8, .Replace);
+    const vsplugin = zapi.getPluginByID2(.Resize);
+    const ret = args.invoke(vsplugin, "Point");
+    const out = ret.getNode("clip").?;
+    ret.free();
+    args.free();
+    return out;
+}
