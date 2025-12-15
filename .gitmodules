@@ -1,0 +1,6 @@
+[submodule "deps/vapoursynth-zig"]
+	path = deps/vapoursynth-zig
+	url = https://github.com/dnjulek/vapoursynth-zig.git
+[submodule "deps/zigimg"]
+	path = deps/zigimg
+	url = https://github.com/zigimg/zigimg.git
