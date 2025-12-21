@@ -97,7 +97,7 @@ pub const Data = struct {
         const thr1_in: [3]f64 = try m.getArray("thr1", 3, thr_in, 0, 255);
         const thr2_in: [3]f64 = try m.getArray("thr2", 3, thr_in, 0, 255);
         const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, 255);
-        const sample_mode = try m.getValue(i32, "sample_mode", @intFromEnum(d.sample_mode), 1, 5); // TODO: extend to 7 later
+        const sample_mode = try m.getValue(i32, "sample_mode", @intFromEnum(d.sample_mode), 1, 7);
 
         d.range = try m.getValue(i32, "range", d.range, 0, 255);
         d.seed = try m.getValue(i32, "seed", d.seed, math.minInt(i32), math.maxInt(i32));

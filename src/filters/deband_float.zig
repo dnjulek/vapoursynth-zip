@@ -5,6 +5,7 @@ const allocator = std.heap.c_allocator;
 const hz = @import("../helper.zig");
 const plugin = @import("../vapoursynth/deband.zig");
 const vszip = @import("../vszip.zig");
+const vcl = @import("../vcl.zig");
 
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
@@ -13,11 +14,22 @@ const Mode = plugin.Mode;
 const Data = plugin.Data;
 
 const vec_len = std.simd.suggestVectorLength(f32) orelse 8;
+const i32v = @Vector(vec_len, i32);
 const f32v = @Vector(vec_len, f32);
 const boolv = @Vector(vec_len, bool);
+
 const vec025: f32v = @splat(0.25);
 const vec050: f32v = @splat(0.50);
 const vec200: f32v = @splat(2.00);
+const vec0_f32: f32v = @splat(0.0);
+const vec1_f32: f32v = @splat(1.0);
+const vec2_f32: f32v = @splat(2.0);
+const vec3_f32: f32v = @splat(3.0);
+const vec01_f32: f32v = @splat(0.1);
+const vec05_f32: f32v = @splat(0.5);
+const vec_eps_f32: f32v = @splat(1e-5);
+const vec_pi_f32: f32v = @splat(std.math.pi);
+const vec_scaled_eps: f32v = @splat(0.01 * 3.0);
 
 pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain: [3]bool, np: comptime_int) type {
     return struct {
@@ -88,9 +100,6 @@ fn processPlane(
     comptime blur_first: bool,
     comptime add_grain: bool,
 ) void {
-    _ = angle_boost;
-    _ = max_angle;
-
     var ref1_arr: [vec_len]f32 align(32) = undefined;
     var ref2_arr: [vec_len]f32 align(32) = undefined;
     var ref3_arr: [vec_len]f32 align(32) = undefined;
@@ -189,7 +198,72 @@ fn processPlane(
 
                     center = @select(f32, use_original, center, avg_32);
                 },
-                .m6, .m7 => {}, // TODO: implement mode 6 and 7 later
+                .m6, .m7 => {
+                    var t_avg: f32v = thr_32;
+                    var t_max: f32v = thr1_32;
+                    var t_mid: f32v = thr2_32;
+
+                    if (mode == .m7) {
+                        const grad_read_distance: i32 = 20;
+                        const angle_boost_v: f32v = @splat(angle_boost);
+                        const max_angle_v: f32v = @splat(max_angle);
+
+                        var base_x_coords: i32v = undefined;
+                        const base_y_coords: i32v = @splat(@intCast(y));
+                        inline for (0..vec_len) |i| {
+                            base_x_coords[i] = @intCast(x + i);
+                        }
+
+                        var y_offsets: i32v = undefined;
+                        var x_offsets: i32v = undefined;
+                        inline for (0..vec_len) |i| {
+                            const offset_val: i32 = @intCast(ref2_row[x + i]);
+                            y_offsets[i] = offset_val;
+                            x_offsets[i] = offset_val;
+                        }
+
+                        const angle_org: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords, grad_read_distance);
+                        const angle_ref1_h: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords + y_offsets, base_x_coords, grad_read_distance);
+                        const angle_ref2_h: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords - y_offsets, base_x_coords, grad_read_distance);
+                        const angle_ref1_w: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords + x_offsets, grad_read_distance);
+                        const angle_ref2_w: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords - x_offsets, grad_read_distance);
+
+                        var max_angle_diff = @max(@abs(angle_ref1_h - angle_org), @abs(angle_ref2_h - angle_org));
+                        max_angle_diff = @max(max_angle_diff, @max(@abs(angle_ref1_w - angle_org), @abs(angle_ref2_w - angle_org)));
+                        const use_boost: boolv = max_angle_diff <= max_angle_v;
+                        t_avg = @select(f32, use_boost, t_avg * angle_boost_v, t_avg);
+                        t_max = @select(f32, use_boost, t_max * angle_boost_v, t_max);
+                        t_mid = @select(f32, use_boost, t_mid * angle_boost_v, t_mid);
+                    }
+
+                    const p1: f32v = r1_32;
+                    const p2: f32v = r3_32;
+                    const p3: f32v = r2_32;
+                    const p4: f32v = r4_32;
+
+                    const avg_refs: f32v = (p1 + p2 + p3 + p4) * vec025;
+                    const diff_avg_src: f32v = avg_refs - center;
+                    const avg_dif: f32v = @abs(diff_avg_src);
+
+                    const d1: f32v = @abs(p1 - center);
+                    const d2: f32v = @abs(p2 - center);
+                    const d3: f32v = @abs(p3 - center);
+                    const d4: f32v = @abs(p4 - center);
+                    const max_dif: f32v = @max(@max(d1, d2), @max(d3, d4));
+
+                    const two_src: f32v = center * vec2_f32;
+                    const mid_dif_v: f32v = @abs((p1 + p2) - two_src);
+                    const mid_dif_h: f32v = @abs((p3 + p4) - two_src);
+
+                    const comp_avg: f32v = saturate(vec3_f32 * (vec1_f32 - avg_dif / @max(t_avg, vec_eps_f32)));
+                    const comp_max: f32v = saturate(vec3_f32 * (vec1_f32 - max_dif / @max(t_max, vec_eps_f32)));
+                    const comp_mid_v: f32v = saturate(vec3_f32 * (vec1_f32 - mid_dif_v / @max(t_mid, vec_eps_f32)));
+                    const comp_mid_h: f32v = saturate(vec3_f32 * (vec1_f32 - mid_dif_h / @max(t_mid, vec_eps_f32)));
+
+                    const product: f32v = comp_avg * comp_max * comp_mid_v * comp_mid_h;
+                    const factor: f32v = vcl.pow(product, vec01_f32);
+                    center = center + diff_avg_src * factor;
+                },
             }
 
             if (add_grain) {
@@ -199,4 +273,43 @@ fn processPlane(
             dst[row + x ..][0..vec_len].* = center;
         }
     }
+}
+
+fn saturate(x: f32v) f32v {
+    return @max(vec0_f32, @min(x, vec1_f32));
+}
+
+fn gatherPixelValues(src: []const f32, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v) f32v {
+    const width_i: i32v = @splat(@intCast(width - 1));
+    const height_i: i32v = @splat(@intCast(height - 1));
+    const stride_i: i32v = @splat(@intCast(stride));
+    const zero_i: i32v = @splat(0);
+    const clamped_y = @max(zero_i, @min(y_coords, height_i));
+    const clamped_x = @max(zero_i, @min(x_coords, width_i));
+    const offsets: @Vector(vec_len, u32) = @intCast(clamped_y * stride_i + clamped_x);
+
+    var result_arr: [vec_len]f32 align(32) = undefined;
+    inline for (0..vec_len) |i| {
+        result_arr[i] = src[offsets[i]];
+    }
+    return result_arr;
+}
+
+fn calculateGradientAngle(src: []const f32, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v, read_distance: comptime_int) f32v {
+    const rd: i32v = @splat(read_distance);
+    const p00 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords - rd);
+    const p10 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords);
+    const p20 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords + rd);
+    const p01 = gatherPixelValues(src, stride, width, height, y_coords, x_coords - rd);
+    const p21 = gatherPixelValues(src, stride, width, height, y_coords, x_coords + rd);
+    const p02 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords - rd);
+    const p12 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords);
+    const p22 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords + rd);
+
+    const gx = (p20 + vec2_f32 * p21 + p22) - (p00 + vec2_f32 * p01 + p02);
+    const gy = (p00 + vec2_f32 * p10 + p20) - (p02 + vec2_f32 * p12 + p22);
+    const gx_is_small: boolv = @abs(gx) < vec_scaled_eps;
+    const angle_raw = vcl.atan(gy / gx);
+    const angle_normalized = angle_raw / vec_pi_f32 + vec05_f32;
+    return @select(f32, gx_is_small, vec1_f32, angle_normalized);
 }
