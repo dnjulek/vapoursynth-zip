@@ -93,13 +93,13 @@ pub const Data = struct {
     process_plane: [3]bool = .{ true, true, true },
 
     pub fn setData(d: *Data, m: *const Maps) !void {
-        const thr_in: [3]f64 = try m.getArray("thr", 3, .{ 64, 64, 64 }, 0, math.maxInt(u14));
-        const thr1_in: [3]f64 = try m.getArray("thr1", 3, thr_in, 0, math.maxInt(u14));
-        const thr2_in: [3]f64 = try m.getArray("thr2", 3, thr_in, 0, math.maxInt(u14));
-        const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, math.maxInt(u14));
+        const thr_in: [3]f64 = try m.getArray("thr", 3, .{ 0.99, 0.99, 0.99 }, 0, 255);
+        const thr1_in: [3]f64 = try m.getArray("thr1", 3, thr_in, 0, 255);
+        const thr2_in: [3]f64 = try m.getArray("thr2", 3, thr_in, 0, 255);
+        const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, 255);
         const sample_mode = try m.getValue(i32, "sample_mode", @intFromEnum(d.sample_mode), 1, 5); // TODO: extend to 7 later
 
-        d.range = try m.getValue(i32, "range", d.range, 0, math.maxInt(u14));
+        d.range = try m.getValue(i32, "range", d.range, 0, 255);
         d.seed = try m.getValue(i32, "seed", d.seed, math.minInt(i32), math.maxInt(i32));
         d.blur_first = m.in.getBool("blur_first") orelse d.blur_first;
         d.dynamic_grain = m.in.getBool("dynamic_grain") orelse d.dynamic_grain;
@@ -137,18 +137,17 @@ pub const Data = struct {
     }
 
     fn scaleValue(d: *const Data, in: []const f64) ArrT {
-        const peak14: f64 = (1 << 14) - 1;
         const peak16: f64 = (1 << 16) - 1;
         if (d.vi.format.sampleType == .Integer) {
             var out: [3]u16 = undefined;
             for (0..3) |i| {
-                out[i] = @intFromFloat(in[i] * peak16 / peak14 + 0.5);
+                out[i] = @intFromFloat(in[i] * peak16 / 255.0 + 0.5);
             }
             return ArrT{ .u = out };
         } else {
             var out: [3]f32 = undefined;
             for (0..3) |i| {
-                out[i] = @floatCast(in[i] / peak14);
+                out[i] = @floatCast(in[i] / 255.0);
             }
             return ArrT{ .f = out };
         }
