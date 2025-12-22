@@ -12,7 +12,6 @@ vspipe -p ./comb_mask.vpy .
 vspipe -p ./comb_mask_mt.vpy .
 vspipe -p ./limit_filter.vpy .
 vspipe -p ./limiter.vpy .
-vspipe -p ./metrics_ssimu2.vpy .
 vspipe -p ./packrgb.vpy .
 vspipe -p ./plane_props.vpy .
 vspipe -p ./planeminmax.vpy .

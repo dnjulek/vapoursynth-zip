@@ -17,7 +17,6 @@ const deband = @import("vapoursynth/deband.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limit_filter = @import("vapoursynth/limit_filter.zig");
 const limiter = @import("vapoursynth/limiter.zig");
-const metrics = @import("vapoursynth/metrics.zig");
 const packrgb = @import("vapoursynth/packrgb.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
@@ -126,14 +125,6 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;mask:int:opt;planes:int[]:opt;",
         "clip:vnode;",
         limiter.limiterCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        metrics.filter_name,
-        "reference:vnode;distorted:vnode;mode:int:opt;",
-        "clip:vnode;",
-        metrics.metricsCreate,
         plugin,
         vspapi,
     );
