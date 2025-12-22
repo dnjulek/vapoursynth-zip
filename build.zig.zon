@@ -1,6 +1,6 @@
 .{
     .name = .vszip,
-    .version = "12.0.0",
+    .version = "13.0.0",
     .paths = .{""},
     .fingerprint = 0x7466a154dbe09310,
     .minimum_zig_version = "0.15.2",
