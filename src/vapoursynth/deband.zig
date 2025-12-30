@@ -175,11 +175,13 @@ const TempBuff = struct {
         const uheight: u32 = @intCast(height);
         const mask_w: i32 = (@as(i32, 1) << d.ssw) - 1;
         const mask_h: i32 = (@as(i32, 1) << d.ssh) - 1;
+        const is_float = d.vi.format.sampleType == .Float;
+        const alignment: u32 = if (is_float) (FRAME_LUT_ALIGNMENT / @sizeOf(f32)) else (FRAME_LUT_ALIGNMENT / @sizeOf(u16));
 
-        const y_stride: u32 = ceilN(uwidth, FRAME_LUT_ALIGNMENT);
+        const y_stride: u32 = ceilN(uwidth, alignment);
         const c_width: u32 = uwidth >> d.ssw;
         const c_height: u32 = uheight >> d.ssh;
-        const c_stride: u32 = ceilN(c_width, FRAME_LUT_ALIGNMENT);
+        const c_stride: u32 = ceilN(c_width, alignment);
         const y_size: u32 = y_stride * uheight;
         const c_size: u32 = c_stride * c_height;
 
@@ -187,6 +189,8 @@ const TempBuff = struct {
         for (0..2) |i| {
             self.ref1[i] = try allocator.alignedAlloc(u16, vszip.alignment, sizes[i]);
             self.ref2[i] = try allocator.alignedAlloc(u16, vszip.alignment, sizes[i]);
+            @memset(self.ref1[i], 0);
+            @memset(self.ref2[i], 0);
         }
 
         self.ref1[2] = self.ref1[1];
