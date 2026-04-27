@@ -1,0 +1,109 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+  workflow_dispatch: {}
+
+jobs:
+  build-sdist:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      file: ${{ steps.build.outputs.file }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Export version
+        id: version
+        run: |
+          version=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Build sdist
+        id: build
+        run: |
+          pip install build
+          python -m build --sdist
+          echo "file=$(basename dist/*.tar.gz)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vapoursynth-vszip-sdist
+          path: dist/*.tar.gz
+
+  build-wheel:
+    runs-on: ubuntu-latest
+    needs: build-sdist
+    strategy:
+      matrix:
+        target:
+          - aarch64-linux-gnu
+          - aarch64-linux-musl
+          - x86_64-linux-gnu
+          - x86_64-linux-musl
+          - aarch64-macos
+          - x86_64-macos
+          - x86_64-windows
+      fail-fast: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: vapoursynth-vszip-sdist
+          path: sdist
+
+      - name: Build wheel
+        env:
+          ZTARGET: ${{ matrix.target }}
+        run: |
+          pip wheel --no-deps -w dist sdist/${{ needs.build-sdist.outputs.file }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vapoursynth-vszip-${{ matrix.target }}
+          path: dist/*.whl
+
+  check-tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: build-sdist
+    outputs:
+      exists: ${{ steps.check-tag.outputs.exists }}
+    steps:
+      - uses: mukunku/tag-exists-action@v1.7.0
+        id: check-tag
+        with:
+          tag: ${{ needs.build-sdist.outputs.version }}
+
+  release:
+    if: needs.check-tag.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+    needs:
+      - check-tag
+      - build-sdist
+      - build-wheel
+    permissions:
+      id-token: write
+      contents: write
+    environment:
+      name: pypi
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.build-sdist.outputs.version }}
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
