@@ -150,10 +150,14 @@ pub inline fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride:
         var srcp2 = src2[(y * stride)..];
         var dstp = dst[(y * stride)..];
         var x: u32 = 0;
-        while (x < w) : (x += 16) {
+        while (x < w - 16) : (x += 16) {
             const x2: u32 = x + 16;
             multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
         }
+
+        x = w - 16;
+        const x2: u32 = x + 16;
+        multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
     }
 }
 
@@ -404,28 +408,25 @@ inline fn xybVec(src: [3][]const f32, dst: [3][]f32) void {
     }
 }
 
+// f bounds: index 848, len 840
 pub inline fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
     var srcp = _srcp;
     var dstp = _dstp;
     var y: u32 = 0;
     while (y < h) : (y += 1) {
         var x: u32 = 0;
-        while (x < w) : (x += 16) {
+        while (x < w - 16) : (x += 16) {
             const x2: u32 = x + 16;
-            const srcps = [3][]const f32{
-                srcp[0][x..x2],
-                srcp[1][x..x2],
-                srcp[2][x..x2],
-            };
-
-            const dstps = [3][]f32{
-                dstp[0][x..x2],
-                dstp[1][x..x2],
-                dstp[2][x..x2],
-            };
-
+            const srcps = [3][]const f32{ srcp[0][x..x2], srcp[1][x..x2], srcp[2][x..x2] };
+            const dstps = [3][]f32{ dstp[0][x..x2], dstp[1][x..x2], dstp[2][x..x2] };
             xybVec(srcps, dstps);
         }
+
+        x = w - 16;
+        const x2: u32 = x + 16;
+        const srcps = [3][]const f32{ srcp[0][x..x2], srcp[1][x..x2], srcp[2][x..x2] };
+        const dstps = [3][]f32{ dstp[0][x..x2], dstp[1][x..x2], dstp[2][x..x2] };
+        xybVec(srcps, dstps);
 
         var i: u32 = 0;
         while (i < 3) : (i += 1) {
