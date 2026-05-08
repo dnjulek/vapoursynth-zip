@@ -9,29 +9,18 @@ const radius = 4;
 
 pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32) f64 {
     const wh: u32 = stride * h;
-    const temp_alloc = allocator.alignedAlloc(f32, vszip.alignment, wh * 18) catch unreachable;
+    const temp_alloc = allocator.alignedAlloc(f32, vszip.alignment, wh * 17) catch unreachable;
     defer allocator.free(temp_alloc);
-    var temp = temp_alloc[0..];
 
-    var temp6x3: [6][3][]f32 = undefined;
-    var x: u32 = 0;
-    for (0..6) |i| {
-        for (0..3) |ii| {
-            temp6x3[i][ii] = temp[x..(x + wh)];
-            x += wh;
-        }
-    }
-
-    const srcp1b = temp6x3[0];
-    const srcp2b = temp6x3[1];
-    const tmpp1 = temp6x3[2];
-    const tmpp2 = temp6x3[3];
-
-    const tmpp3 = temp6x3[4][0];
-    const tmpps11 = temp6x3[4][1];
-    const tmpps22 = temp6x3[4][2];
-    const tmpps12 = temp6x3[5][0];
-    const tmppmu1 = temp6x3[5][1];
+    const srcp1b = [3][]f32{ temp_alloc[0 * wh .. 1 * wh], temp_alloc[1 * wh .. 2 * wh], temp_alloc[2 * wh .. 3 * wh] };
+    const srcp2b = [3][]f32{ temp_alloc[3 * wh .. 4 * wh], temp_alloc[4 * wh .. 5 * wh], temp_alloc[5 * wh .. 6 * wh] };
+    const tmpp1  = [3][]f32{ temp_alloc[6 * wh .. 7 * wh], temp_alloc[7 * wh .. 8 * wh], temp_alloc[8 * wh .. 9 * wh] };
+    const tmpp2  = [3][]f32{ temp_alloc[9 * wh .. 10 * wh], temp_alloc[10 * wh .. 11 * wh], temp_alloc[11 * wh .. 12 * wh] };
+    const tmpp3   = temp_alloc[12 * wh .. 13 * wh];
+    const tmpps11 = temp_alloc[13 * wh .. 14 * wh];
+    const tmpps22 = temp_alloc[14 * wh .. 15 * wh];
+    const tmpps12 = temp_alloc[15 * wh .. 16 * wh];
+    const tmppmu1 = temp_alloc[16 * wh .. 17 * wh];
 
     for (0..3) |i| {
         @memcpy(srcp1b[i], srcp1[i]);
