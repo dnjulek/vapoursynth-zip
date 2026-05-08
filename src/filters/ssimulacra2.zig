@@ -1,7 +1,9 @@
 const std = @import("std");
 const math = std.math;
 const vszip = @import("../vszip.zig");
+const vcl = @import("../vcl.zig");
 
+const vec_len = std.simd.suggestVectorLength(f32) orelse 8;
 const allocator = std.heap.c_allocator;
 
 const ksize = 9;
@@ -14,9 +16,9 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
 
     const srcp1b = [3][]f32{ temp_alloc[0 * wh .. 1 * wh], temp_alloc[1 * wh .. 2 * wh], temp_alloc[2 * wh .. 3 * wh] };
     const srcp2b = [3][]f32{ temp_alloc[3 * wh .. 4 * wh], temp_alloc[4 * wh .. 5 * wh], temp_alloc[5 * wh .. 6 * wh] };
-    const tmpp1  = [3][]f32{ temp_alloc[6 * wh .. 7 * wh], temp_alloc[7 * wh .. 8 * wh], temp_alloc[8 * wh .. 9 * wh] };
-    const tmpp2  = [3][]f32{ temp_alloc[9 * wh .. 10 * wh], temp_alloc[10 * wh .. 11 * wh], temp_alloc[11 * wh .. 12 * wh] };
-    const tmpp3   = temp_alloc[12 * wh .. 13 * wh];
+    const tmpp1 = [3][]f32{ temp_alloc[6 * wh .. 7 * wh], temp_alloc[7 * wh .. 8 * wh], temp_alloc[8 * wh .. 9 * wh] };
+    const tmpp2 = [3][]f32{ temp_alloc[9 * wh .. 10 * wh], temp_alloc[10 * wh .. 11 * wh], temp_alloc[11 * wh .. 12 * wh] };
+    const tmpp3 = temp_alloc[12 * wh .. 13 * wh];
     const tmpps11 = temp_alloc[13 * wh .. 14 * wh];
     const tmpps22 = temp_alloc[14 * wh .. 15 * wh];
     const tmpps12 = temp_alloc[15 * wh .. 16 * wh];
@@ -93,7 +95,7 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
     return score(plane_avg_ssim, plane_avg_edge);
 }
 
-inline fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
+fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
     const fscale: f32 = 2.0;
     const uscale: u32 = 2;
     const out_w = @divTrunc((in_w + uscale - 1), uscale);
@@ -126,31 +128,27 @@ inline fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in
     }
 }
 
-const vec_t: type = @Vector(16, f32);
+const vec_t: type = @Vector(vec_len, f32);
 
-inline fn multiplyVec(src1: anytype, src2: anytype, dst: []f32) void {
-    dst[0..16].* = @as(vec_t, src1[0..16].*) * @as(vec_t, src2[0..16].*);
+fn multiplyVec(src1: anytype, src2: anytype, dst: []f32) void {
+    dst[0..vec_len].* = @as(vec_t, src1[0..vec_len].*) * @as(vec_t, src2[0..vec_len].*);
 }
 
-pub inline fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
     var y: u32 = 0;
     while (y < h) : (y += 1) {
         var srcp1 = src1[(y * stride)..];
         var srcp2 = src2[(y * stride)..];
         var dstp = dst[(y * stride)..];
         var x: u32 = 0;
-        while (x < w - 16) : (x += 16) {
-            const x2: u32 = x + 16;
+        while (x < w) : (x += vec_len) {
+            const x2: u32 = x + vec_len;
             multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
         }
-
-        x = w - 16;
-        const x2: u32 = x + 16;
-        multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
     }
 }
 
-fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
+inline fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
     var j: i32 = 0;
     while (j < @min(w, radius)) : (j += 1) {
         const dist_from_right: i32 = w - 1 - j;
@@ -214,7 +212,7 @@ inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
     }
 }
 
-pub inline fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
     const kernel = [ksize]f32{
         0.0076144188642501831054687500,
         0.0360749699175357818603515625,
@@ -258,7 +256,7 @@ pub inline fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) vo
 }
 
 const K_D0: f32 = 0.0037930734;
-const K_D1: f32 = std.math.lossyCast(f32, math.cbrt(@as(f32, K_D0)));
+const K_D1: f32 = math.cbrt(K_D0);
 
 const V00: vec_t = @splat(@as(f32, 0.0));
 const V05: vec_t = @splat(@as(f32, 0.5));
@@ -287,17 +285,7 @@ const OPSIN_ABSORBANCE_MATRIX = [_]vec_t{ K_M00, K_M01, K_M02, K_M10, K_M11, K_M
 const OPSIN_ABSORBANCE_BIAS: vec_t = @splat(K_D0);
 const ABSORBANCE_BIAS: vec_t = @splat(-K_D1);
 
-inline fn cbrtVec(x: vec_t) vec_t {
-    var out: vec_t = undefined;
-    var i: u32 = 0;
-    while (i < 16) : (i += 1) {
-        out[i] = std.math.lossyCast(f32, math.cbrt(@as(f32, x[i])));
-    }
-
-    return out;
-}
-
-inline fn mixedToXYB(mixed: [3]vec_t) [3]vec_t {
+fn mixedToXYB(mixed: [3]vec_t) [3]vec_t {
     var out: [3]vec_t = undefined;
     out[0] = V05 * (mixed[0] - mixed[1]);
     out[1] = V05 * (mixed[0] + mixed[1]);
@@ -305,7 +293,7 @@ inline fn mixedToXYB(mixed: [3]vec_t) [3]vec_t {
     return out;
 }
 
-inline fn opsinAbsorbance(rgb: [3]vec_t) [3]vec_t {
+fn opsinAbsorbance(rgb: [3]vec_t) [3]vec_t {
     var out: [3]vec_t = undefined;
     out[0] = @mulAdd(
         vec_t,
@@ -361,61 +349,55 @@ inline fn opsinAbsorbance(rgb: [3]vec_t) [3]vec_t {
     return out;
 }
 
-inline fn linearRGBtoXYB(input: [3]vec_t) [3]vec_t {
+fn linearRGBtoXYB(input: [3]vec_t) [3]vec_t {
     var mixed: [3]vec_t = opsinAbsorbance(input);
 
     var i: u32 = 0;
     while (i < 3) : (i += 1) {
-        const pred: @Vector(16, bool) = mixed[i] < V00;
+        const pred: @Vector(vec_len, bool) = mixed[i] < V00;
         mixed[i] = @select(f32, pred, V00, mixed[i]);
-        mixed[i] = cbrtVec(mixed[i]) + ABSORBANCE_BIAS;
+        mixed[i] = vcl.cbrt(mixed[i]) + ABSORBANCE_BIAS;
     }
 
     mixed = mixedToXYB(mixed);
     return mixed;
 }
 
-inline fn makePositiveXYB(xyb: *[3]vec_t) void {
+fn makePositiveXYB(xyb: *[3]vec_t) void {
     xyb[2] = (xyb[2] - xyb[1]) + V055;
     xyb[0] = xyb[0] * V140 + V042;
     xyb[1] += V001;
 }
 
-inline fn xybVec(src: [3][]const f32, dst: [3][]f32) void {
+fn xybVec(src: [3][]const f32, dst: [3][]f32) void {
     var out: [3]vec_t = undefined;
     const rgb = [3]vec_t{
-        src[0][0..16].*,
-        src[1][0..16].*,
-        src[2][0..16].*,
+        src[0][0..vec_len].*,
+        src[1][0..vec_len].*,
+        src[2][0..vec_len].*,
     };
 
     out = linearRGBtoXYB(rgb);
     makePositiveXYB(&out);
 
     for (dst, 0..) |p, i| {
-        p[0..16].* = out[i];
+        p[0..vec_len].* = out[i];
     }
 }
 
 // f bounds: index 848, len 840
-pub inline fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
+fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
     var srcp = _srcp;
     var dstp = _dstp;
     var y: u32 = 0;
     while (y < h) : (y += 1) {
         var x: u32 = 0;
-        while (x < w - 16) : (x += 16) {
-            const x2: u32 = x + 16;
+        while (x < w) : (x += vec_len) {
+            const x2: u32 = x + vec_len;
             const srcps = [3][]const f32{ srcp[0][x..x2], srcp[1][x..x2], srcp[2][x..x2] };
             const dstps = [3][]f32{ dstp[0][x..x2], dstp[1][x..x2], dstp[2][x..x2] };
             xybVec(srcps, dstps);
         }
-
-        x = w - 16;
-        const x2: u32 = x + 16;
-        const srcps = [3][]const f32{ srcp[0][x..x2], srcp[1][x..x2], srcp[2][x..x2] };
-        const dstps = [3][]f32{ dstp[0][x..x2], dstp[1][x..x2], dstp[2][x..x2] };
-        xybVec(srcps, dstps);
 
         var i: u32 = 0;
         while (i < 3) : (i += 1) {
@@ -425,13 +407,13 @@ pub inline fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32,
     }
 }
 
-inline fn tothe4th(y: f64) f64 {
+fn tothe4th(y: f64) f64 {
     var x = y * y;
     x *= x;
     return x;
 }
 
-inline fn ssimMap(
+fn ssimMap(
     s11: []f32,
     s22: []f32,
     s12: []f32,
@@ -475,7 +457,7 @@ inline fn ssimMap(
     plane_avg_ssim[plane * 2 + 1] = @sqrt(@sqrt(one_per_pixels * sum1[1]));
 }
 
-inline fn edgeMap(
+fn edgeMap(
     im1: []f32,
     im2: []f32,
     mu1: []f32,
@@ -514,7 +496,7 @@ inline fn edgeMap(
     plane_avg_edge[plane * 4 + 3] = @sqrt(@sqrt(one_per_pixels * sum2[3]));
 }
 
-inline fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
+fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
     const weight = [108]f64{
         0.0,
         0.0007376606707406586,
