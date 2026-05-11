@@ -14,60 +14,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4 
 
-    - name: Cache VapourSynth build
-      uses: actions/cache@v4
-      id: cache-vapoursynth
-      with:
-        path: |
-          ${{ runner.os }}-vapoursynth-build
-        key: ${{ runner.os }}-vapoursynth-R71
-        restore-keys: |
-          ${{ runner.os }}-vapoursynth-
-
-    - name: Install Python dependencies
+    - name: Install VapourSynth
       shell: bash
-      run: pip install cython setuptools wheel
-
-    - name: Install VapourSynth (R71)
-      run: |
-        if [ ! -d "${{ runner.os }}-vapoursynth-build/vapoursynth" ]; then
-
-          echo "Cache miss. Building VapourSynth."
-          mkdir -p ${{ runner.os }}-vapoursynth-build
-          cd ${{ runner.os }}-vapoursynth-build
-
-          git clone --recurse-submodules https://github.com/sekrit-twc/zimg.git
-          cd zimg
-          ./autogen.sh
-          ./configure --prefix=/usr
-          make -j$(nproc)
-          sudo make install -j$(nproc)
-          cd ..
-
-          git clone --branch R71 --depth 1 https://github.com/vapoursynth/vapoursynth.git
-          cd vapoursynth
-          ./autogen.sh
-          ./configure --prefix=/usr
-          make -j$(nproc)
-          sudo make install -j$(nproc)
-
-          sudo mkdir -p /usr/lib/vapoursynth
-          pip install vapoursynth==71
-
-        else
-          echo "Cache hit. Using existing build."
-          cd ${{ runner.os }}-vapoursynth-build
-
-          cd zimg
-          sudo make install -j$(nproc)
-          cd ..
-
-          cd vapoursynth
-          sudo make install -j$(nproc)
-
-          sudo mkdir -p /usr/lib/vapoursynth
-          pip install vapoursynth==71
-        fi
+      run: pip install VapourSynth
 
     - uses: mlugg/setup-zig@v2
       with:
@@ -78,10 +27,6 @@ jobs:
       run: |
         zig build -Doptimize=Debug -Dcpu=x86_64_v3
 
-    - name: export PATH
-      run: export PATH="${{ runner.os }}-vapoursynth-build/vapoursynth:$PATH"
-
     - name: Run test
       run: |
-        cd ./test/
-        ./test_all.sh
+        cd ./test/ && ./test_all.sh
