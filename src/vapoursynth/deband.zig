@@ -31,17 +31,6 @@ pub inline fn ceilN(x: anytype, n: anytype) @TypeOf(x) {
     return (x + (n - 1)) & ~(@as(@TypeOf(x), n) - 1);
 }
 
-pub const VEC_SIZE = 8;
-const i32v = @Vector(VEC_SIZE, i32);
-const u32v = @Vector(VEC_SIZE, u32);
-const u16v = @Vector(VEC_SIZE, u16);
-const i16v = @Vector(VEC_SIZE, i16);
-const f32v = @Vector(VEC_SIZE, f32);
-const boolv = @Vector(VEC_SIZE, bool);
-const vec1_i32: i32v = @splat(1);
-const vec2_i32: i32v = @splat(2);
-const vec4_i32: i32v = @splat(4);
-
 pub const RandAlgo = enum(i32) {
     old = 0,
     uniform = 1,
