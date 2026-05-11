@@ -1,17 +1,43 @@
 const std = @import("std");
 const math = std.math;
-const vszip = @import("../vszip.zig");
-const vcl = @import("../vcl.zig");
 
-const vec_len = std.simd.suggestVectorLength(f32) orelse 8;
 const allocator = std.heap.c_allocator;
 
 const ksize = 9;
 const radius = 4;
+const vec_size: comptime_int = std.simd.suggestVectorLength(f32) orelse 8;
+const weight_pruning: f64 = 0.01;
+
+const SkipInfo = struct {
+    ssim: bool,
+    artifact: bool,
+    detailloss: bool,
+
+    fn all(self: SkipInfo) bool {
+        return self.ssim and self.artifact and self.detailloss;
+    }
+};
+
+const skip_table: [3][6]SkipInfo = blk: {
+    var table: [3][6]SkipInfo = undefined;
+    var plane: usize = 0;
+    while (plane < 3) : (plane += 1) {
+        var scale: usize = 0;
+        while (scale < 6) : (scale += 1) {
+            const base = plane * 36 + scale * 6;
+            table[plane][scale] = .{
+                .ssim = weight[base + 0] <= weight_pruning and weight[base + 3] <= weight_pruning,
+                .artifact = weight[base + 1] <= weight_pruning and weight[base + 4] <= weight_pruning,
+                .detailloss = weight[base + 2] <= weight_pruning and weight[base + 5] <= weight_pruning,
+            };
+        }
+    }
+    break :blk table;
+};
 
 pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32) f64 {
     const wh: u32 = stride * h;
-    const temp_alloc = allocator.alignedAlloc(f32, vszip.alignment, wh * 17) catch unreachable;
+    const temp_alloc = allocator.alloc(f32, wh * 16) catch unreachable;
     defer allocator.free(temp_alloc);
 
     const srcp1b = [3][]f32{ temp_alloc[0 * wh .. 1 * wh], temp_alloc[1 * wh .. 2 * wh], temp_alloc[2 * wh .. 3 * wh] };
@@ -19,10 +45,9 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
     const tmpp1 = [3][]f32{ temp_alloc[6 * wh .. 7 * wh], temp_alloc[7 * wh .. 8 * wh], temp_alloc[8 * wh .. 9 * wh] };
     const tmpp2 = [3][]f32{ temp_alloc[9 * wh .. 10 * wh], temp_alloc[10 * wh .. 11 * wh], temp_alloc[11 * wh .. 12 * wh] };
     const tmpp3 = temp_alloc[12 * wh .. 13 * wh];
-    const tmpps11 = temp_alloc[13 * wh .. 14 * wh];
-    const tmpps22 = temp_alloc[14 * wh .. 15 * wh];
-    const tmpps12 = temp_alloc[15 * wh .. 16 * wh];
-    const tmppmu1 = temp_alloc[16 * wh .. 17 * wh];
+    const tmpsq = temp_alloc[13 * wh .. 14 * wh];
+    const tmpps12 = temp_alloc[14 * wh .. 15 * wh];
+    const tmppmu1 = temp_alloc[15 * wh .. 16 * wh];
 
     for (0..3) |i| {
         @memcpy(srcp1b[i], srcp1[i]);
@@ -51,44 +76,44 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
 
         var plane: u32 = 0;
         while (plane < 3) : (plane += 1) {
-            multiply(tmpp1[plane], tmpp1[plane], tmpp3, stride2, w2, h2);
-            blur(tmpp3, tmpps11, stride2, w2, h2);
+            const skip = skip_table[plane][scale];
 
-            multiply(tmpp2[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-            blur(tmpp3, tmpps22, stride2, w2, h2);
+            if (skip.all()) {
+                plane_avg_ssim[scale][plane * 2] = 0.0;
+                plane_avg_ssim[scale][plane * 2 + 1] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 0] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 1] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 2] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 3] = 0.0;
+                continue;
+            }
 
-            multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-            blur(tmpp3, tmpps12, stride2, w2, h2);
+            if (!skip.ssim) {
+                multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
+                blur(tmpp3, tmpps12, stride2, w2, h2);
+
+                addSquare(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
+                blur(tmpp3, tmpsq, stride2, w2, h2);
+            }
 
             blur(tmpp1[plane], tmppmu1, stride2, w2, h2);
             blur(tmpp2[plane], tmpp3, stride2, w2, h2);
 
-            ssimMap(
-                tmpps11,
-                tmpps22,
-                tmpps12,
-                tmppmu1,
-                tmpp3,
-                stride2,
-                w2,
-                h2,
-                plane,
-                one_per_pixels,
-                &plane_avg_ssim[scale],
-            );
+            if (!skip.ssim) {
+                ssimMap(tmpsq, tmpps12, tmppmu1, tmpp3, stride2, w2, h2, plane, one_per_pixels, &plane_avg_ssim[scale]);
+            } else {
+                plane_avg_ssim[scale][plane * 2] = 0.0;
+                plane_avg_ssim[scale][plane * 2 + 1] = 0.0;
+            }
 
-            edgeMap(
-                tmpp1[plane],
-                tmpp2[plane],
-                tmppmu1,
-                tmpp3,
-                stride2,
-                w2,
-                h2,
-                plane,
-                one_per_pixels,
-                &plane_avg_edge[scale],
-            );
+            if (!skip.artifact or !skip.detailloss) {
+                edgeMap(tmpp1[plane], tmpp2[plane], tmppmu1, tmpp3, stride2, w2, h2, plane, one_per_pixels, &plane_avg_edge[scale]);
+            } else {
+                plane_avg_edge[scale][plane * 4 + 0] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 1] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 2] = 0.0;
+                plane_avg_edge[scale][plane * 4 + 3] = 0.0;
+            }
         }
     }
 
@@ -128,22 +153,38 @@ fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32
     }
 }
 
-const vec_t: type = @Vector(vec_len, f32);
-
-fn multiplyVec(src1: anytype, src2: anytype, dst: []f32) void {
-    dst[0..vec_len].* = @as(vec_t, src1[0..vec_len].*) * @as(vec_t, src2[0..vec_len].*);
-}
-
 fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+    const Vec = @Vector(vec_size, f32);
     var y: u32 = 0;
     while (y < h) : (y += 1) {
-        var srcp1 = src1[(y * stride)..];
-        var srcp2 = src2[(y * stride)..];
-        var dstp = dst[(y * stride)..];
+        const off = y * stride;
         var x: u32 = 0;
-        while (x < w) : (x += vec_len) {
-            const x2: u32 = x + vec_len;
-            multiplyVec(srcp1[x..x2], srcp2[x..x2], dstp[x..x2]);
+        while (x + vec_size <= w) : (x += vec_size) {
+            const a: Vec = src1[off + x ..][0..vec_size].*;
+            const b: Vec = src2[off + x ..][0..vec_size].*;
+            dst[off + x ..][0..vec_size].* = a * b;
+        }
+        while (x < w) : (x += 1) {
+            dst[off + x] = src1[off + x] * src2[off + x];
+        }
+    }
+}
+
+fn addSquare(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+    const Vec = @Vector(vec_size, f32);
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        const off = y * stride;
+        var x: u32 = 0;
+        while (x + vec_size <= w) : (x += vec_size) {
+            const a: Vec = src1[off + x ..][0..vec_size].*;
+            const b: Vec = src2[off + x ..][0..vec_size].*;
+            const v = a + b;
+            dst[off + x ..][0..vec_size].* = v * v;
+        }
+        while (x < w) : (x += 1) {
+            const v = src1[off + x] + src2[off + x];
+            dst[off + x] = v * v;
         }
     }
 }
@@ -200,14 +241,23 @@ inline fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
 }
 
 inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
+    const Vec = @Vector(vec_size, f32);
     var j: u32 = 0;
+    while (j + vec_size <= w) : (j += vec_size) {
+        var accum: Vec = @splat(0.0);
+        inline for (0..ksize) |k| {
+            const kv: Vec = @splat(kernel[k]);
+            const sv: Vec = src[k][j..][0..vec_size].*;
+            accum = @mulAdd(Vec, kv, sv, accum);
+        }
+        dstp[j..][0..vec_size].* = accum;
+    }
     while (j < w) : (j += 1) {
         var accum: f32 = 0.0;
         var k: u32 = 0;
-        while (k < 9) : (k += 1) {
+        while (k < ksize) : (k += 1) {
             accum += kernel[k] * src[k][j];
         }
-
         dstp[j] = accum;
     }
 }
@@ -225,6 +275,9 @@ fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
         0.0076144188642501831054687500,
     };
 
+    const tmp = allocator.alloc(f32, w) catch unreachable;
+    defer allocator.free(tmp);
+
     var i: i32 = 0;
     const ih: i32 = @bitCast(h);
     while (i < h) : (i += 1) {
@@ -232,9 +285,6 @@ fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
         var srcp: [ksize][]const f32 = undefined;
         const dstp: []f32 = dst[(ui * stride)..];
         const dist_from_bottom: i32 = ih - 1 - i;
-
-        const tmp = allocator.alignedAlloc(f32, vszip.alignment, w) catch unreachable;
-        defer allocator.free(tmp);
 
         var k: i32 = 0;
         while (k < radius) : (k += 1) {
@@ -258,145 +308,65 @@ fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
 const K_D0: f32 = 0.0037930734;
 const K_D1: f32 = math.cbrt(K_D0);
 
-const V00: vec_t = @splat(@as(f32, 0.0));
-const V05: vec_t = @splat(@as(f32, 0.5));
-const V10: vec_t = @splat(@as(f32, 1.0));
-const V11: vec_t = @splat(@as(f32, 1.1));
+const K_M02: f32 = 0.078;
+const K_M00: f32 = 0.30;
+const K_M01: f32 = 1.0 - K_M02 - K_M00;
 
-const V001: vec_t = @splat(@as(f32, 0.01));
-const V005: vec_t = @splat(@as(f32, 0.05));
-const V055: vec_t = @splat(@as(f32, 0.55));
-const V042: vec_t = @splat(@as(f32, 0.42));
-const V140: vec_t = @splat(@as(f32, 14.0));
+const K_M12: f32 = 0.078;
+const K_M10: f32 = 0.23;
+const K_M11: f32 = 1.0 - K_M12 - K_M10;
 
-const K_M02: vec_t = @splat(@as(f32, 0.078));
-const K_M00: vec_t = @splat(@as(f32, 0.30));
-const K_M01: vec_t = V10 - K_M02 - K_M00;
+const K_M20: f32 = 0.24342269;
+const K_M21: f32 = 0.20476745;
+const K_M22: f32 = 1.0 - K_M20 - K_M21;
 
-const K_M12: vec_t = @splat(@as(f32, 0.078));
-const K_M10: vec_t = @splat(@as(f32, 0.23));
-const K_M11: vec_t = V10 - K_M12 - K_M10;
+const OPSIN_ABSORBANCE_MATRIX = [9]f32{ K_M00, K_M01, K_M02, K_M10, K_M11, K_M12, K_M20, K_M21, K_M22 };
+const OPSIN_ABSORBANCE_BIAS: f32 = K_D0;
 
-const K_M20: vec_t = @splat(@as(f32, 0.24342269));
-const K_M21: vec_t = @splat(@as(f32, 0.20476745));
-const K_M22: vec_t = V10 - K_M20 - K_M21;
-
-const OPSIN_ABSORBANCE_MATRIX = [_]vec_t{ K_M00, K_M01, K_M02, K_M10, K_M11, K_M12, K_M20, K_M21, K_M22 };
-const OPSIN_ABSORBANCE_BIAS: vec_t = @splat(K_D0);
-const ABSORBANCE_BIAS: vec_t = @splat(-K_D1);
-
-fn mixedToXYB(mixed: [3]vec_t) [3]vec_t {
-    var out: [3]vec_t = undefined;
-    out[0] = V05 * (mixed[0] - mixed[1]);
-    out[1] = V05 * (mixed[0] + mixed[1]);
+fn mixedToXYB(mixed: [3]f32) [3]f32 {
+    var out: [3]f32 = undefined;
+    out[0] = 0.5 * (mixed[0] - mixed[1]);
+    out[1] = 0.5 * (mixed[0] + mixed[1]);
     out[2] = mixed[2];
     return out;
 }
 
-fn opsinAbsorbance(rgb: [3]vec_t) [3]vec_t {
-    var out: [3]vec_t = undefined;
-    out[0] = @mulAdd(
-        vec_t,
-        OPSIN_ABSORBANCE_MATRIX[0],
-        rgb[0],
-        @mulAdd(
-            vec_t,
-            OPSIN_ABSORBANCE_MATRIX[1],
-            rgb[1],
-            @mulAdd(
-                vec_t,
-                OPSIN_ABSORBANCE_MATRIX[2],
-                rgb[2],
-                OPSIN_ABSORBANCE_BIAS,
-            ),
-        ),
-    );
-
-    out[1] = @mulAdd(
-        vec_t,
-        OPSIN_ABSORBANCE_MATRIX[3],
-        rgb[0],
-        @mulAdd(
-            vec_t,
-            OPSIN_ABSORBANCE_MATRIX[4],
-            rgb[1],
-            @mulAdd(
-                vec_t,
-                OPSIN_ABSORBANCE_MATRIX[5],
-                rgb[2],
-                OPSIN_ABSORBANCE_BIAS,
-            ),
-        ),
-    );
-
-    out[2] = @mulAdd(
-        vec_t,
-        OPSIN_ABSORBANCE_MATRIX[6],
-        rgb[0],
-        @mulAdd(
-            vec_t,
-            OPSIN_ABSORBANCE_MATRIX[7],
-            rgb[1],
-            @mulAdd(
-                vec_t,
-                OPSIN_ABSORBANCE_MATRIX[8],
-                rgb[2],
-                OPSIN_ABSORBANCE_BIAS,
-            ),
-        ),
-    );
-
+fn opsinAbsorbance(rgb: [3]f32) [3]f32 {
+    var out: [3]f32 = undefined;
+    out[0] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[0], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[1], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[2], rgb[2], OPSIN_ABSORBANCE_BIAS)));
+    out[1] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[3], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[4], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[5], rgb[2], OPSIN_ABSORBANCE_BIAS)));
+    out[2] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[6], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[7], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[8], rgb[2], OPSIN_ABSORBANCE_BIAS)));
     return out;
 }
 
-fn linearRGBtoXYB(input: [3]vec_t) [3]vec_t {
-    var mixed: [3]vec_t = opsinAbsorbance(input);
-
-    var i: u32 = 0;
-    while (i < 3) : (i += 1) {
-        const pred: @Vector(vec_len, bool) = mixed[i] < V00;
-        mixed[i] = @select(f32, pred, V00, mixed[i]);
-        mixed[i] = vcl.cbrt(mixed[i]) + ABSORBANCE_BIAS;
+fn linearRGBtoXYB(input: [3]f32) [3]f32 {
+    var mixed: [3]f32 = opsinAbsorbance(input);
+    for (&mixed) |*v| {
+        if (v.* < 0.0) v.* = 0.0;
+        v.* = math.cbrt(v.*) - K_D1;
     }
-
-    mixed = mixedToXYB(mixed);
-    return mixed;
+    return mixedToXYB(mixed);
 }
 
-fn makePositiveXYB(xyb: *[3]vec_t) void {
-    xyb[2] = (xyb[2] - xyb[1]) + V055;
-    xyb[0] = xyb[0] * V140 + V042;
-    xyb[1] += V001;
+fn makePositiveXYB(xyb: *[3]f32) void {
+    xyb[2] = (xyb[2] - xyb[1]) + 0.55;
+    xyb[0] = xyb[0] * 14.0 + 0.42;
+    xyb[1] += 0.01;
 }
 
-fn xybVec(src: [3][]const f32, dst: [3][]f32) void {
-    var out: [3]vec_t = undefined;
-    const rgb = [3]vec_t{
-        src[0][0..vec_len].*,
-        src[1][0..vec_len].*,
-        src[2][0..vec_len].*,
-    };
-
-    out = linearRGBtoXYB(rgb);
-    makePositiveXYB(&out);
-
-    for (dst, 0..) |p, i| {
-        p[0..vec_len].* = out[i];
-    }
-}
-
-// f bounds: index 848, len 840
 fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
     var srcp = _srcp;
     var dstp = _dstp;
     var y: u32 = 0;
     while (y < h) : (y += 1) {
         var x: u32 = 0;
-        while (x < w) : (x += vec_len) {
-            const x2: u32 = x + vec_len;
-            const srcps = [3][]const f32{ srcp[0][x..x2], srcp[1][x..x2], srcp[2][x..x2] };
-            const dstps = [3][]f32{ dstp[0][x..x2], dstp[1][x..x2], dstp[2][x..x2] };
-            xybVec(srcps, dstps);
+        while (x < w) : (x += 1) {
+            const rgb = [3]f32{ srcp[0][x], srcp[1][x], srcp[2][x] };
+            var out = linearRGBtoXYB(rgb);
+            makePositiveXYB(&out);
+            dstp[0][x] = out[0];
+            dstp[1][x] = out[1];
+            dstp[2][x] = out[2];
         }
 
         var i: u32 = 0;
@@ -414,8 +384,7 @@ fn tothe4th(y: f64) f64 {
 }
 
 fn ssimMap(
-    s11: []f32,
-    s22: []f32,
+    sumsquared: []f32,
     s12: []f32,
     mu1: []f32,
     mu2: []f32,
@@ -429,8 +398,7 @@ fn ssimMap(
     var sum1 = [2]f64{ 0.0, 0.0 };
     var y: u32 = 0;
     while (y < h) : (y += 1) {
-        const s11p = s11[(y * stride)..];
-        const s22p = s22[(y * stride)..];
+        const sqp = sumsquared[(y * stride)..];
         const s12p = s12[(y * stride)..];
         const mu1p = mu1[(y * stride)..];
         const mu2p = mu2[(y * stride)..];
@@ -445,7 +413,7 @@ fn ssimMap(
             const m_diff = m1 - m2;
             const num_m: f64 = @mulAdd(f32, m_diff, -m_diff, 1.0);
             const num_s: f64 = @mulAdd(f32, (s12p[x] - m12), 2.0, 0.0009);
-            const denom_s: f64 = (s11p[x] - m11) + (s22p[x] - m22) + 0.0009;
+            const denom_s: f64 = (sqp[x] - 2.0 * s12p[x] - m11 - m22 + 0.0009);
             const d1: f64 = @max(1.0 - ((num_m * num_s) / denom_s), 0.0);
 
             sum1[0] += d1;
@@ -497,117 +465,6 @@ fn edgeMap(
 }
 
 fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
-    const weight = [108]f64{
-        0.0,
-        0.0007376606707406586,
-        0.0,
-        0.0,
-        0.0007793481682867309,
-        0.0,
-        0.0,
-        0.0004371155730107379,
-        0.0,
-        1.1041726426657346,
-        0.00066284834129271,
-        0.00015231632783718752,
-        0.0,
-        0.0016406437456599754,
-        0.0,
-        1.8422455520539298,
-        11.441172603757666,
-        0.0,
-        0.0007989109436015163,
-        0.000176816438078653,
-        0.0,
-        1.8787594979546387,
-        10.94906990605142,
-        0.0,
-        0.0007289346991508072,
-        0.9677937080626833,
-        0.0,
-        0.00014003424285435884,
-        0.9981766977854967,
-        0.00031949755934435053,
-        0.0004550992113792063,
-        0.0,
-        0.0,
-        0.0013648766163243398,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        7.466890328078848,
-        0.0,
-        17.445833984131262,
-        0.0006235601634041466,
-        0.0,
-        0.0,
-        6.683678146179332,
-        0.00037724407979611296,
-        1.027889937768264,
-        225.20515300849274,
-        0.0,
-        0.0,
-        19.213238186143016,
-        0.0011401524586618361,
-        0.001237755635509985,
-        176.39317598450694,
-        0.0,
-        0.0,
-        24.43300999870476,
-        0.28520802612117757,
-        0.0004485436923833408,
-        0.0,
-        0.0,
-        0.0,
-        34.77906344483772,
-        44.835625328877896,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0008680556573291698,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0005313191874358747,
-        0.0,
-        0.00016533814161379112,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0004179171803251336,
-        0.0017290828234722833,
-        0.0,
-        0.0020827005846636437,
-        0.0,
-        0.0,
-        8.826982764996862,
-        23.19243343998926,
-        0.0,
-        95.1080498811086,
-        0.9863978034400682,
-        0.9834382792465353,
-        0.0012286405048278493,
-        171.2667255897307,
-        0.9807858872435379,
-        0.0,
-        0.0,
-        0.0,
-        0.0005130064588990679,
-        0.0,
-        0.00010854057858411537,
-    };
-
     var ssim: f64 = 0.0;
 
     var i: u32 = 0;
@@ -641,3 +498,114 @@ fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
 
     return ssim;
 }
+
+const weight = [108]f64{
+    0.0,
+    0.0007376606707406586,
+    0.0,
+    0.0,
+    0.0007793481682867309,
+    0.0,
+    0.0,
+    0.0004371155730107379,
+    0.0,
+    1.1041726426657346,
+    0.00066284834129271,
+    0.00015231632783718752,
+    0.0,
+    0.0016406437456599754,
+    0.0,
+    1.8422455520539298,
+    11.441172603757666,
+    0.0,
+    0.0007989109436015163,
+    0.000176816438078653,
+    0.0,
+    1.8787594979546387,
+    10.94906990605142,
+    0.0,
+    0.0007289346991508072,
+    0.9677937080626833,
+    0.0,
+    0.00014003424285435884,
+    0.9981766977854967,
+    0.00031949755934435053,
+    0.0004550992113792063,
+    0.0,
+    0.0,
+    0.0013648766163243398,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    7.466890328078848,
+    0.0,
+    17.445833984131262,
+    0.0006235601634041466,
+    0.0,
+    0.0,
+    6.683678146179332,
+    0.00037724407979611296,
+    1.027889937768264,
+    225.20515300849274,
+    0.0,
+    0.0,
+    19.213238186143016,
+    0.0011401524586618361,
+    0.001237755635509985,
+    176.39317598450694,
+    0.0,
+    0.0,
+    24.43300999870476,
+    0.28520802612117757,
+    0.0004485436923833408,
+    0.0,
+    0.0,
+    0.0,
+    34.77906344483772,
+    44.835625328877896,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0008680556573291698,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0005313191874358747,
+    0.0,
+    0.00016533814161379112,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0004179171803251336,
+    0.0017290828234722833,
+    0.0,
+    0.0020827005846636437,
+    0.0,
+    0.0,
+    8.826982764996862,
+    23.19243343998926,
+    0.0,
+    95.1080498811086,
+    0.9863978034400682,
+    0.9834382792465353,
+    0.0012286405048278493,
+    171.2667255897307,
+    0.9807858872435379,
+    0.0,
+    0.0,
+    0.0,
+    0.0005130064588990679,
+    0.0,
+    0.00010854057858411537,
+};
