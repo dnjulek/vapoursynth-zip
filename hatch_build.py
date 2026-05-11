@@ -12,8 +12,8 @@ library_suffixes = frozenset({'.so', '.dll', '.dylib'})
 
 cpus = [
     {'cpu': 'x86_64'}, 
-    {'cpu': 'haswell', 'opt_level': 'v3'},
-    {'cpu': 'znver4-sse4a', 'opt_level': 'v4'}, # "-sse4a" means *remove* the use of SSE4a (which Intel never implemented)
+    {'cpu': 'haswell', 'opt_suffix': 'avx2'},
+    {'cpu': 'znver4-sse4a', 'opt_suffix': 'zn4'}, # "-sse4a" means *remove* the use of SSE4a (which Intel never implemented)
 ]
 
 targets = {
@@ -103,8 +103,8 @@ class CustomHook(BuildHookInterface[Any]):
 
                     for file_path in self.source_dir.rglob("*"):
                         if file_path.is_file() and file_path.suffix in library_suffixes:
-                            if 'opt_level' in cpu_spec:
-                                name = file_path.stem + f".{cpu_spec['opt_level']}" + file_path.suffix
+                            if 'opt_suffix' in cpu_spec:
+                                name = file_path.stem + f".{cpu_spec['opt_suffix']}" + file_path.suffix
                                 shutil.copy2(file_path, Path(self.target_dir, name))
                             else:
                                 shutil.copy2(file_path, self.target_dir)

@@ -8,7 +8,7 @@ description = "VapourSynth Zig Image Process"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = ["VapourSynth>=74"]
+dependencies = ["VapourSynth>=75"]
 dynamic = ["version"]
 
 [tool.hatch.version]
