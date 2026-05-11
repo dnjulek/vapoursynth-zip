@@ -12,7 +12,7 @@ rfs = core.vszip.RFS(clip1, clip2, frames=[0, 3, 5, 1], mismatch=True)
 assert rfs.width == 0, f"prop is: {rfs.width}"
 assert rfs.height == 0, f"prop is: {rfs.height}"
 assert rfs.fps == 0, f"prop is: {rfs.fps}"
-assert rfs.format is None, f"prop is: {rfs.format}"
+assert rfs.format.color_family == 0, f"prop is: {rfs.format.color_family}"
 
 clip1.set_output()
 
