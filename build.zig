@@ -16,6 +16,8 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    lib.use_llvm = true;
+
     const options = b.addOptions();
     const version = try std.SemanticVersion.parse(zon.version);
     options.addOption(std.SemanticVersion, "version", version);
@@ -34,7 +36,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
-    lib.linkLibC();
+    lib.root_module.link_libc = true;
 
     if (lib.root_module.optimize == .ReleaseFast) {
         lib.root_module.strip = true;

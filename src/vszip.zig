@@ -27,7 +27,13 @@ const xpsnr = @import("vapoursynth/xpsnr.zig");
 pub const vec_len = std.simd.suggestVectorLength(u8) orelse 32;
 pub const alignment = std.mem.Alignment.fromByteUnits(vec_len);
 
+pub var io_threaded: std.Io.Threaded = undefined;
+pub var io: std.Io = undefined;
+
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
+    io_threaded = .init(std.heap.c_allocator, .{});
+    io = io_threaded.io();
+
     ZAPI.Plugin.config("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", zon.version, plugin, vspapi);
 
     ZAPI.Plugin.function(

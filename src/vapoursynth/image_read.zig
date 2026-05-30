@@ -90,7 +90,7 @@ fn Read(comptime alpha: bool) type {
 
             if (activation_reason == .Initial) {
                 var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-                var image = Image.fromFilePath(allocator, d.paths[@intCast(n)], read_buffer[0..]) catch |err| {
+                var image = Image.fromFilePath(allocator, vszip.io, d.paths[@intCast(n)], read_buffer[0..]) catch |err| {
                     const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[@intCast(n)], err }, 0) catch unreachable;
                     zapi.setFilterError(err_msg);
                     allocator.free(err_msg);
@@ -161,7 +161,7 @@ fn Read(comptime alpha: bool) type {
                         copyPixelsIndexed(u16, src, dst, adst, alpha);
                     },
 
-                    .invalid, .bgr555, .rgb332, .rgb555, .rgb565 => unreachable,
+                    .invalid, .bgr555, .rgb332, .rgb555, .rgb565, .sega_grb333, .sega_bgr333 => unreachable,
                 }
 
                 const props = dst.getPropertiesRW();
@@ -209,7 +209,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
 
     allocator.free(paths_in);
     var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-    var image_0 = Image.fromFilePath(allocator, d.paths[0], read_buffer[0..]) catch |err| {
+    var image_0 = Image.fromFilePath(allocator, vszip.io, d.paths[0], read_buffer[0..]) catch |err| {
         const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[0], err }, 0) catch unreachable;
         map_out.setError(err_msg);
         allocator.free(err_msg);
@@ -245,7 +245,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
 
     switch (pf) {
         .grayscale1, .grayscale2, .grayscale4, .grayscale8, .grayscale16, .grayscale8Alpha, .grayscale16Alpha, .rgb24, .rgba32, .bgr24, .bgra32, .rgb48, .rgba64, .indexed1, .indexed2, .indexed4, .indexed8, .indexed16, .float32 => {},
-        .invalid, .bgr555, .rgb332, .rgb555, .rgb565 => |f| {
+        .invalid, .bgr555, .rgb332, .rgb555, .rgb565, .sega_grb333, .sega_bgr333 => |f| {
             const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Unsupported pixel format '{s}'", .{ filter_name, @tagName(f) }, 0) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);
@@ -267,7 +267,7 @@ fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
 
     for (paths[1..]) |path| {
         var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-        var image = Image.fromFilePath(allocator, path, read_buffer[0..]) catch |err| {
+        var image = Image.fromFilePath(allocator, vszip.io, path, read_buffer[0..]) catch |err| {
             const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }, 0) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);

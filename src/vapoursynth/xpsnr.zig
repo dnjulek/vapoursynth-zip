@@ -10,7 +10,7 @@ const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
 const vsc = vapoursynth.vsconstants;
 const ZAPI = vapoursynth.ZAPI;
-const Mutex = std.Thread.Mutex;
+const Mutex = std.Io.Mutex;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "XPSNR";
@@ -19,7 +19,7 @@ pub const Data = struct {
     node1: *vs.Node = undefined,
     node2: *vs.Node = undefined,
     vi: *const vs.VideoInfo = undefined,
-    mutex: Mutex = undefined,
+    mutex: Mutex = .init,
 
     og_m1: []i16 = undefined,
     og_m2: []i16 = undefined,
@@ -47,8 +47,8 @@ fn XPSNR(comptime T: type) type {
                 zapi.requestFrameFilter(n, d.node1);
                 zapi.requestFrameFilter(n, d.node2);
             } else if (activation_reason == .AllFramesReady) {
-                d.mutex.lock();
-                defer d.mutex.unlock();
+                d.mutex.lockUncancelable(vszip.io);
+                defer d.mutex.unlock(vszip.io);
 
                 const src1 = zapi.initZFrame(d.node1, n);
                 const src2 = zapi.initZFrame(d.node2, n);
@@ -96,7 +96,7 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
 
     if (d.verbose) {
         var stdout_buffer: [1024]u8 = undefined;
-        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        var stdout_writer = std.Io.File.stdout().writerStreaming(vszip.io, &stdout_buffer);
         const stdout = &stdout_writer.interface;
         stdout.print("XPSNR average, {} frames  ", .{d.vi.numFrames}) catch unreachable;
         const char = [_]u8{ 'y', 'u', 'v' };
@@ -171,8 +171,6 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     @memset(d.og_m1, 0);
     @memset(d.og_m2, 0);
-
-    d.mutex = Mutex{};
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
