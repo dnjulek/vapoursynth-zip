@@ -153,9 +153,9 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
             if (d.sigmaR[i] >= 0.08) {
                 d.PBFICnum[i] = 4;
             } else if (d.sigmaR[i] >= 0.015) {
-                d.PBFICnum[i] = @min(16, @as(u32, @intFromFloat(4 * 0.08 / d.sigmaR[i] + 0.5)));
+                d.PBFICnum[i] = @min(16, @as(u32, @trunc(4 * 0.08 / d.sigmaR[i] + 0.5)));
             } else {
-                d.PBFICnum[i] = @min(32, @as(u32, @intFromFloat(16 * 0.015 / d.sigmaR[i] + 0.5)));
+                d.PBFICnum[i] = @min(32, @as(u32, @trunc(16 * 0.015 / d.sigmaR[i] + 0.5)));
             }
 
             if ((i > 0) and yuv and (d.PBFICnum[i] % 2 == 0) and (d.PBFICnum[i] < 256)) {
@@ -168,7 +168,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     var orad = [_]i32{ 0, 0, 0 };
     while (i < 3) : (i += 1) {
         if (d.planes[i]) {
-            orad[i] = @max(@as(i32, @intFromFloat(d.sigmaS[i] * 2 + 0.5)), 1);
+            orad[i] = @max(@as(i32, @trunc(d.sigmaS[i] * 2 + 0.5)), 1);
             if (orad[i] < 4) {
                 d.step[i] = 1;
             } else if (orad[i] < 8) {

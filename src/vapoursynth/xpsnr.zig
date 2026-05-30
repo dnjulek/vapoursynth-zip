@@ -71,7 +71,7 @@ fn XPSNR(comptime T: type) type {
 
                 var i: u32 = 0;
                 while (i < d.num_comps) : (i += 1) {
-                    const sqrt_wsse: f64 = @sqrt(@as(f64, @floatFromInt(wsse64[i])));
+                    const sqrt_wsse: f64 = @sqrt(@floatFromInt(wsse64[i]));
                     cur_xpsnr[i] = filter.getFrameXPSNR(sqrt_wsse, d.width[i], d.height[i], d.max_error_64);
 
                     d.sum_wdist[i] += sqrt_wsse;

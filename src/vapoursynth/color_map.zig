@@ -86,9 +86,9 @@ pub fn colorMapCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
 
     for (0..256) |i| {
         const j: usize = color_arr[0].len * i / 256;
-        d.color[0][i] = @intFromFloat(@mulAdd(f32, color_arr[0][j], 255, 0.5));
-        d.color[1][i] = @intFromFloat(@mulAdd(f32, color_arr[1][j], 255, 0.5));
-        d.color[2][i] = @intFromFloat(@mulAdd(f32, color_arr[2][j], 255, 0.5));
+        d.color[0][i] = @trunc(@mulAdd(f32, color_arr[0][j], 255, 0.5));
+        d.color[1][i] = @trunc(@mulAdd(f32, color_arr[1][j], 255, 0.5));
+        d.color[2][i] = @trunc(@mulAdd(f32, color_arr[2][j], 255, 0.5));
     }
 
     d.vi = in_vi.*;

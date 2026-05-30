@@ -130,7 +130,7 @@ pub const Data = struct {
         if (d.vi.format.sampleType == .Integer) {
             var out: [3]u16 = undefined;
             for (0..3) |i| {
-                out[i] = @intFromFloat(in[i] * peak16 / 255.0 + 0.5);
+                out[i] = @trunc(in[i] * peak16 / 255.0 + 0.5);
             }
             return ArrT{ .u = out };
         } else {
@@ -372,7 +372,7 @@ fn randomValue(algo: RandAlgo, seed: *i32, range: i32, param: f64) i32 {
     };
 
     std.debug.assert(value >= -1.0 and value <= 1.0);
-    return @intFromFloat(@round(value * @as(f64, @floatFromInt(range))));
+    return @round(value * @as(f64, @floatFromInt(range)));
 }
 
 fn fillGrainBuffer(buffer: []i16, algo: RandAlgo, seed: *i32, param: f64, range: i32) void {

@@ -336,7 +336,7 @@ pub fn getWSSE(
                 wsse_luma += sse_luma[idx_blk] * weights[idx_blk];
             }
         }
-        wsse64[0] = if (wsse_luma <= 0.0) 0 else @as(u64, @intFromFloat(wsse_luma * avg_act + 0.5));
+        wsse64[0] = if (wsse_luma <= 0.0) 0 else @as(u64, @trunc(wsse_luma * avg_act + 0.5));
     }
 
     var c: usize = 0;

@@ -91,7 +91,7 @@ fn calcLut(
             var i: u32 = 0;
             while (i < hist_size) : (i += 1) {
                 sum += tile_hist[i];
-                lut[(ty * tiles_x + tx) * hist_size + i] = @intFromFloat(@as(f32, @floatFromInt(sum)) * lut_scale + 0.5);
+                lut[(ty * tiles_x + tx) * hist_size + i] = @trunc(@as(f32, @floatFromInt(sum)) * lut_scale + 0.5);
             }
         }
     }
@@ -119,7 +119,7 @@ fn interpolate(
     var y: u32 = 0;
     while (y < height) : (y += 1) {
         const tyf: f32 = @as(f32, @floatFromInt(y)) * inv_th - 0.5;
-        var ty1: i32 = @intFromFloat(@floor(tyf));
+        var ty1: i32 = @floor(tyf);
         var ty2: i32 = ty1 + 1;
         const ya: f32 = tyf - @as(f32, @floatFromInt(ty1));
 
@@ -131,7 +131,7 @@ fn interpolate(
         var x: u32 = 0;
         while (x < width) : (x += 1) {
             const txf: f32 = @as(f32, @floatFromInt(x)) * inv_tw - 0.5;
-            const _tx1: i32 = @intFromFloat(@floor(txf));
+            const _tx1: i32 = @floor(txf);
             const _tx2: i32 = _tx1 + 1;
             const xa: f32 = txf - @as(f32, @floatFromInt(_tx1));
 
@@ -149,7 +149,7 @@ fn interpolate(
             const lut3: f32 = @floatFromInt(lut[p2_tx2 * hist_size + src_val]);
             const res: f32 = (lut0 * (1 - xa) + lut1 * xa) * (1 - ya) + (lut2 * (1 - xa) + lut3 * xa) * ya;
 
-            dstp[y * stride + x] = @intFromFloat(res + 0.5);
+            dstp[y * stride + x] = @trunc(res + 0.5);
         }
     }
 }

@@ -29,6 +29,6 @@ pub fn process(
             out = sf + (ff - sf) * (thr2 - diff_abs) / (thr2 - thr1);
         }
 
-        d.* = if (@typeInfo(T) == .int) @intFromFloat(out + 0.5) else @floatCast(out);
+        d.* = if (@typeInfo(T) == .int) @trunc(out + 0.5) else @floatCast(out);
     }
 }

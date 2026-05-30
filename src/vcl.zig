@@ -158,7 +158,7 @@ pub fn pow(x0: anytype, y: anytype) @TypeOf(x0) {
     z = z * x2e + x + v_one;
 
     const ee: F32V = e1 + e2 + e3;
-    const ei: I32V = @intFromFloat(@round(ee));
+    const ei: I32V = @round(ee);
 
     // const z_abs_bits: U32V = @bitCast(@abs(z));
     // const ej: I32V = ei + @as(I32V, @intCast(z_abs_bits >> shift23));

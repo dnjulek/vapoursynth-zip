@@ -282,7 +282,7 @@ fn processPlane(
                     const factor: f32v = vcl.pow(product, vec01_f32);
                     const blended: f32v = src_f + diff_avg_src * factor;
 
-                    center = @intFromFloat(blended + @as(f32v, @splat(0.5)));
+                    center = @trunc(blended + @as(f32v, @splat(0.5)));
                 },
             }
 

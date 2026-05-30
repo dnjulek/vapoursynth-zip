@@ -26,8 +26,8 @@ pub fn minMaxInt(comptime T: type, src: []const T, stride: u32, props: *const ZA
         srcp = srcp[stride..];
     }
 
-    const totalmin: u32 = @intFromFloat(total * d.minthr);
-    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    const totalmin: u32 = @trunc(total * d.minthr);
+    const totalmax: u32 = @trunc(total * d.maxthr);
     var count: u32 = 0;
 
     var u: u16 = 0;
@@ -66,8 +66,8 @@ pub fn minMaxFloat(comptime T: type, src: []const T, stride: u32, props: *const 
         srcp = srcp[stride..];
     }
 
-    const totalmin: u32 = @intFromFloat(total * d.minthr);
-    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    const totalmin: u32 = @trunc(total * d.minthr);
+    const totalmax: u32 = @trunc(total * d.maxthr);
     var count: u32 = 0;
 
     var u: u16 = 0;
@@ -114,8 +114,8 @@ pub fn minMaxIntRef(comptime T: type, src: []const T, ref: []const T, stride: u3
     }
 
     const diff: f64 = diffacc / total / d.peakf;
-    const totalmin: u32 = @intFromFloat(total * d.minthr);
-    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    const totalmin: u32 = @trunc(total * d.minthr);
+    const totalmax: u32 = @trunc(total * d.maxthr);
     var count: u32 = 0;
 
     var u: u16 = 0;
@@ -159,8 +159,8 @@ pub fn minMaxFloatRef(comptime T: type, src: []const T, ref: []const T, stride: 
         refp = refp[stride..];
     }
 
-    const totalmin: u32 = @intFromFloat(total * d.minthr);
-    const totalmax: u32 = @intFromFloat(total * d.maxthr);
+    const totalmin: u32 = @trunc(total * d.minthr);
+    const totalmax: u32 = @trunc(total * d.maxthr);
     var count: u32 = 0;
 
     var u: u16 = 0;

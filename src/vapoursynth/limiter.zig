@@ -128,7 +128,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
 
         for (0..arr.len) |i| {
             if (d.vi.format.sampleType == .Integer) {
-                const val: i64 = @intFromFloat(arr[i]);
+                const val: i64 = @trunc(arr[i]);
 
                 if (val < 0) {
                     map_out.setError(filter_name ++ ": min value must be greater than or equal to 0.");
@@ -154,7 +154,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
 
         for (0..arr.len) |i| {
             if (d.vi.format.sampleType == .Integer) {
-                const val: i64 = @intFromFloat(arr[i]);
+                const val: i64 = @trunc(arr[i]);
 
                 if (arr[i] > peak) {
                     map_out.setError(filter_name ++ ": max value must be less than or equal to peak value.");
