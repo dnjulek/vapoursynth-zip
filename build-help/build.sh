@@ -10,14 +10,14 @@ if ! command -v jq > /dev/null; then
   exit 1
 fi
 
-ZNAME="zig-x86_64-linux-0.15.2"
+ZNAME="zig-x86_64-linux-0.16.0"
 
 if [ -e "${ZNAME}" ]
 then
     echo "Using cached ${ZNAME}"
 else
     echo "Downloading ${ZNAME}..."
-    wget "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"
+    wget "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
     tar -xf "${ZNAME}.tar.xz"
 fi
 

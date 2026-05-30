@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.29.0", "packaging", "ziglang==0.15.2"]
+requires = ["hatchling>=1.29.0", "packaging", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
