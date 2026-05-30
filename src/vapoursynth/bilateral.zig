@@ -234,13 +234,7 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         .{ .source = d.node2, .requestPattern = rp2 },
     };
 
-    const getFrame = switch (dt) {
-        .U8 => if (refb) &Bilateral(u8, true).getFrame else &Bilateral(u8, false).getFrame,
-        .U16 => if (refb) &Bilateral(u16, true).getFrame else &Bilateral(u16, false).getFrame,
-        .F16 => if (refb) &Bilateral(f16, true).getFrame else &Bilateral(f16, false).getFrame,
-        .F32 => if (refb) &Bilateral(f32, true).getFrame else &Bilateral(f32, false).getFrame,
-        .U32 => unreachable,
-    };
+    const getFrame = hz.selectRefFilter(Bilateral, dt, refb, false);
 
     const ndeps: usize = if (refb) 2 else 1;
     zapi.createVideoFilter(out, filter_name, d.vi, getFrame, bilateralFree, .Parallel, deps[0..ndeps], data);

@@ -117,13 +117,7 @@ pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
         .{ .source = d.ref, .requestPattern = .StrictSpatial },
     };
 
-    const gf: vs.FilterGetFrame = switch (dt) {
-        .U8 => if (refb) &LimitFilter(u8, true).getFrame else &LimitFilter(u8, false).getFrame,
-        .U16 => if (refb) &LimitFilter(u16, true).getFrame else &LimitFilter(u16, false).getFrame,
-        .F16 => if (refb) &LimitFilter(f16, true).getFrame else &LimitFilter(f16, false).getFrame,
-        .F32 => if (refb) &LimitFilter(f32, true).getFrame else &LimitFilter(f32, false).getFrame,
-        .U32 => unreachable,
-    };
+    const gf: vs.FilterGetFrame = hz.selectRefFilter(LimitFilter, dt, refb, false);
 
     const deps_len: usize = if (refb) deps.len else (deps.len - 1);
     zapi.createVideoFilter(out, filter_name, d.vi, gf, limitFilterFree, .Parallel, deps[0..deps_len], data);

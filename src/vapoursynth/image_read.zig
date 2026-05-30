@@ -207,6 +207,12 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         d.paths[i] = allocator.dupe(u8, path) catch unreachable;
     }
 
+    var transferred = false;
+    defer if (!transferred) {
+        for (d.paths) |p| allocator.free(p);
+        allocator.free(d.paths);
+    };
+
     allocator.free(paths_in);
     var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
     var image_0 = Image.fromFilePath(allocator, vszip.io, d.paths[0], read_buffer[0..]) catch |err| {
@@ -255,6 +261,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
+    transferred = true;
 
     const alpha = (pi.channel_count == 4) or (pi.channel_count == 2) or pf.isIndexed();
     const gf: vs.FilterGetFrame = if (alpha) &Read(true).getFrame else &Read(false).getFrame;

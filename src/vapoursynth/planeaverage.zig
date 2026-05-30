@@ -141,13 +141,7 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
         .{ .source = d.node2, .requestPattern = rp2 },
     };
 
-    const gf: vs.FilterGetFrame = switch (dt) {
-        .U8 => if (refb) &PlaneAverage(u8, true).getFrame else &PlaneAverage(u8, false).getFrame,
-        .U16 => if (refb) &PlaneAverage(u16, true).getFrame else &PlaneAverage(u16, false).getFrame,
-        .U32 => if (refb) &PlaneAverage(u32, true).getFrame else &PlaneAverage(u32, false).getFrame,
-        .F16 => if (refb) &PlaneAverage(f16, true).getFrame else &PlaneAverage(f16, false).getFrame,
-        .F32 => if (refb) &PlaneAverage(f32, true).getFrame else &PlaneAverage(f32, false).getFrame,
-    };
+    const gf: vs.FilterGetFrame = hz.selectRefFilter(PlaneAverage, dt, refb, true);
 
     const ndeps: usize = if (refb) 2 else 1;
     zapi.createVideoFilter(out, filter_name, d.vi, gf, planeAverageFree, .Parallel, deps[0..ndeps], data);

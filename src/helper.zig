@@ -94,7 +94,31 @@ pub const DataType = enum {
             }
         }
     }
+
+    pub fn ToType(comptime self: DataType) type {
+        return switch (self) {
+            .U8 => u8,
+            .U16 => u16,
+            .U32 => u32,
+            .F16 => f16,
+            .F32 => f32,
+        };
+    }
 };
+
+pub fn selectRefFilter(
+    comptime Filter: fn (comptime type, comptime bool) type,
+    dt: DataType,
+    refb: bool,
+    comptime enable_u32: bool,
+) vs.FilterGetFrame {
+    return switch (dt) {
+        inline else => |tag| if (comptime tag == .U32 and !enable_u32) unreachable else blk: {
+            const T = comptime tag.ToType();
+            break :blk if (refb) &Filter(T, true).getFrame else &Filter(T, false).getFrame;
+        },
+    };
+}
 
 pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);

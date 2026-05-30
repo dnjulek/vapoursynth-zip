@@ -8,20 +8,31 @@ const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
 const ZAPI = vapoursynth.ZAPI;
 
-pub fn minMaxInt(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+    const is_int = @typeInfo(T) == .int;
     var srcp: []const T = src;
+    var refp: []const T = ref;
     const total: f64 = @floatFromInt(w * h);
+    var diffacc: f64 = 0;
 
     const accum_buf = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
-    for (accum_buf) |*i| {
-        i.* = 0;
-    }
+    @memset(accum_buf, 0);
 
     for (0..h) |_| {
-        for (srcp[0..w]) |v| {
-            accum_buf[v] += 1;
+        if (use_ref) {
+            for (srcp[0..w], refp[0..w]) |v, j| {
+                const idx = if (is_int) v else math.lossyCast(u16, (v * 65535.0 + 0.5));
+                accum_buf[idx] += 1;
+                diffacc += if (is_int) absDiff(v, j) else @abs(v - j);
+            }
+            refp = refp[stride..];
+        } else {
+            for (srcp[0..w]) |v| {
+                const idx = if (is_int) v else math.lossyCast(u16, (v * 65535.0 + 0.5));
+                accum_buf[idx] += 1;
+            }
         }
         srcp = srcp[stride..];
     }
@@ -44,146 +55,26 @@ pub fn minMaxInt(comptime T: type, src: []const T, stride: u32, props: *const ZA
         if (count > totalmax) break ui;
     } else 0;
 
-    props.setInt(d.prop.mi, retvalmin, .Append);
-    props.setInt(d.prop.ma, retvalmax, .Append);
+    if (is_int) {
+        props.setInt(d.prop.mi, retvalmin, .Append);
+        props.setInt(d.prop.ma, retvalmax, .Append);
+    } else {
+        props.setFloat(d.prop.mi, @as(f32, @floatFromInt(retvalmin)) / 65535, .Append);
+        props.setFloat(d.prop.ma, @as(f32, @floatFromInt(retvalmax)) / 65535, .Append);
+    }
+
+    if (use_ref) {
+        const diff: f64 = if (is_int) diffacc / total / d.peakf else diffacc / total;
+        props.setFloat(d.prop.d, diff, .Append);
+    }
 }
 
-pub fn minMaxFloat(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
-    var srcp: []const T = src;
-    const total: f64 = @floatFromInt(w * h);
-
-    const accum_buf = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
-    defer allocator.free(accum_buf);
-
-    for (accum_buf) |*i| {
-        i.* = 0;
-    }
-
-    for (0..h) |_| {
-        for (srcp[0..w]) |v| {
-            accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
-        }
-        srcp = srcp[stride..];
-    }
-
-    const totalmin: u32 = @trunc(total * d.minthr);
-    const totalmax: u32 = @trunc(total * d.maxthr);
-    var count: u32 = 0;
-
-    var u: u16 = 0;
-    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
-        count += accum_buf[u];
-        if (count > totalmin) break u;
-    } else d.peak;
-
-    count = 0;
-    var i: i32 = d.peak;
-    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
-        const ui: u16 = @intCast(i);
-        count += accum_buf[ui];
-        if (count > totalmax) break ui;
-    } else 0;
-
-    const retvalmaxf = @as(f32, @floatFromInt(retvalmax)) / 65535;
-    const retvalminf = @as(f32, @floatFromInt(retvalmin)) / 65535;
-
-    props.setFloat(d.prop.mi, retvalminf, .Append);
-    props.setFloat(d.prop.ma, retvalmaxf, .Append);
+pub fn minMax(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+    minMaxImpl(T, false, src, &.{}, stride, props, w, h, d);
 }
 
-pub fn minMaxIntRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
-    var srcp: []const T = src;
-    var refp: []const T = ref;
-    const total: f64 = @floatFromInt(w * h);
-    var diffacc: f64 = 0;
-
-    const accum_buf = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
-    defer allocator.free(accum_buf);
-
-    for (accum_buf) |*i| {
-        i.* = 0;
-    }
-
-    for (0..h) |_| {
-        for (srcp[0..w], refp[0..w]) |v, j| {
-            accum_buf[v] += 1;
-            diffacc += absDiff(v, j);
-        }
-        srcp = srcp[stride..];
-        refp = refp[stride..];
-    }
-
-    const diff: f64 = diffacc / total / d.peakf;
-    const totalmin: u32 = @trunc(total * d.minthr);
-    const totalmax: u32 = @trunc(total * d.maxthr);
-    var count: u32 = 0;
-
-    var u: u16 = 0;
-    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
-        count += accum_buf[u];
-        if (count > totalmin) break u;
-    } else d.peak;
-
-    count = 0;
-    var i: i32 = @intCast(d.peak);
-    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
-        const ui: u16 = @intCast(i);
-        count += accum_buf[ui];
-        if (count > totalmax) break ui;
-    } else 0;
-
-    props.setInt(d.prop.mi, retvalmin, .Append);
-    props.setInt(d.prop.ma, retvalmax, .Append);
-    props.setFloat(d.prop.d, diff, .Append);
-}
-
-pub fn minMaxFloatRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
-    var srcp: []const T = src;
-    var refp: []const T = ref;
-    const total: f64 = @floatFromInt(w * h);
-    var diffacc: f64 = 0;
-
-    const accum_buf = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
-    defer allocator.free(accum_buf);
-
-    for (accum_buf) |*i| {
-        i.* = 0;
-    }
-
-    for (0..h) |_| {
-        for (srcp[0..w], refp[0..w]) |v, j| {
-            accum_buf[math.lossyCast(u16, (v * 65535.0 + 0.5))] += 1;
-            diffacc += @abs(v - j);
-        }
-        srcp = srcp[stride..];
-        refp = refp[stride..];
-    }
-
-    const totalmin: u32 = @trunc(total * d.minthr);
-    const totalmax: u32 = @trunc(total * d.maxthr);
-    var count: u32 = 0;
-
-    var u: u16 = 0;
-    const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
-        count += accum_buf[u];
-        if (count > totalmin) break u;
-    } else d.peak;
-
-    count = 0;
-    var i: i32 = @intCast(d.peak);
-    const retvalmax: u16 = while (i >= 0) : (i -= 1) {
-        const ui: u16 = @intCast(i);
-        count += accum_buf[ui];
-        if (count > totalmax) break ui;
-    } else 0;
-
-    const retvalmaxf = @as(f32, @floatFromInt(retvalmax)) / 65535;
-    const retvalminf = @as(f32, @floatFromInt(retvalmin)) / 65535;
-    const diff = diffacc / total;
-
-    props.setFloat(d.prop.mi, retvalminf, .Append);
-    props.setFloat(d.prop.ma, retvalmaxf, .Append);
-    props.setFloat(d.prop.d, diff, .Append);
+pub fn minMaxRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+    minMaxImpl(T, true, src, ref, stride, props, w, h, d);
 }
 
 pub fn minMaxNoThr(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {

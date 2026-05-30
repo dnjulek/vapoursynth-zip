@@ -65,7 +65,7 @@ fn CombMask(comptime metric_1: bool, comptime expand: bool, comptime motion: boo
     };
 }
 
-fn free(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+fn combMaskFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
 
@@ -73,7 +73,7 @@ fn free(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) call
     allocator.destroy(d);
 }
 
-pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn combMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);
@@ -138,5 +138,5 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         }
     }
 
-    zapi.createVideoFilter(out, filter_name, d.vi, gf, free, .Parallel, &deps, data);
+    zapi.createVideoFilter(out, filter_name, d.vi, gf, combMaskFree, .Parallel, &deps, data);
 }

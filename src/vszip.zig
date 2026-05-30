@@ -96,7 +96,7 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         comb_mask.filter_name,
         "clip:vnode;cthresh:int:opt;mthresh:int:opt;expand:int:opt;metric:int:opt;",
         "clip:vnode;",
-        comb_mask.create,
+        comb_mask.combMaskCreate,
         plugin,
         vspapi,
     );

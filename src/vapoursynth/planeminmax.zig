@@ -61,19 +61,13 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
                         if (no_thr) {
                             filter.minMaxNoThrRef(T, srcp, refp, stride, &props, w, h, d);
                         } else {
-                            if (@typeInfo(T) == .int)
-                                filter.minMaxIntRef(T, srcp, refp, stride, &props, w, h, d)
-                            else
-                                filter.minMaxFloatRef(T, srcp, refp, stride, &props, w, h, d);
+                            filter.minMaxRef(T, srcp, refp, stride, &props, w, h, d);
                         }
                     } else {
                         if (no_thr) {
                             filter.minMaxNoThr(T, srcp, stride, &props, w, h, d);
                         } else {
-                            if (@typeInfo(T) == .int)
-                                filter.minMaxInt(T, srcp, stride, &props, w, h, d)
-                            else
-                                filter.minMaxFloat(T, srcp, stride, &props, w, h, d);
+                            filter.minMax(T, srcp, stride, &props, w, h, d);
                         }
                     }
                 }
