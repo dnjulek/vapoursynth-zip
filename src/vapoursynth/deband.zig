@@ -176,8 +176,8 @@ const TempBuff = struct {
 
         const sizes = [_]u32{ y_size, c_size, c_size };
         for (0..2) |i| {
-            self.ref1[i] = try allocator.alignedAlloc(u16, vszip.alignment, sizes[i]);
-            self.ref2[i] = try allocator.alignedAlloc(u16, vszip.alignment, sizes[i]);
+            self.ref1[i] = try allocator.alloc(u16, sizes[i]);
+            self.ref2[i] = try allocator.alloc(u16, sizes[i]);
             @memset(self.ref1[i], 0);
             @memset(self.ref2[i], 0);
         }
@@ -281,10 +281,10 @@ const TempBuff = struct {
         for (0..2) |i| {
             if (!d.add_grain[i]) continue;
             if (d.vi.format.sampleType == .Integer) {
-                self.grain_int[i] = try allocator.alignedAlloc(i16, vszip.alignment, total_items);
+                self.grain_int[i] = try allocator.alloc(i16, total_items);
                 fillGrainBuffer(self.grain_int[i], d.random_algo_grain, &seed, d.random_param_grain, d.grain.u[i]);
             } else {
-                self.grain_float[i] = try allocator.alignedAlloc(f32, vszip.alignment, total_items);
+                self.grain_float[i] = try allocator.alloc(f32, total_items);
                 fillGrainBufferFloat(self.grain_float[i], d.random_algo_grain, &seed, d.random_param_grain, d.grain.f[i]);
             }
         }
