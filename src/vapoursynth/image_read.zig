@@ -82,6 +82,28 @@ pub fn copyPixelsIndexed(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Fr
     }
 }
 
+const LoadResult = struct {
+    path: []const u8,
+    img: Image = undefined,
+    err: ?anyerror = null,
+};
+
+fn loadImageThread(result: *LoadResult) void {
+    var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
+    result.img = Image.fromFilePath(allocator, vszip.io, result.path, read_buffer[0..]) catch |err| {
+        result.err = err;
+        return;
+    };
+}
+
+fn loadImage(path: []const u8) !Image {
+    var result = LoadResult{ .path = path };
+    const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, loadImageThread, .{&result}) catch unreachable;
+    thread.join();
+    if (result.err) |err| return err;
+    return result.img;
+}
+
 fn Read(comptime alpha: bool) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
@@ -89,8 +111,7 @@ fn Read(comptime alpha: bool) type {
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
 
             if (activation_reason == .Initial) {
-                var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-                var image = Image.fromFilePath(allocator, vszip.io, d.paths[@intCast(n)], read_buffer[0..]) catch |err| {
+                var image = loadImage(d.paths[@intCast(n)]) catch |err| {
                     const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[@intCast(n)], err }, 0) catch unreachable;
                     zapi.setFilterError(err_msg);
                     allocator.free(err_msg);
@@ -214,8 +235,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     };
 
     allocator.free(paths_in);
-    var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-    var image_0 = Image.fromFilePath(allocator, vszip.io, d.paths[0], read_buffer[0..]) catch |err| {
+    var image_0 = loadImage(d.paths[0]) catch |err| {
         const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, d.paths[0], err }, 0) catch unreachable;
         map_out.setError(err_msg);
         allocator.free(err_msg);
@@ -273,8 +293,7 @@ fn validatePaths(paths: [][]u8, map_out: anytype, image_0: Image) !void {
     const pf = image_0.pixelFormat();
 
     for (paths[1..]) |path| {
-        var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
-        var image = Image.fromFilePath(allocator, vszip.io, path, read_buffer[0..]) catch |err| {
+        var image = loadImage(path) catch |err| {
             const err_msg = std.fmt.allocPrintSentinel(allocator, "{s}: Couldn't open '{s}' ({any})", .{ filter_name, path, err }, 0) catch unreachable;
             map_out.setError(err_msg);
             allocator.free(err_msg);
