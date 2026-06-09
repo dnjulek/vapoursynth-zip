@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  Linux:
+  Linux-Test:
     runs-on: ubuntu-latest
 
     steps:
@@ -29,7 +29,7 @@ jobs:
     - name: Run test
       run: cd ./test/ && ./test_all.sh
 
-  Windows:
+  Windows-Test:
     runs-on: windows-latest
 
     steps:

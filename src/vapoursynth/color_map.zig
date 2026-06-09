@@ -33,10 +33,10 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
         const srcp = src.getReadSlice(0);
         const dstp = dst.getWriteSlices();
 
-        var x: u32 = 0;
-        while (x < w) : (x += 1) {
-            var y: u32 = 0;
-            while (y < h) : (y += 1) {
+        var y: u32 = 0;
+        while (y < h) : (y += 1) {
+            var x: u32 = 0;
+            while (x < w) : (x += 1) {
                 const idx: u32 = y * stride + x;
                 const s: u8 = srcp[idx];
                 dstp[0][idx] = d.color[0][s];

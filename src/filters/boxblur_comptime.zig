@@ -10,15 +10,15 @@ pub fn hvBlur(comptime T: type, comptime radius: u32, src: []const T, dst: []T, 
     const iradius: i32 = @bitCast(radius);
     const ih: i32 = @bitCast(h);
 
+    const tmp = allocator.alloc(T, w) catch unreachable;
+    defer allocator.free(tmp);
+
     var i: i32 = 0;
     while (i < h) : (i += 1) {
         const ui: u32 = @bitCast(i);
         var srcp: [ksize][]const T = undefined;
         const dstp: []T = dst[ui * stride ..];
         const dist_from_bottom: i32 = ih - 1 - i;
-
-        const tmp = allocator.alloc(T, w) catch unreachable;
-        defer allocator.free(tmp);
 
         var k: i32 = 0;
         while (k < iradius) : (k += 1) {
