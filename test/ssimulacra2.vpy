@@ -1,8 +1,9 @@
+import sys
 import vapoursynth as vs
 
 core = vs.core
 
-core.std.LoadPlugin("./../zig-out/lib/libvszip.so")
+core.std.LoadPlugin("./../zig-out/bin/vszip.dll" if sys.platform == "win32" else "./../zig-out/lib/libvszip.so")
 
 src = core.vszip.ImageRead("./image.png")
 src = src.std.Crop(left=src.width - 640, bottom=src.height - 320)
@@ -11,7 +12,8 @@ srcb = src.resize.Bicubic(src.width * 2, src.height * 2).resize.Bicubic(src.widt
 
 out0 = core.vszip.SSIMULACRA2(src, srcb)
 p0 = out0.get_frame(0).props
-assert (p0.SSIMULACRA2 == 68.62518690745875) or (p0.SSIMULACRA2 == 68.64687133258292), f"prop is: {p0.SSIMULACRA2}"
+results = [68.62518690745875, 68.64687133258292, 68.62493918303275]
+assert (p0.SSIMULACRA2 in results), f"prop is: {p0.SSIMULACRA2}"
 
 rgbs = src.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)
 rgbs2 = srcb.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)

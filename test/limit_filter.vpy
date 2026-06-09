@@ -1,7 +1,8 @@
+import sys
 import vapoursynth as vs
 core = vs.core
 
-core.std.LoadPlugin("./../zig-out/lib/libvszip.so")
+core.std.LoadPlugin("./../zig-out/bin/vszip.dll" if sys.platform == "win32" else "./../zig-out/lib/libvszip.so")
 
 
 def filterTest(src: vs.VideoNode, args, avg_pc, avg_gh, ref=None) -> vs.VideoNode:

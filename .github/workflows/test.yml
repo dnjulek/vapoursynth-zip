@@ -1,4 +1,4 @@
-name: Test (linux)
+name: Test
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  build:
+  Linux:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,9 +24,29 @@ jobs:
         use-cache: false
 
     - name: build plugin
-      run: |
-        zig build -Doptimize=Debug -Dcpu=x86_64_v3
+      run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
 
     - name: Run test
-      run: |
-        cd ./test/ && ./test_all.sh
+      run: cd ./test/ && ./test_all.sh
+
+  Windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install VapourSynth
+      run: pip install VapourSynth
+
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.16.0
+        use-cache: false
+
+    - name: build plugin
+      run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
+
+    - name: Run test
+      shell: pwsh
+      run: test/test_all.ps1

@@ -1,8 +1,9 @@
+import sys
 import vapoursynth as vs
 
 core = vs.core
 
-core.std.LoadPlugin("./../zig-out/lib/libvszip.so")
+core.std.LoadPlugin("./../zig-out/bin/vszip.dll" if sys.platform == "win32" else "./../zig-out/lib/libvszip.so")
 
 src = core.vszip.ImageRead("./image.png")
 src = src.std.Crop(left=src.width - 647, bottom=src.height - 320)
