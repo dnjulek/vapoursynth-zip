@@ -88,7 +88,36 @@ const LoadResult = struct {
     err: ?anyerror = null,
 };
 
+fn isUrl(path: []const u8) bool {
+    return std.ascii.startsWithIgnoreCase(path, "http://") or
+        std.ascii.startsWithIgnoreCase(path, "https://");
+}
+
+fn loadImageFromUrl(url: []const u8) !Image {
+    var client: std.http.Client = .{ .allocator = allocator, .io = vszip.io };
+    defer client.deinit();
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+
+    const res = try client.fetch(.{
+        .location = .{ .url = url },
+        .response_writer = &aw.writer,
+    });
+    if (res.status != .ok) return error.HttpRequestFailed;
+
+    return Image.fromMemory(allocator, aw.written());
+}
+
 fn loadImageThread(result: *LoadResult) void {
+    if (isUrl(result.path)) {
+        result.img = loadImageFromUrl(result.path) catch |err| {
+            result.err = err;
+            return;
+        };
+        return;
+    }
+
     var read_buffer: [vszip.zigimg.io.DEFAULT_BUFFER_SIZE]u8 = undefined;
     result.img = Image.fromFilePath(allocator, vszip.io, result.path, read_buffer[0..]) catch |err| {
         result.err = err;
