@@ -1,0 +1,355 @@
+{
+ "GRAY8|full|cthresh=16,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0625341796875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=32,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0218115234375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=4,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0750634765625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=400,metric=1,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.07244140625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,expand=0,metric=1,mthresh=0|CombMask": {
+  "p0": {
+   "avg": 0.1200341796875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,expand=0,metric=1,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.040478515625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,expand=0,mthresh=0|CombMask": {
+  "p0": {
+   "avg": 0.094482421875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,expand=0,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0346630859375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,metric=1,mthresh=0|CombMask": {
+  "p0": {
+   "avg": 0.2363623046875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,metric=1,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0796875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,mthresh=0|CombMask": {
+  "p0": {
+   "avg": 0.1980615234375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,mthresh=100|CombMask": {
+  "p0": {
+   "avg": 0.05046875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,mthresh=150|CombMask": {
+  "p0": {
+   "avg": 0.0155322265625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|cthresh=8,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0704296875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|default|CombMask": {
+  "p0": {
+   "avg": 0.206181640625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|default|CombMaskMT": {
+  "p0": {
+   "avg": 0.1150439453125,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=0,thY2=0|CombMaskMT": {
+  "p0": {
+   "avg": 0.1169873046875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=0,thY2=255|CombMaskMT": {
+  "p0": {
+   "avg": 0.10427868412990196,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=0,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.1163000727634804,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=10,thY2=10|CombMaskMT": {
+  "p0": {
+   "avg": 0.116611328125,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=10,thY2=200|CombMaskMT": {
+  "p0": {
+   "avg": 0.10612521063112745,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=100,thY2=100|CombMaskMT": {
+  "p0": {
+   "avg": 0.1067822265625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=200,thY2=255|CombMaskMT": {
+  "p0": {
+   "avg": 0.0956148131127451,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=255,thY2=255|CombMaskMT": {
+  "p0": {
+   "avg": 0.0946875,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=30,thY2=120|CombMaskMT": {
+  "p0": {
+   "avg": 0.10965577129289215,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=30,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.1150439453125,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|full|thY1=60,thY2=60|CombMaskMT": {
+  "p0": {
+   "avg": 0.11193359375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|odd|cthresh=8,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.07009875344018132,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|odd|thY1=30,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.11506517334589214,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|tiny|cthresh=8,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.13186813186813187,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "GRAY8|tiny|thY1=30,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.03296703296703297,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV420P8|full|cthresh=16,expand=0,metric=1,mthresh=100|CombMask": {
+  "p0": {
+   "avg": 0.029296875,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.00162109375,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.04087890625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV420P8|full|cthresh=8,metric=1,mthresh=0|CombMask": {
+  "p0": {
+   "avg": 0.2363623046875,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.4526171875,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.48400390625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV420P8|full|cthresh=8,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0704296875,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.09974609375,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.28177734375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV420P8|full|thY1=0,thY2=255|CombMaskMT": {
+  "p0": {
+   "avg": 0.10427868412990196,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.07642945772058823,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.19179526654411766,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV420P8|full|thY1=30,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.1150439453125,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.1293359375,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.26537109375,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV444P8|full|cthresh=8,mthresh=50|CombMask": {
+  "p0": {
+   "avg": 0.0704296875,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.047763671875,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.160634765625,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV444P8|full|thY1=20,thY2=150|CombMaskMT": {
+  "p0": {
+   "avg": 0.10831606158088235,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.09237021292892157,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.12490843290441177,
+   "min": 0,
+   "max": 255
+  }
+ },
+ "YUV444P8|full|thY1=30,thY2=30|CombMaskMT": {
+  "p0": {
+   "avg": 0.1150439453125,
+   "min": 0,
+   "max": 255
+  },
+  "p1": {
+   "avg": 0.1067138671875,
+   "min": 0,
+   "max": 255
+  },
+  "p2": {
+   "avg": 0.1266259765625,
+   "min": 0,
+   "max": 255
+  }
+ }
+}

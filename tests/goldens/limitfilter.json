@@ -1,0 +1,445 @@
+{
+ "GRAY16|full|bright_thr=16,dark_thr=2,elast=4": {
+  "p0": {
+   "avg": 0.5021690696645876,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=16,elast=4": {
+  "p0": {
+   "avg": 0.4716282032024872,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=2,elast=1.2": {
+  "p0": {
+   "avg": 0.48679581871507116,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=2,elast=2": {
+  "p0": {
+   "avg": 0.48679492805907626,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=2,elast=6": {
+  "p0": {
+   "avg": 0.4868259173592832,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=32,elast=1.2": {
+  "p0": {
+   "avg": 0.47126574354054607,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=32,elast=2": {
+  "p0": {
+   "avg": 0.4686190087477112,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=32,elast=6": {
+  "p0": {
+   "avg": 0.4642872830506838,
+   "min": 8143,
+   "max": 54831
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=8,elast=1.2": {
+  "p0": {
+   "avg": 0.4835138723731832,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=8,elast=2": {
+  "p0": {
+   "avg": 0.48143771353689824,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=2,dark_thr=8,elast=6": {
+  "p0": {
+   "avg": 0.4765634118159667,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=2,elast=1.2": {
+  "p0": {
+   "avg": 0.5026073482621405,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=2,elast=2": {
+  "p0": {
+   "avg": 0.5051658035037337,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=2,elast=6": {
+  "p0": {
+   "avg": 0.5094447434159705,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=32,elast=1.2": {
+  "p0": {
+   "avg": 0.4870772730876154,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=32,elast=2": {
+  "p0": {
+   "avg": 0.4869898841923686,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=32,elast=6": {
+  "p0": {
+   "avg": 0.4869061091073711,
+   "min": 8143,
+   "max": 54831
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=8,elast=1.2": {
+  "p0": {
+   "avg": 0.49932540192025254,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=8,elast=2": {
+  "p0": {
+   "avg": 0.49980858898155567,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=32,dark_thr=8,elast=6": {
+  "p0": {
+   "avg": 0.4991822378726539,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.48681445632879855,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=2,elast=1.2": {
+  "p0": {
+   "avg": 0.49013124286223486,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=2,elast=2": {
+  "p0": {
+   "avg": 0.49219236150351436,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=2,elast=6": {
+  "p0": {
+   "avg": 0.49723432999780653,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=32,elast=1.2": {
+  "p0": {
+   "avg": 0.4746011676877098,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=32,elast=2": {
+  "p0": {
+   "avg": 0.4740164421921492,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=32,elast=6": {
+  "p0": {
+   "avg": 0.4746956956892071,
+   "min": 8143,
+   "max": 54831
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=8,elast=1.2": {
+  "p0": {
+   "avg": 0.486849296520347,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=8,elast=2": {
+  "p0": {
+   "avg": 0.4868351469813363,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=8,elast=3|ref": {
+  "p0": {
+   "avg": 0.48711030134482053,
+   "min": 8143,
+   "max": 56739
+  }
+ },
+ "GRAY16|full|bright_thr=8,dark_thr=8,elast=6": {
+  "p0": {
+   "avg": 0.48697182445448994,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|odd|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.4869211305162376,
+   "min": 8143,
+   "max": 56803
+  }
+ },
+ "GRAY16|tiny|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.40353942235379636,
+   "min": 14283,
+   "max": 49030
+  }
+ },
+ "GRAY8|full|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.4885774165134804,
+   "min": 32,
+   "max": 222
+  }
+ },
+ "GRAYH|full|bright_thr=2,dark_thr=16,elast=4": {
+  "p0": {
+   "avg": 0.479632328748703,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  }
+ },
+ "GRAYH|full|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.4959687513113022,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  }
+ },
+ "GRAYH|full|bright_thr=8,dark_thr=8,elast=3|ref": {
+  "p0": {
+   "avg": 0.4964024990797043,
+   "min": 0.07220458984375,
+   "max": 0.93896484375
+  }
+ },
+ "GRAYS|full|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.49597800344625287,
+   "min": 0.07218431681394577,
+   "max": 0.9401216506958008
+  }
+ },
+ "GRAYS|full|bright_thr=8,dark_thr=8,elast=3|ref": {
+  "p0": {
+   "avg": 0.4964088846271625,
+   "min": 0.07218431681394577,
+   "max": 0.9389843940734863
+  }
+ },
+ "RGB24|full|bright_thr=8,dark_thr=8,elast=3": {
+  "p0": {
+   "avg": 0.3912545955882353,
+   "min": 0,
+   "max": 205
+  },
+  "p1": {
+   "avg": 0.4771359528186275,
+   "min": 0,
+   "max": 250
+  },
+  "p2": {
+   "avg": 0.9901144875919118,
+   "min": 252,
+   "max": 255
+  }
+ },
+ "RGB24|full|bright_thr=8,dark_thr=8,planes=[0,2]": {
+  "p0": {
+   "avg": 0.3913264973958333,
+   "min": 0,
+   "max": 205
+  },
+  "p1": {
+   "avg": 0.47719985064338233,
+   "min": 0,
+   "max": 243
+  },
+  "p2": {
+   "avg": 0.9901144875919118,
+   "min": 252,
+   "max": 255
+  }
+ },
+ "RGBS|full|bright_thr=8,dark_thr=8,elast=3": {
+  "p0": {
+   "avg": 0.3912577535595026,
+   "min": 0.0,
+   "max": 0.803921639919281
+  },
+  "p1": {
+   "avg": 0.47713392662711157,
+   "min": 0.0,
+   "max": 0.9803922176361084
+  },
+  "p2": {
+   "avg": 0.9901145984290634,
+   "min": 0.9882354140281677,
+   "max": 1.0
+  }
+ },
+ "YUV420P16|full|bright_thr=4,dark_thr=4,elast=2": {
+  "p0": {
+   "avg": 0.48681445632879855,
+   "min": 8143,
+   "max": 56803
+  },
+  "p1": {
+   "avg": 0.7328947434457732,
+   "min": 35129,
+   "max": 61077
+  },
+  "p2": {
+   "avg": 0.44188774217736704,
+   "min": 5904,
+   "max": 52137
+  }
+ },
+ "YUV420P16|full|bright_thr=8,dark_thr=8,elast=3|ref": {
+  "p0": {
+   "avg": 0.48711030134482053,
+   "min": 8143,
+   "max": 56739
+  },
+  "p1": {
+   "avg": 0.7329654037441825,
+   "min": 35354,
+   "max": 60855
+  },
+  "p2": {
+   "avg": 0.44190114180399787,
+   "min": 6499,
+   "max": 51993
+  }
+ },
+ "YUV420P16|full|bright_thr=8,dark_thr=8,planes=[0]": {
+  "p0": {
+   "avg": 0.4868351469813363,
+   "min": 8143,
+   "max": 56803
+  },
+  "p1": {
+   "avg": 0.7329833316047722,
+   "min": 36875,
+   "max": 59426
+  },
+  "p2": {
+   "avg": 0.4418913119540131,
+   "min": 8927,
+   "max": 50247
+  }
+ },
+ "YUV420P16|full|bright_thr=8,dark_thr=8,planes=[1,2]": {
+  "p0": {
+   "avg": 0.4868063918463178,
+   "min": 8143,
+   "max": 54831
+  },
+  "p1": {
+   "avg": 0.7327520695048447,
+   "min": 35129,
+   "max": 61077
+  },
+  "p2": {
+   "avg": 0.44185748699406807,
+   "min": 5904,
+   "max": 52137
+  }
+ },
+ "YUV420P16|full|bright_thr=[16,4],dark_thr=[16,4],elast=[4,2]": {
+  "p0": {
+   "avg": 0.48698932971169984,
+   "min": 8143,
+   "max": 56803
+  },
+  "p1": {
+   "avg": 0.7328947434457732,
+   "min": 35129,
+   "max": 61077
+  },
+  "p2": {
+   "avg": 0.44188774217736704,
+   "min": 5904,
+   "max": 52137
+  }
+ },
+ "YUV420PH|full|bright_thr=8,dark_thr=8,elast=3": {
+  "p0": {
+   "avg": 0.4960078063607216,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  },
+  "p1": {
+   "avg": 0.2658888709545135,
+   "min": 0.041168212890625,
+   "max": 0.49365234375
+  },
+  "p2": {
+   "avg": -0.06647099773166701,
+   "min": -0.468505859375,
+   "max": 0.337646484375
+  }
+ },
+ "YUV420PH|full|bright_thr=[16,4],dark_thr=[16,4],elast=[4,2]": {
+  "p0": {
+   "avg": 0.496193485558033,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  },
+  "p1": {
+   "avg": 0.2661659675836563,
+   "min": 0.041168212890625,
+   "max": 0.49365234375
+  },
+  "p2": {
+   "avg": -0.06641734473058022,
+   "min": -0.468505859375,
+   "max": 0.337646484375
+  }
+ }
+}

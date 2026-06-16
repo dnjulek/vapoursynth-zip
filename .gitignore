@@ -5,6 +5,7 @@ zig-pkg/
 run.bat
 build-help/releases.json
 build-help/zig-*
+__pycache__/
 .vsjet/
 *.h
 *.cpp
