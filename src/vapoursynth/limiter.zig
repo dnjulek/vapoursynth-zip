@@ -136,6 +136,12 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
                     return;
                 }
 
+                if (arr[i] > peak) {
+                    map_out.setError(filter_name ++ ": min value must be less than or equal to peak value.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
                 d.min[i] = @intCast(val);
             } else {
                 d.minf[i] = @floatCast(arr[i]);
@@ -162,6 +168,12 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
                     return;
                 }
 
+                if (val < 0) {
+                    map_out.setError(filter_name ++ ": max value must be greater than or equal to 0.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
                 d.max[i] = @intCast(val);
             } else {
                 d.maxf[i] = @floatCast(arr[i]);
@@ -179,6 +191,20 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         map_out.setError(filter_name ++ ": max array is set but min array is not.");
         zapi.freeNode(d.node);
         return;
+    }
+
+    if (has_min and has_max) {
+        for (0..@as(usize, @intCast(num_planes))) |p| {
+            const bad = if (d.vi.format.sampleType == .Integer)
+                d.min[p] > d.max[p]
+            else
+                d.minf[p] > d.maxf[p];
+            if (bad) {
+                map_out.setError(filter_name ++ ": min value must be less than or equal to max value.");
+                zapi.freeNode(d.node);
+                return;
+            }
+        }
     }
 
     const bps = BPSType.select(map_out, d.node, d.vi, filter_name) catch return;

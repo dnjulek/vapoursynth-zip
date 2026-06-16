@@ -102,6 +102,13 @@ pub fn combMaskMTCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         return;
     }
 
+    const min_h: u32 = @as(u32, @intCast(d.vi.height)) >> @as(u5, @intCast(d.vi.format.subSamplingH));
+    if (min_h < 3) {
+        map_out.setError(filter_name ++ ": clip too small; every plane must be at least 3 rows tall.");
+        zapi.freeNode(d.node);
+        return;
+    }
+
     d.thy1 = @intCast(thy1);
     d.thy2 = @intCast(thy2);
     d.thr_diff = d.thy2 - d.thy1;

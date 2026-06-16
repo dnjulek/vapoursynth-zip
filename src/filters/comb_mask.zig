@@ -38,7 +38,7 @@ pub fn process(
     if (expand and !motion) expandMask(dst, w, h, stride);
 
     if (motion) {
-        const tmp = allocator.alignedAlloc(u8, vszip.alignment, stride * h) catch unreachable;
+        const tmp: []align(vszip.vec_len) u8 = allocator.alignedAlloc(u8, vszip.alignment, stride * h) catch unreachable;
         defer allocator.free(tmp);
 
         motionMask(src, prv, tmp, w, h, stride, mthresh);

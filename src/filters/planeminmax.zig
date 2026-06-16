@@ -15,7 +15,7 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
 
-    const accum_buf = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
+    const accum_buf: []align(vszip.vec_len) u32 = allocator.alignedAlloc(u32, vszip.alignment, 65536) catch unreachable;
     defer allocator.free(accum_buf);
 
     @memset(accum_buf, 0);
@@ -23,14 +23,14 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
     for (0..h) |_| {
         if (use_ref) {
             for (srcp[0..w], refp[0..w]) |v, j| {
-                const idx = if (is_int) v else math.lossyCast(u16, (v * 65535.0 + 0.5));
+                const idx = if (is_int) v else math.lossyCast(u16, (@as(f32, v) * 65535.0 + 0.5));
                 accum_buf[idx] += 1;
                 diffacc += if (is_int) absDiff(v, j) else @abs(v - j);
             }
             refp = refp[stride..];
         } else {
             for (srcp[0..w]) |v| {
-                const idx = if (is_int) v else math.lossyCast(u16, (v * 65535.0 + 0.5));
+                const idx = if (is_int) v else math.lossyCast(u16, (@as(f32, v) * 65535.0 + 0.5));
                 accum_buf[idx] += 1;
             }
         }
@@ -41,10 +41,10 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
     const totalmax: u32 = @trunc(total * d.maxthr);
     var count: u32 = 0;
 
-    var u: u16 = 0;
+    var u: u32 = 0;
     const retvalmin: u16 = while (u < d.hist_size) : (u += 1) {
         count += accum_buf[u];
-        if (count > totalmin) break u;
+        if (count > totalmin) break @intCast(u);
     } else d.peak;
 
     count = 0;

@@ -38,7 +38,7 @@ fn LimitFilter(comptime T: type, comptime refb: bool) type {
                 const src = zapi.initZFrame(d.src, n);
                 const flt = zapi.initZFrame(d.flt, n);
                 const ref = if (refb) zapi.initZFrame(d.ref, n);
-                const dst = src.newVideoFrame2(d.planes);
+                const dst = flt.newVideoFrame2(d.planes);
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -104,6 +104,7 @@ pub fn limitFilterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     d.elast = hz.getArray(f32, 2, 0, math.maxInt(u16), "elast", filter_name, map_in, map_out, &nodes, &zapi) catch return;
 
     for (0..3) |i| {
+        // TODO: check if scale is correct
         d.dark_thr[i] = hz.scaleValue(d.dark_thr[i], d.flt, &zapi, .{});
         d.bright_thr[i] = hz.scaleValue(d.bright_thr[i], d.flt, &zapi, .{});
     }

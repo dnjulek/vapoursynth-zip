@@ -39,7 +39,7 @@ pub fn hvBlur(comptime T: type, comptime radius: u32, src: []const T, dst: []T, 
             vBlurInt(T, &srcp, tmp, w, ksize, inv);
             hBlurInt(T, tmp, dstp, w, ksize, inv);
         } else {
-            const div: T = 1.0 / @as(T, @floatFromInt(ksize));
+            const div: f32 = 1.0 / @as(f32, @floatFromInt(ksize));
             vBlurFloat(T, &srcp, tmp, w, ksize, div);
             hBlurFloat(T, tmp, dstp, @bitCast(w), ksize, div);
         }
@@ -77,13 +77,13 @@ inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksiz
     }
 }
 
-fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u32, comptime div: T) void {
+fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u32, comptime div: f32) void {
     const radius: i32 = @as(i32, @bitCast(ksize)) >> 1;
 
     var j: i32 = 0;
     while (j < @min(w, radius)) : (j += 1) {
         const dist_from_right: i32 = w - 1 - j;
-        var sum: T = 0.0;
+        var sum: f32 = 0.0;
         var k: i32 = 0;
         while (k < radius) : (k += 1) {
             const idx: i32 = if (j < radius - k) @min(radius - k - j, w - 1) else (j - radius + k);
@@ -96,24 +96,24 @@ fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u3
             sum += div * srcp[@intCast(idx)];
         }
 
-        dstp[@intCast(j)] = sum;
+        dstp[@intCast(j)] = if (T == f32) sum else @floatCast(sum);
     }
 
     j = radius;
     while (j < w - @min(w, radius)) : (j += 1) {
-        var sum: T = 0.0;
+        var sum: f32 = 0.0;
         var k: i32 = 0;
         while (k < ksize) : (k += 1) {
             sum += div * srcp[@intCast(j - radius + k)];
         }
 
-        dstp[@intCast(j)] = sum;
+        dstp[@intCast(j)] = if (T == f32) sum else @floatCast(sum);
     }
 
     j = @max(radius, w - @min(w, radius));
     while (j < w) : (j += 1) {
         const dist_from_right: i32 = w - 1 - j;
-        var sum: T = 0.0;
+        var sum: f32 = 0.0;
         var k: i32 = 0;
         while (k < radius) : (k += 1) {
             const idx: i32 = if (j < radius - k) @min(radius - k - j, w - 1) else (j - radius + k);
@@ -126,7 +126,7 @@ fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u3
             sum += div * srcp[@intCast(idx)];
         }
 
-        dstp[@intCast(j)] = sum;
+        dstp[@intCast(j)] = if (T == f32) sum else @floatCast(sum);
     }
 }
 
@@ -144,15 +144,15 @@ fn vBlurInt(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksiz
     }
 }
 
-fn vBlurFloat(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime div: T) void {
+fn vBlurFloat(comptime T: type, src: [][]const T, dstp: []T, w: u32, comptime ksize: u32, comptime div: f32) void {
     var j: u32 = 0;
     while (j < w) : (j += 1) {
-        var sum: T = 0.0;
+        var sum: f32 = 0.0;
         var k: u32 = 0;
         while (k < ksize) : (k += 1) {
             sum += div * src[k][j];
         }
 
-        dstp[j] = sum;
+        dstp[j] = if (T == f32) sum else @floatCast(sum);
     }
 }

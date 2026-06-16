@@ -39,13 +39,13 @@ inline fn blurInt(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, d
 }
 
 inline fn blurFloat(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, dst_step: u32, len: u32, radius: u32) void {
-    const ksize: T = @floatFromInt(radius * 2 + 1);
-    const div: T = 1.0 / ksize;
-    var sum: T = srcp[radius * src_step];
+    const ksize: f32 = @floatFromInt(radius * 2 + 1);
+    const div: f32 = 1.0 / ksize;
+    var sum: f32 = srcp[radius * src_step];
 
     var x: u32 = 0;
     while (x < radius) : (x += 1) {
-        const srcv: T = srcp[x * src_step];
+        const srcv: f32 = srcp[x * src_step];
         sum += srcv * 2;
     }
 
@@ -53,24 +53,24 @@ inline fn blurFloat(comptime T: type, srcp: []const T, src_step: u32, dstp: []T,
 
     x = 0;
     while (x <= radius) : (x += 1) {
-        const src1: T = srcp[(radius + x) * src_step];
-        const src2: T = srcp[(radius - x) * src_step];
+        const src1: f32 = srcp[(radius + x) * src_step];
+        const src2: f32 = srcp[(radius - x) * src_step];
         sum += (src1 - src2) * div;
-        dstp[x * dst_step] = sum;
+        dstp[x * dst_step] = if (T == f32) sum else @floatCast(sum);
     }
 
     while (x < len - radius) : (x += 1) {
-        const src1: T = srcp[(radius + x) * src_step];
-        const src2: T = srcp[(x - radius - 1) * src_step];
+        const src1: f32 = srcp[(radius + x) * src_step];
+        const src2: f32 = srcp[(x - radius - 1) * src_step];
         sum += (src1 - src2) * div;
-        dstp[x * dst_step] = sum;
+        dstp[x * dst_step] = if (T == f32) sum else @floatCast(sum);
     }
 
     while (x < len) : (x += 1) {
-        const src1: T = srcp[(2 * len - radius - x - 1) * src_step];
-        const src2: T = srcp[(x - radius - 1) * src_step];
+        const src1: f32 = srcp[(2 * len - radius - x - 1) * src_step];
+        const src2: f32 = srcp[(x - radius - 1) * src_step];
         sum += (src1 - src2) * div;
-        dstp[x * dst_step] = sum;
+        dstp[x * dst_step] = if (T == f32) sum else @floatCast(sum);
     }
 }
 

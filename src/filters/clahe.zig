@@ -16,9 +16,9 @@ pub fn applyCLAHE(
     const peak: f32 = @floatFromInt(hist_size - 1);
     const tile_width: u32 = width / tiles[0];
     const tile_height: u32 = height / tiles[1];
-    const tile_size_total: u32 = tile_width * tile_height;
+    const tile_size_total: u64 = @as(u64, tile_width) * tile_height;
     const lut_scale: f32 = peak / @as(f32, @floatFromInt(tile_size_total));
-    var clip_limit: i32 = @intCast(limit * tile_size_total / hist_size);
+    var clip_limit: i32 = @intCast(@as(u64, limit) * tile_size_total / hist_size);
     clip_limit = @max(clip_limit, 1);
 
     const lut = allocator.alloc(T, tiles[0] * tiles[1] * hist_size) catch unreachable;
@@ -123,7 +123,7 @@ fn interpolate(
         var ty2: i32 = ty1 + 1;
         const ya: f32 = tyf - @as(f32, @floatFromInt(ty1));
 
-        ty1 = @max(ty1, 0);
+        ty1 = @min(@max(ty1, 0), tiles_y - 1);
         ty2 = @min(ty2, tiles_y - 1);
         const lut_p1 = ty1 * tiles_x;
         const lut_p2 = ty2 * tiles_x;
@@ -135,7 +135,7 @@ fn interpolate(
             const _tx2: i32 = _tx1 + 1;
             const xa: f32 = txf - @as(f32, @floatFromInt(_tx1));
 
-            const tx1 = @max(_tx1, 0);
+            const tx1 = @min(@max(_tx1, 0), tiles_x - 1);
             const tx2 = @min(_tx2, tiles_x - 1);
 
             const src_val = srcp[y * stride + x];

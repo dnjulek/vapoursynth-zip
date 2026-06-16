@@ -96,7 +96,22 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     i = 0;
     ne = map_in.numElements("frames") orelse 0;
     while (i < ne) : (i += 1) {
-        const in_frame: u32 = map_in.getValue2(u32, "frames", i).?;
+        const f_raw: i64 = map_in.getValue2(i64, "frames", i).?;
+        if (f_raw < 0) {
+            const msg = std.fmt.allocPrintSentinel(
+                allocator,
+                "{s}: frame index ({}) must be non-negative.",
+                .{ filter_name, f_raw },
+                0,
+            ) catch unreachable;
+            map_out.setError(msg);
+            zapi.freeNode(d.node1);
+            zapi.freeNode(d.node2);
+            allocator.free(d.replace);
+            allocator.free(msg);
+            return;
+        }
+        const in_frame: u32 = @intCast(f_raw);
         if (in_frame >= vi.numFrames) {
             const msg = std.fmt.allocPrintSentinel(
                 allocator,

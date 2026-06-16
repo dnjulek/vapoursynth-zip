@@ -69,6 +69,8 @@ pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain:
                         d.thr2.f[plane],
                         d.angle_boost,
                         d.max_angle,
+                        d.pixel_minf[plane],
+                        d.pixel_maxf[plane],
                         mode,
                         blur_first,
                         add_grain[plane],
@@ -96,10 +98,14 @@ fn processPlane(
     thr2: f32,
     angle_boost: f32,
     max_angle: f32,
+    pixel_min: f32,
+    pixel_max: f32,
     comptime mode: Mode,
     comptime blur_first: bool,
     comptime add_grain: bool,
 ) void {
+    const minv: f32v = @splat(pixel_min);
+    const maxv: f32v = @splat(pixel_max);
     var ref1_arr: [vec_len]f32 align(32) = undefined;
     var ref2_arr: [vec_len]f32 align(32) = undefined;
     var ref3_arr: [vec_len]f32 align(32) = undefined;
@@ -270,6 +276,7 @@ fn processPlane(
                 center += @as(f32v, grain_row[x..][0..vec_len].*);
             }
 
+            center = @max(minv, @min(center, maxv));
             dst[row + x ..][0..vec_len].* = center;
         }
     }

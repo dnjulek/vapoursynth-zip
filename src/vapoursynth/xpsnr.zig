@@ -21,8 +21,8 @@ pub const Data = struct {
     vi: *const vs.VideoInfo = undefined,
     mutex: Mutex = .init,
 
-    og_m1: []i16 = undefined,
-    og_m2: []i16 = undefined,
+    og_m1: []align(vszip.vec_len) i16 = undefined,
+    og_m2: []align(vszip.vec_len) i16 = undefined,
 
     depth: u6 = 0,
     num_comps: u8 = 0,
@@ -158,7 +158,7 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.depth = @intCast(d.vi.format.bitsPerSample);
     d.max_error_64 = math.shl(u64, 1, d.depth) - 1;
     d.max_error_64 *= d.max_error_64;
-    d.frame_rate = @intCast(@divTrunc(d.vi.fpsNum, d.vi.fpsDen));
+    d.frame_rate = if (d.vi.fpsDen != 0) @intCast(@divTrunc(d.vi.fpsNum, d.vi.fpsDen)) else 0;
     d.num_comps = @intCast(d.vi.format.numPlanes);
     d.num_frames_64 = @intCast(d.vi.numFrames);
 
@@ -166,7 +166,7 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.width = whv.w;
     d.height = whv.h;
 
-    const wh: u32 = whv.w[0] * whv.h[0];
+    const wh = vsh.ceilN(whv.w[0], vszip.vec_len) * whv.h[0];
     d.og_m1 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     @memset(d.og_m1, 0);

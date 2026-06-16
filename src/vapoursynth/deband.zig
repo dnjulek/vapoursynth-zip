@@ -77,6 +77,8 @@ pub const Data = struct {
     ssh: u3 = 0,
     pixel_max: [3]i32 = .{ FULL_RANGE_Y_MAX, FULL_RANGE_C_MAX, FULL_RANGE_C_MAX },
     pixel_min: [3]i32 = .{ FULL_RANGE_Y_MIN, FULL_RANGE_C_MIN, FULL_RANGE_C_MIN },
+    pixel_maxf: [3]f32 = .{ 1.0, 1.0, 1.0 },
+    pixel_minf: [3]f32 = .{ 0.0, 0.0, 0.0 },
     deband: [3]bool = .{ true, true, true },
     add_grain: [3]bool = .{ true, true, true },
     process_plane: [3]bool = .{ true, true, true },
@@ -85,7 +87,7 @@ pub const Data = struct {
         const thr_in: [3]f64 = try m.getArray("thr", 3, .{ 0.99, 0.99, 0.99 }, 0, 255);
         const thr1_in: [3]f64 = try m.getArray("thr1", 3, thr_in, 0, 255);
         const thr2_in: [3]f64 = try m.getArray("thr2", 3, thr_in, 0, 255);
-        const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, 255);
+        const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, 127);
         const sample_mode = try m.getValue(i32, "sample_mode", @intFromEnum(d.sample_mode), 1, 7);
 
         d.range = try m.getValue(i32, "range", d.range, 0, 255);
@@ -122,6 +124,11 @@ pub const Data = struct {
         if (d.keep_tv_range and (d.vi.format.colorFamily == .YUV)) {
             d.pixel_min = .{ TV_RANGE_Y_MIN, TV_RANGE_C_MIN, TV_RANGE_C_MIN };
             d.pixel_max = .{ TV_RANGE_Y_MAX, TV_RANGE_C_MAX, TV_RANGE_C_MAX };
+        }
+
+        if (d.vi.format.colorFamily == .YUV) {
+            d.pixel_minf = .{ 0.0, -0.5, -0.5 };
+            d.pixel_maxf = .{ 1.0, 0.5, 0.5 };
         }
     }
 

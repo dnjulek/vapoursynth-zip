@@ -30,6 +30,11 @@ pub const ImgFormat = enum {
     }
 };
 
+fn scaleSample(comptime T: type, value: anytype) T {
+    if (@TypeOf(value) == T) return value;
+    return zigimg.color.ScaleValue(T)(value);
+}
+
 pub fn copyPixels(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Frame), adst: anytype, comptime alpha: bool, comptime f: ImgFormat) void {
     const dst_0 = dst.getWriteSlice2(T, 0);
     const dst_1 = if (!(comptime f.isGray())) dst.getWriteSlice2(T, 1);
@@ -45,7 +50,7 @@ pub fn copyPixels(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Frame), a
             const dst_index = (y * stride + x);
 
             if (comptime f.isGray()) {
-                dst_0[dst_index] = src[src_index].value;
+                dst_0[dst_index] = scaleSample(T, src[src_index].value);
             } else {
                 dst_0[dst_index] = src[src_index].r;
                 dst_1[dst_index] = src[src_index].g;
@@ -250,7 +255,7 @@ fn loadImageThread(result: *LoadResult) void {
 
 fn loadImage(path: []const u8, color_out: *?PngColor) !Image {
     var result = LoadResult{ .path = path };
-    const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, loadImageThread, .{&result}) catch unreachable;
+    const thread = try std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, loadImageThread, .{&result});
     thread.join();
     if (result.err) |err| return err;
     color_out.* = result.color;

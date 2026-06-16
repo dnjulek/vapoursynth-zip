@@ -112,8 +112,15 @@ pub fn combMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
         return;
     }
 
+    const min_h: u32 = @as(u32, @intCast(d.vi.height)) >> @as(u5, @intCast(d.vi.format.subSamplingH));
+    if (min_h < 3) {
+        map_out.setError(filter_name ++ ": clip too small; every plane must be at least 3 rows tall.");
+        zapi.freeNode(d.node);
+        return;
+    }
+
     d.cthresh = cthresh;
-    d.cth6 = @intCast(cthresh * 6);
+    d.cth6 = if (metric_1) 0 else @intCast(cthresh * 6);
     d.mthresh = @intCast(mthresh);
 
     const data: *Data = allocator.create(Data) catch unreachable;

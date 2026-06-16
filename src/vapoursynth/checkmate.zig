@@ -51,8 +51,8 @@ fn Checkmate(comptime use_tthr2: bool) type {
                     var srcp_n1 = src_n1.getReadSlice(plane);
                     var dstp = dst.getWriteSlice(plane);
 
-                    const srcp_p2 = if (use_tthr2) src_p2.getReadSlice(plane);
-                    const srcp_n2 = if (use_tthr2) src_n2.getReadSlice(plane);
+                    var srcp_p2 = if (use_tthr2) src_p2.getReadSlice(plane);
+                    var srcp_n2 = if (use_tthr2) src_n2.getReadSlice(plane);
 
                     const w, const h, const stride = src.getDimensions(plane);
                     const stride2 = stride << 1;
@@ -63,6 +63,8 @@ fn Checkmate(comptime use_tthr2: bool) type {
                     srcp = srcp[stride2..];
                     srcp_n1 = srcp_n1[stride2..];
                     dstp = dstp[stride2..];
+                    srcp_p2 = if (use_tthr2) srcp_p2[stride2..];
+                    srcp_n2 = if (use_tthr2) srcp_n2[stride2..];
 
                     var y: u32 = 2;
                     while (y < h - 2) : (y += 1) {
@@ -71,6 +73,8 @@ fn Checkmate(comptime use_tthr2: bool) type {
                         srcp = srcp[stride..];
                         srcp_n1 = srcp_n1[stride..];
                         dstp = dstp[stride..];
+                        srcp_p2 = if (use_tthr2) srcp_p2[stride..];
+                        srcp_n2 = if (use_tthr2) srcp_n2[stride..];
                     }
 
                     @memcpy(dstp[0..stride2], srcp[0..stride2]);
@@ -128,6 +132,24 @@ pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         map_out.setError(filter_name ++ ": tthr2 should be non-negative.");
         zapi.freeNode(d.node);
         return;
+    }
+
+    if ((d.thr < 0) or (d.thr > 255)) {
+        map_out.setError(filter_name ++ ": thr value should be in range [0;255].");
+        zapi.freeNode(d.node);
+        return;
+    }
+
+    {
+        const ssw: u5 = @intCast(d.vi.format.subSamplingW);
+        const ssh: u5 = @intCast(d.vi.format.subSamplingH);
+        const min_w: u32 = @as(u32, @intCast(d.vi.width)) >> ssw;
+        const min_h: u32 = @as(u32, @intCast(d.vi.height)) >> ssh;
+        if ((min_w < 3) or (min_h < 5)) {
+            map_out.setError(filter_name ++ ": clip too small; every plane must be at least 3 wide and 5 tall.");
+            zapi.freeNode(d.node);
+            return;
+        }
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;

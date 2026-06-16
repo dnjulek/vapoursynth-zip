@@ -14,27 +14,32 @@ fn get(sls: anytype, dist: i32) i32 {
 
 fn highds(comptime T: type, x_act: usize, y_act: usize, w_act: usize, h_act: usize, o_m0: []const T, o: usize) u64 {
     var saAct: u64 = 0;
-    var y: usize = y_act;
-    while (y < h_act) : (y += 2) {
-        var x: usize = x_act;
-        while (x < w_act) : (x += 2) {
+
+    const oi: i32 = @intCast(o);
+    var uy: usize = y_act;
+    while (uy < h_act) : (uy += 2) {
+        const y: i32 = @intCast(uy);
+        var ux: usize = x_act;
+        while (ux < w_act) : (ux += 2) {
+            const x: i32 = @intCast(ux);
+            const base: i32 = y * oi + x;
             // zig fmt: off
-            const f: i32 = 12 * (@as(i32, o_m0[y * o + x]) + @as(i32, o_m0[y * o + x + 1])
-            + @as(i32, o_m0[(y + 1) * o + x]) + @as(i32, o_m0[(y + 1) * o + x + 1]))
-            - 3 * (@as(i32, o_m0[(y - 1) * o + x]) + @as(i32, o_m0[(y - 1) * o + x + 1])
-            + @as(i32, o_m0[(y + 2) * o + x]) + @as(i32, o_m0[(y + 2) * o + x + 1]))
-            - 3 * (@as(i32, o_m0[y * o + x - 1]) + @as(i32, o_m0[y * o + x + 2])
-            + @as(i32, o_m0[(y + 1) * o + x - 1]) + @as(i32, o_m0[(y + 1) * o + x + 2]))
-            - 2 * (@as(i32, o_m0[(y - 1) * o + x - 1]) + @as(i32, o_m0[(y - 1) * o + x + 2])
-            + @as(i32, o_m0[(y + 2) * o + x - 1]) + @as(i32, o_m0[(y + 2) * o + x + 2]))
-            - (@as(i32, o_m0[(y - 2) * o + x - 1]) + @as(i32, o_m0[(y - 2) * o + x])
-            + @as(i32, o_m0[(y - 2) * o + x + 1]) + @as(i32, o_m0[(y - 2) * o + x + 2]))
-            + @as(i32, o_m0[(y + 3) * o + x - 1]) + @as(i32, o_m0[(y + 3) * o + x])
-            + @as(i32, o_m0[(y + 3) * o + x + 1]) + @as(i32, o_m0[(y + 3) * o + x + 2])
-            + @as(i32, o_m0[(y - 1) * o + x - 2]) + @as(i32, o_m0[y * o + x - 2])
-            + @as(i32, o_m0[(y + 1) * o + x - 2]) + @as(i32, o_m0[(y + 2) * o + x - 2])
-            + @as(i32, o_m0[(y - 1) * o + x + 3]) + @as(i32, o_m0[y * o + x + 3]) 
-            + @as(i32, o_m0[(y + 1) * o + x + 3]) + @as(i32, o_m0[(y + 2) * o + x + 3]);
+            const f: i32 = 12 * (get(o_m0, base) + get(o_m0, base + 1)
+            + get(o_m0, base + oi) + get(o_m0, base + oi + 1))
+            - 3 * (get(o_m0, base - oi) + get(o_m0, base - oi + 1)
+            + get(o_m0, base + 2 * oi) + get(o_m0, base + 2 * oi + 1))
+            - 3 * (get(o_m0, base - 1) + get(o_m0, base + 2)
+            + get(o_m0, base + oi - 1) + get(o_m0, base + oi + 2))
+            - 2 * (get(o_m0, base - oi - 1) + get(o_m0, base - oi + 2)
+            + get(o_m0, base + 2 * oi - 1) + get(o_m0, base + 2 * oi + 2))
+            - (get(o_m0, base - 2 * oi - 1) + get(o_m0, base - 2 * oi)
+            + get(o_m0, base - 2 * oi + 1) + get(o_m0, base - 2 * oi + 2)
+            + get(o_m0, base + 3 * oi - 1) + get(o_m0, base + 3 * oi)
+            + get(o_m0, base + 3 * oi + 1) + get(o_m0, base + 3 * oi + 2)
+            + get(o_m0, base - oi - 2) + get(o_m0, base - 2)
+            + get(o_m0, base + oi - 2) + get(o_m0, base + 2 * oi - 2)
+            + get(o_m0, base - oi + 3) + get(o_m0, base + 3)
+            + get(o_m0, base + oi + 3) + get(o_m0, base + 2 * oi + 3));
             // zig fmt: on
             saAct += @abs(f);
         }
@@ -250,8 +255,8 @@ pub fn getWSSE(
 
     const r: f64 = @as(f64, @floatFromInt(wh)) / @as(f64, 3840.0 * 2160.0);
     const b: u32 = math.lossyCast(u32, (32.0 * @sqrt(r) + 0.5)) * 4;
-    const w_blk: u32 = (w + b - 1) / b;
-    const h_blk: u32 = (h + b - 1) / b;
+    const w_blk: u32 = if (b >= 4) (w + b - 1) / b else 0;
+    const h_blk: u32 = if (b >= 4) (h + b - 1) / b else 0;
     const sft: u32 = math.shl(u32, 1, (2 * depth - 9));
     const avg_act: f64 = @sqrt(16.0 * @as(f64, @floatFromInt(sft)) / @sqrt(@max(0.00001, r)));
 

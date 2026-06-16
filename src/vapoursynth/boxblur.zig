@@ -128,6 +128,29 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         return;
     }
 
+    {
+        const ssw: u5 = @intCast(d.vi.format.subSamplingW);
+        const ssh: u5 = @intCast(d.vi.format.subSamplingH);
+        var p: u32 = 0;
+        while (p < d.vi.format.numPlanes) : (p += 1) {
+            if (!d.planes[p]) continue;
+            const sw: u5 = if (p == 0) 0 else ssw;
+            const sh: u5 = if (p == 0) 0 else ssh;
+            const pw: u32 = @as(u32, @intCast(d.vi.width)) >> sw;
+            const ph: u32 = @as(u32, @intCast(d.vi.height)) >> sh;
+            if (hblur and (@as(u64, d.hradius) * 2 >= pw)) {
+                map_out.setError(filter_name ++ ": hradius too large; 2*hradius must be < the (smallest processed) plane width.");
+                zapi.freeNode(d.node);
+                return;
+            }
+            if (vblur and (@as(u64, d.vradius) * 2 >= ph)) {
+                map_out.setError(filter_name ++ ": vradius too large; 2*vradius must be < the (smallest processed) plane height.");
+                zapi.freeNode(d.node);
+                return;
+            }
+        }
+    }
+
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 

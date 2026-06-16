@@ -45,11 +45,8 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
                 const src = zapi.initZFrame(d.node1, n);
                 defer src.deinit();
 
-                var ref = src;
-                if (join) {
-                    ref = zapi.initZFrame(d.node2, n);
-                    defer ref.deinit();
-                }
+                const ref = if (join) zapi.initZFrame(d.node2, n) else src;
+                defer if (join) ref.deinit();
 
                 const dst = src.newVideoFrame2(d.planes);
                 var plane: u32 = 0;
@@ -197,6 +194,21 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         if (d.planes[i]) {
             if (d.algorithm[i] <= 0) {
                 d.algorithm[i] = if (d.step[i] == 1) 2 else (if ((d.sigmaR[i] < 0.08) and (d.samples[i] < 5)) 2 else (if (4 * d.samples[i] * d.samples[i] <= 15 * d.PBFICnum[i]) 2 else 1));
+            }
+        }
+    }
+
+    i = 0;
+    while (i < 3) : (i += 1) {
+        if ((d.planes[i]) and (d.algorithm[i] == 2)) {
+            const sw: u5 = if (i == 0) 0 else @intCast(d.vi.format.subSamplingW);
+            const sh: u5 = if (i == 0) 0 else @intCast(d.vi.format.subSamplingH);
+            const pw: u32 = @as(u32, @intCast(d.vi.width)) >> sw;
+            const ph: u32 = @as(u32, @intCast(d.vi.height)) >> sh;
+            if ((pw <= 2 * d.radius[i]) or (ph <= 2 * d.radius[i])) {
+                map_out.setError("Bilateral: plane too small for the spatial radius derived from sigmaS; lower sigmaS or use a larger clip.");
+                zapi.freeNode(d.node1);
+                return;
             }
         }
     }

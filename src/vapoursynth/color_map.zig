@@ -45,7 +45,12 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
             }
         }
 
-        dst.getPropertiesRW().setColorRange(.FULL);
+        const props = dst.getPropertiesRW();
+        props.setMatrix(.RGB);
+        props.setTransfer(.IEC_61966_2_1);
+        props.setPrimaries(.BT709);
+        props.setColorRange(.FULL);
+
         return dst.frame;
     }
 
@@ -84,11 +89,17 @@ pub fn colorMapCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
     const color: Colors = @enumFromInt(icolor);
     const color_arr = color.getColor();
 
+    const len: usize = color_arr[0].len;
+    const lenm1: f32 = @floatFromInt(len - 1);
     for (0..256) |i| {
-        const j: usize = color_arr[0].len * i / 256;
-        d.color[0][i] = @trunc(@mulAdd(f32, color_arr[0][j], 255, 0.5));
-        d.color[1][i] = @trunc(@mulAdd(f32, color_arr[1][j], 255, 0.5));
-        d.color[2][i] = @trunc(@mulAdd(f32, color_arr[2][j], 255, 0.5));
+        const p: f32 = @as(f32, @floatFromInt(i)) * lenm1 / 255.0;
+        const lo: usize = @intFromFloat(@floor(p));
+        const hi: usize = @min(lo + 1, len - 1);
+        const frac: f32 = p - @as(f32, @floatFromInt(lo));
+        inline for (0..3) |c| {
+            const v: f32 = color_arr[c][lo] + (color_arr[c][hi] - color_arr[c][lo]) * frac;
+            d.color[c][i] = @trunc(@mulAdd(f32, v, 255, 0.5));
+        }
     }
 
     d.vi = in_vi.*;

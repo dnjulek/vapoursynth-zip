@@ -78,6 +78,15 @@ pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         return;
     }
 
+    if (((vi1.format.sampleType == .Float) and (vi1.format.bitsPerSample == 16)) or
+        ((vi2.format.sampleType == .Float) and (vi2.format.bitsPerSample == 16)))
+    {
+        map_out.setError(filter_name ++ " : half-float (f16) format is not supported.");
+        zapi.freeNode(d.node1);
+        zapi.freeNode(d.node2);
+        return;
+    }
+
     d.node1 = hz.toRGBS(d.node1, &zapi);
     d.node2 = hz.toRGBS(d.node2, &zapi);
     d.node1 = sRGBtoLinearRGB(d.node1, &zapi);

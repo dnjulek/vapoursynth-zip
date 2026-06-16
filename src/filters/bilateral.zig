@@ -6,6 +6,7 @@ const Data = @import("../vapoursynth/bilateral.zig").Data;
 const vszip = @import("../vszip.zig");
 
 const allocator = std.heap.c_allocator;
+const AlignedF32 = []align(vszip.vec_len) f32;
 
 pub fn bilateral(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, w: u32, h: u32, plane: u32, comptime join: bool, d: *Data) void {
     if (@typeInfo(T) == .int) {
@@ -51,9 +52,9 @@ fn bilateralAlg1(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, 
     var B3: f32 = undefined;
     recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
 
-    const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
-    const wk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
-    const jk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const PBFIC: []AlignedF32 = allocator.alloc(AlignedF32, PBFICnum) catch unreachable;
+    const wk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const jk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
     defer allocator.free(wk);
     defer allocator.free(jk);
 
@@ -229,9 +230,9 @@ fn bilateralAlg1Float(comptime T: type, srcp: []const T, refp: []const T, dstp: 
     var B3: f32 = undefined;
     recursiveGaussianParameters(sigma, &B, &B1, &B2, &B3);
 
-    const PBFIC: [][]f32 = allocator.alloc([]f32, PBFICnum) catch unreachable;
-    const wk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
-    const jk: []f32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const PBFIC: []AlignedF32 = allocator.alloc(AlignedF32, PBFICnum) catch unreachable;
+    const wk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const jk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
     defer allocator.free(wk);
     defer allocator.free(jk);
 

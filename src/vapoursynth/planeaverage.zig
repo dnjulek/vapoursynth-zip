@@ -124,6 +124,13 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
             for (d.exclude.f, ein) |*df, *ei| {
                 df.* = @floatFromInt(ei.*);
             }
+        } else if (dt == .U32) {
+            map_out.setError(filter_name ++ ": exclude is not supported for 32-bit integer clips.");
+            allocator.free(d.prop.d);
+            allocator.free(d.prop.a);
+            if (d.node2) |node| zapi.freeNode(node);
+            zapi.freeNode(d.node1);
+            return;
         } else {
             d.exclude = filter.Exclude{ .i = allocator.alloc(i32, ein.len) catch unreachable };
             for (d.exclude.i, ein) |*di, *ei| {
