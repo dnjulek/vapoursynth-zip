@@ -15,7 +15,7 @@ pub const filter_name = "ColorMap";
 const Data = struct {
     node: ?*vs.Node = null,
     vi: vs.VideoInfo = .{},
-    color: [3][256]u8 = .{.{0} ** 256} ** 3,
+    color: [3][256]u8 = .{ @splat(0), @splat(0), @splat(0) },
 };
 
 fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {

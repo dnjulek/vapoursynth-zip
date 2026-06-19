@@ -416,7 +416,7 @@ fn free(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callcon
 
 pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
-    var print_buf = [_]u8{0} ** 512;
+    var print_buf: [512]u8 = @splat(0);
 
     const zapi = ZAPI.init(vsapi, core, null);
     const zin = zapi.initZMap(in);
