@@ -11,6 +11,7 @@ const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
 const color_map = @import("vapoursynth/color_map.zig");
+const compress = @import("vapoursynth/compress.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const comb_mask = @import("vapoursynth/comb_mask.zig");
 const deband = @import("vapoursynth/deband.zig");
@@ -76,6 +77,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;color:int:opt;",
         "clip:vnode;",
         color_map.colorMapCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        compress.filter_name,
+        "clip:vnode;codec:int:opt;qscale:int:opt;quality:int:opt;dc_prec:int:opt;chroma:int:opt;",
+        "clip:vnode;",
+        compress.compressCreate,
         plugin,
         vspapi,
     );
