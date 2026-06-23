@@ -1,5 +1,7 @@
 ## VapourSynth Zig Image Process
 
+``pip install vapoursynth-vszip``
+
 [READ THE DOCS](https://github.com/dnjulek/vapoursynth-zip/wiki)
 
 # FILTERS
