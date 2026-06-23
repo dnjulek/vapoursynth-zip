@@ -7,6 +7,7 @@ const zon = @import("zon");
 
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");
+const bilateral_dither = @import("vapoursynth/bilateral_dither.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
 const checkmate = @import("vapoursynth/checkmate.zig");
 const clahe = @import("vapoursynth/clahe.zig");
@@ -46,6 +47,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;ref:vnode:opt;sigmaS:float[]:opt;sigmaR:float[]:opt;planes:int[]:opt;algorithm:int[]:opt;PBFICnum:int[]:opt",
         "clip:vnode;",
         bilateral.bilateralCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        bilateral_dither.filter_name,
+        "clip:vnode;ref:vnode:opt;radius:int[]:opt;thr:float[]:opt;flat:float[]:opt;wmin:float[]:opt;subspl:float[]:opt;planes:int[]:opt;",
+        "clip:vnode;",
+        bilateral_dither.create,
         plugin,
         vspapi,
     );
