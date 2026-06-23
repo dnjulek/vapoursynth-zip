@@ -18,6 +18,7 @@ const deband = @import("vapoursynth/deband.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limit_filter = @import("vapoursynth/limit_filter.zig");
 const limiter = @import("vapoursynth/limiter.zig");
+const mosquito_nr = @import("vapoursynth/mosquito_nr.zig");
 const packrgb = @import("vapoursynth/packrgb.zig");
 const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
@@ -135,6 +136,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;mask:int:opt;planes:int[]:opt;",
         "clip:vnode;",
         limiter.limiterCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        mosquito_nr.filter_name,
+        "clip:vnode;strength:int[]:opt;restore:int[]:opt;radius:int[]:opt;planes:int[]:opt;",
+        "clip:vnode;",
+        mosquito_nr.create,
         plugin,
         vspapi,
     );

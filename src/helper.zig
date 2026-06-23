@@ -359,6 +359,15 @@ pub fn getArray(
 
     var array: [3]T = undefined;
     const len = in.numElements(key) orelse 0;
+    if (len > 3) {
+        err_msg = std.fmt.allocPrintSentinel(
+            allocator,
+            "{s}: {s} has too many elements (got {d}, max 3).",
+            .{ filter_name, key, len },
+            0,
+        ) catch return error.outOfMemory;
+        return error.invalidArgument;
+    }
     var i: u8 = 0;
     while (i < 3) : (i += 1) {
         if (i < len) {
