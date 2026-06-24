@@ -16,6 +16,7 @@ const compress = @import("vapoursynth/compress.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const comb_mask = @import("vapoursynth/comb_mask.zig");
 const deband = @import("vapoursynth/deband.zig");
+const eedi3 = @import("vapoursynth/eedi3.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limit_filter = @import("vapoursynth/limit_filter.zig");
 const limiter = @import("vapoursynth/limiter.zig");
@@ -121,6 +122,22 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
             "thr1:float[]:opt;thr2:float[]:opt;angle_boost:float:opt;max_angle:float:opt;",
         "clip:vnode;",
         deband.create,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        "EEDI3",
+        eedi3.args_string,
+        "clip:vnode;",
+        eedi3.createEEDI3,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        "EEDI3H",
+        eedi3.args_string,
+        "clip:vnode;",
+        eedi3.createEEDI3H,
         plugin,
         vspapi,
     );

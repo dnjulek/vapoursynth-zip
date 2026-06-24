@@ -16,6 +16,7 @@
 - [CombMaskMT](https://github.com/dnjulek/vapoursynth-zip/wiki/CombMaskMT): Port of MTCombMask [from AviSynth](http://avisynth.nl/index.php/MTCombMask).
 - [Compress](https://github.com/dnjulek/vapoursynth-zip/wiki/Compress): Adds MPEG-2 / JPEG compression artifacts (8x8 DCT quantization round-trip).
 - [Deband](https://github.com/dnjulek/vapoursynth-zip/wiki/Deband): A faster version of [neo_f3kdb](https://github.com/HomeOfAviSynthPlusEvolution/neo_f3kdb) with float support.
+- [EEDI3](https://github.com/dnjulek/vapoursynth-zip/wiki/EEDI3): Edge-directed interpolation, more than twice as fast as [eedi3m](https://github.com/HomeOfAviSynthPlusEvolution/EEDI3).
 - [ImageRead](https://github.com/dnjulek/vapoursynth-zip/wiki/ImageRead): Load image using [Zig Image library](https://github.com/zigimg/zigimg).
 - [Limiter](https://github.com/dnjulek/vapoursynth-zip/wiki/Limiter): A faster version of [core.std.Limiter](https://www.vapoursynth.com/doc/functions/video/limiter.html).
 - [LimitFilter](https://github.com/dnjulek/vapoursynth-zip/wiki/LimitFilter): Performs a soft-limiting between two clips to limit the difference of filtering while avoiding artifacts.

@@ -106,7 +106,7 @@ pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
 
 pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     var in = node;
-    const frame = zapi.getFrame(0, node, null, 0);
+    const frame = zapi.getFrame(0, node, null);
     defer zapi.freeFrame(frame);
 
     const map_in = zapi.initZMap(zapi.getFramePropertiesRO(frame));

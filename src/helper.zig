@@ -258,7 +258,7 @@ pub fn getVal2(comptime T: type, ptr: anytype, x: u32, y: u32) T {
 }
 
 pub fn getColorRange(node: *vs.Node, zapi: *const ZAPI) vsc.ColorRange {
-    const frame = zapi.getFrame(0, node, null, 0);
+    const frame = zapi.getFrame(0, node, null);
     defer zapi.freeFrame(frame);
 
     if (frame) |f| {

@@ -7,8 +7,8 @@
     .dependencies = .{
         .vapoursynth = .{
             // zig fetch --save git+https://github.com/dnjulek/vapoursynth-zig.git
-            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#92b85456e3c82e55c21dbc0c213c70ef50164ea4",
-            .hash = "vapoursynth-4.0.0-jLYMQzOOAgDbCgdTQVlOlOZysud-8FD-daGymdAH5Mvc",
+            .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#b87ff61ce680fa5a4cf7d44a9cb4b605c5037432",
+            .hash = "vapoursynth-4.0.0-jLYMQ6DjAgDFOODh8tdhWCw0iGHMPKiR4znTJwSyvV36",
         },
 
         .zigimg = .{
