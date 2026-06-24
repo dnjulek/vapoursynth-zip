@@ -27,7 +27,7 @@ jobs:
       run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
 
     - name: Run test
-      run: pytest
+      run: pytest -v
 
   Windows-Test:
     runs-on: windows-latest
@@ -48,4 +48,4 @@ jobs:
       run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
 
     - name: Run test
-      run: pytest
+      run: pytest -v
