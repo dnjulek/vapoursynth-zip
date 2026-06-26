@@ -1,6 +1,7 @@
 const std = @import("std");
 const vapoursynth = @import("vapoursynth");
 
+const hz = @import("../helper.zig");
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
 
@@ -1065,7 +1066,7 @@ pub fn vcheckLine(
 /// for the fully-transposed horizontal pipeline; each row spans `stride`
 /// elements. The vertical path passes 0 to skip those allocations.
 pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32, dstT_rows: u32) !*Scratch {
-    const pad_buf_len = vsh.ceilN(w + pad_buf_w, vec_align);
+    const pad_buf_len = vsh.ceilN(w + pad_buf_w, hz.vsFrameAlignmentT(@sizeOf(f32)));
     const tpitch_alloc: u32 = if (hp) tpitch_hp_max else tpitch_max;
     const s = try allocator.create(Scratch);
     s.r3p = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);

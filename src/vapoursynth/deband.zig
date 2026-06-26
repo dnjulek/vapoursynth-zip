@@ -27,10 +27,6 @@ const FULL_RANGE_C_MIN: i32 = FULL_RANGE_Y_MIN;
 const FULL_RANGE_C_MAX: i32 = FULL_RANGE_Y_MAX;
 const DEFAULT_RANDOM_PARAM: f64 = 1.0;
 
-pub inline fn ceilN(x: anytype, n: anytype) @TypeOf(x) {
-    return (x + (n - 1)) & ~(@as(@TypeOf(x), n) - 1);
-}
-
 pub const RandAlgo = enum(i32) {
     old = 0,
     uniform = 1,

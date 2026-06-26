@@ -495,12 +495,16 @@ pub fn bitDepth(bitdepth: u32, node: *vs.Node, dither: ditherType, zapi: *const 
 
 /// [luma, chroma] stride
 pub fn strideFromVi(vi: *const vs.VideoInfo) [2]u32 {
-    const n: u32 = @divExact(vsFrameAlignment(), @as(u32, @intCast(vi.format.bytesPerSample)));
+    const n: u32 = vsFrameAlignmentT(@intCast(vi.format.bytesPerSample));
     const ssw: u3 = @intCast(vi.format.subSamplingW);
     return .{
         @intCast(vsh.ceilN(@intCast(vi.width), n)),
         @intCast(vsh.ceilN(@intCast(vi.width >> ssw), n)),
     };
+}
+
+pub fn vsFrameAlignmentT(div: u32) u32 {
+    return @divExact(vsFrameAlignment(), div);
 }
 
 /// VapourSynth aligns every frame's plane rows to `VSFrame::alignment` bytes,

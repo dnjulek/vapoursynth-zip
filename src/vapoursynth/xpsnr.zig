@@ -166,7 +166,7 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.width = whv.w;
     d.height = whv.h;
 
-    const wh = vsh.ceilN(whv.w[0], vszip.vec_len) * whv.h[0];
+    const wh = hz.strideFromVi(d.vi)[0] * whv.h[0];
     d.og_m1 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
     @memset(d.og_m1, 0);

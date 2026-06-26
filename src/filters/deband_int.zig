@@ -9,6 +9,7 @@ const vcl = @import("../vcl.zig");
 
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
+const vsh = vapoursynth.vshelper;
 const ZAPI = vapoursynth.ZAPI;
 const Mode = plugin.Mode;
 const Data = plugin.Data;
@@ -126,7 +127,7 @@ fn processPlane(
     // precomputed cell with no clamping — making the lookup bit-identical to the
     // per-pixel computation (calculateGradientAngle itself is unchanged).
     const ANGLE_PAD: u32 = 128;
-    const ang_stride: u32 = if (mode == .m7) plugin.ceilN(width + 2 * ANGLE_PAD, vec_len) else 0;
+    const ang_stride: u32 = if (mode == .m7) vsh.ceilN(width + 2 * ANGLE_PAD, hz.vsFrameAlignmentT(@sizeOf(f32))) else 0;
     const angle_buf: []f32 = if (mode == .m7)
         (allocator.alloc(f32, (height + 2 * ANGLE_PAD) * ang_stride) catch {
             var yy: u32 = 0; // graceful passthrough on OOM
