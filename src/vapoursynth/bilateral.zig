@@ -110,9 +110,9 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
             d.sigmaS[i] = map_in.getFloat2(f64, "sigmaS", i).?;
         } else if (i == 0) {
             d.sigmaS[0] = 3;
-        } else if ((i == 1) and (yuv) and (ssh == 1) and (ssw == 1)) {
-            const j: f64 = @floatFromInt((ssh + 1) * (ssw + 1));
-            d.sigmaS[1] = d.sigmaS[0] / @sqrt(j);
+        } else if ((i == 1) and yuv and (ssh != 0) and (ssw != 0)) {
+            const factor: f64 = @floatFromInt((@as(u32, 1) << @intCast(ssh)) * (@as(u32, 1) << @intCast(ssw)));
+            d.sigmaS[1] = d.sigmaS[0] / @sqrt(factor);
         } else {
             d.sigmaS[i] = d.sigmaS[i - 1];
         }
