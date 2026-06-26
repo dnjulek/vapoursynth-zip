@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const math = std.math;
 
 const filter_int = @import("../filters/deband_int.zig");
@@ -15,7 +16,6 @@ const Maps = hz.Maps;
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Deband";
 
-const FRAME_LUT_ALIGNMENT = std.simd.suggestVectorLength(u8) orelse 16;
 const INTERNAL_BIT_DEPTH: i32 = 16;
 const TV_RANGE_Y_MIN: i32 = 16 << (INTERNAL_BIT_DEPTH - 8);
 const TV_RANGE_Y_MAX: i32 = 235 << (INTERNAL_BIT_DEPTH - 8);
@@ -151,8 +151,8 @@ pub const Data = struct {
 };
 
 const TempBuff = struct {
-    ref1: [3][]u16 = .{ &.{}, &.{}, &.{} },
-    ref2: [3][]u16 = .{ &.{}, &.{}, &.{} },
+    ref1: [3][]i32 = .{ &.{}, &.{}, &.{} },
+    ref2: [3][]i32 = .{ &.{}, &.{}, &.{} },
     grain_int: [3][]i16 = .{ &.{}, &.{}, &.{} },
     grain_float: [3][]f32 = .{ &.{}, &.{}, &.{} },
     grain_offsets: []u32 = &.{},
@@ -167,24 +167,20 @@ const TempBuff = struct {
         const vi = d.vi;
         const width: i32 = vi.width;
         const height: i32 = vi.height;
-        const uwidth: u32 = @intCast(width);
+        const strides = hz.strideFromVi(vi);
         const uheight: u32 = @intCast(height);
         const mask_w: i32 = (@as(i32, 1) << d.ssw) - 1;
         const mask_h: i32 = (@as(i32, 1) << d.ssh) - 1;
-        const is_float = d.vi.format.sampleType == .Float;
-        const alignment: u32 = if (is_float) (FRAME_LUT_ALIGNMENT / @sizeOf(f32)) else (FRAME_LUT_ALIGNMENT / @sizeOf(u16));
-
-        const y_stride: u32 = ceilN(uwidth, alignment);
-        const c_width: u32 = uwidth >> d.ssw;
+        const y_stride: u32 = strides[0];
         const c_height: u32 = uheight >> d.ssh;
-        const c_stride: u32 = ceilN(c_width, alignment);
+        const c_stride: u32 = strides[1];
         const y_size: u32 = y_stride * uheight;
         const c_size: u32 = c_stride * c_height;
 
         const sizes = [_]u32{ y_size, c_size, c_size };
         for (0..2) |i| {
-            self.ref1[i] = try allocator.alloc(u16, sizes[i]);
-            self.ref2[i] = try allocator.alloc(u16, sizes[i]);
+            self.ref1[i] = try allocator.alloc(i32, sizes[i]);
+            self.ref2[i] = try allocator.alloc(i32, sizes[i]);
             @memset(self.ref1[i], 0);
             @memset(self.ref2[i], 0);
         }
@@ -192,9 +188,13 @@ const TempBuff = struct {
         self.ref1[2] = self.ref1[1];
         self.ref2[2] = self.ref2[1];
 
-        var seed = @as(i32, @bitCast(@as(u32, 0x92D68CA2))) - d.seed;
-        seed ^= (width << 16) ^ height;
-        seed ^= (@as(i32, vi.numFrames) << 16) ^ @as(i32, vi.numFrames);
+        const w32: u32 = @bitCast(width);
+        const h32: u32 = @bitCast(height);
+        const nf32: u32 = @bitCast(@as(i32, vi.numFrames));
+        var useed: u32 = @as(u32, 0x92D68CA2) -% @as(u32, @bitCast(d.seed));
+        useed ^= (w32 << 16) ^ h32;
+        useed ^= (nf32 << 16) ^ nf32;
+        var seed: i32 = @bitCast(useed);
         var y: u32 = 0;
         while (y < height) : (y += 1) {
             const iy: i32 = @intCast(y);
@@ -205,8 +205,8 @@ const TempBuff = struct {
             var cx: u32 = 0;
             while (x < width) : (x += 1) {
                 const ix: i32 = @intCast(x);
-                var val1: u16 = 0;
-                var val2: u16 = 0;
+                var val1: i32 = 0;
+                var val2: i32 = 0;
 
                 // Consume grain random value to maintain seed sequence compatibility
                 _ = randomValue(d.random_algo_grain, &seed, 1, d.random_param_grain);
@@ -222,49 +222,59 @@ const TempBuff = struct {
                 if (cur_range > 0) {
                     const tmp1 = randomValue(d.random_algo_ref, &seed, cur_range, d.random_param_ref);
                     const tmp2 = if (d.sample_mode == .m2) randomValue(d.random_algo_ref, &seed, cur_range, d.random_param_ref) else 0;
-                    val1 = @intCast(@abs(tmp1));
-                    val2 = @intCast(@abs(tmp2));
+                    // neo stores refs as `signed char`: info.ref = (signed char)random,
+                    // then info.ref = abs(info.ref) which is re-truncated to signed char,
+                    // so abs(-128) wraps back to -128 (a NEGATIVE offset that survives).
+                    val1 = refEncode(tmp1);
+                    val2 = refEncode(tmp2);
                 }
 
+                const ystride_i: i32 = @intCast(y_stride);
                 switch (d.sample_mode) {
                     .m1 => {
-                        self.ref1[0][y_row + x] = @intCast(val1 * y_stride);
+                        self.ref1[0][y_row + x] = val1 * ystride_i;
                         self.ref2[0][y_row + x] = 0;
                     },
                     .m2 => {
-                        self.ref1[0][y_row + x] = @intCast(y_stride * val2 + val1);
-                        self.ref2[0][y_row + x] = @intCast(@abs(@as(i32, val2) - @as(i32, @intCast(y_stride)) * val1));
+                        self.ref1[0][y_row + x] = ystride_i * val2 + val1;
+                        // signed ref_pos_2 = val2 - stride*val1 (negative when val1>=1);
+                        // process reads src[cur+ref2] / src[cur-ref2] directly.
+                        self.ref2[0][y_row + x] = val2 - ystride_i * val1;
                     },
                     .m3 => {
                         self.ref1[0][y_row + x] = val1;
                         self.ref2[0][y_row + x] = 0;
                     },
                     .m4, .m5, .m6, .m7 => {
-                        self.ref1[0][y_row + x] = @intCast(val1 * y_stride);
+                        self.ref1[0][y_row + x] = val1 * ystride_i;
                         self.ref2[0][y_row + x] = val1;
                     },
                 }
 
                 if (((ix & mask_w) == 0) and ((iy & mask_h) == 0)) {
+                    // Arithmetic right shift (val* are signed i32) matches neo's
+                    // `signed char >> subsampling`, preserving the -128 sign.
                     const val1_cw = val1 >> d.ssw;
                     const val1_ch = val1 >> d.ssh;
                     const val2_ch = val2 >> d.ssh;
                     const val2_cw = val2 >> d.ssw;
+                    const cstride_i: i32 = @intCast(c_stride);
                     switch (d.sample_mode) {
                         .m1 => {
-                            self.ref1[1][c_row + cx] = @intCast(val1_ch * c_stride);
+                            self.ref1[1][c_row + cx] = val1_ch * cstride_i;
                             self.ref2[1][c_row + cx] = 0;
                         },
                         .m2 => {
-                            self.ref1[1][c_row + cx] = @intCast(c_stride * val2_ch + val1_cw);
-                            self.ref2[1][c_row + cx] = @intCast(@abs(@as(i32, val2_cw) - @as(i32, @intCast(c_stride)) * val1_ch));
+                            self.ref1[1][c_row + cx] = cstride_i * val2_ch + val1_cw;
+                            // signed ref_pos_2 for chroma = val2_cw - c_stride*val1_ch
+                            self.ref2[1][c_row + cx] = val2_cw - cstride_i * val1_ch;
                         },
                         .m3 => {
                             self.ref1[1][c_row + cx] = val1_cw;
                             self.ref2[1][c_row + cx] = 0;
                         },
                         .m4, .m5, .m6, .m7 => {
-                            self.ref1[1][c_row + cx] = @intCast(val1_ch * c_stride);
+                            self.ref1[1][c_row + cx] = val1_ch * cstride_i;
                             self.ref2[1][c_row + cx] = val1_cw;
                         },
                     }
@@ -286,7 +296,10 @@ const TempBuff = struct {
         const total_items: u32 = @intCast(item_count * multiplier);
 
         for (0..2) |i| {
-            if (!d.add_grain[i]) continue;
+            if (!d.add_grain[i]) {
+                consumeRandom(total_items, d.random_algo_grain, &seed, d.random_param_grain);
+                continue;
+            }
             if (d.vi.format.sampleType == .Integer) {
                 self.grain_int[i] = try allocator.alloc(i16, total_items);
                 fillGrainBuffer(self.grain_int[i], d.random_algo_grain, &seed, d.random_param_grain, d.grain.u[i]);
@@ -323,6 +336,13 @@ const TempBuff = struct {
         }
     }
 };
+
+fn refEncode(r: i32) i32 {
+    const trunc: i8 = @truncate(r);
+    const a: u8 = @intCast(@abs(@as(i32, trunc))); // 0..128
+    const restore: i8 = @bitCast(a); // 128 -> -128
+    return restore;
+}
 
 fn minMulti(values: []const i32) i32 {
     var result = values[0];
@@ -386,6 +406,13 @@ fn fillGrainBuffer(buffer: []i16, algo: RandAlgo, seed: *i32, param: f64, range:
     var i: usize = 0;
     while (i < buffer.len) : (i += 1) {
         buffer[i] = @intCast(randomValue(algo, seed, range, param));
+    }
+}
+
+fn consumeRandom(count: u32, algo: RandAlgo, seed: *i32, param: f64) void {
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        _ = randomValue(algo, seed, 0, param);
     }
 }
 

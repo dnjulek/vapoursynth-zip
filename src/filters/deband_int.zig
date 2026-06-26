@@ -13,13 +13,14 @@ const ZAPI = vapoursynth.ZAPI;
 const Mode = plugin.Mode;
 const Data = plugin.Data;
 
-const vec_len = std.simd.suggestVectorLength(i32) orelse 1;
+const vec_len = std.simd.suggestVectorLength(i32) orelse 8;
 const i32v = @Vector(vec_len, i32);
 const u32v = @Vector(vec_len, u32);
 const u16v = @Vector(vec_len, u16);
 const i16v = @Vector(vec_len, i16);
 const f32v = @Vector(vec_len, f32);
 const boolv = @Vector(vec_len, bool);
+const vec0_i32: i32v = @splat(0);
 const vec1_i32: i32v = @splat(1);
 const vec2_i32: i32v = @splat(2);
 const vec4_i32: i32v = @splat(4);
@@ -91,8 +92,8 @@ pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain:
 fn processPlane(
     src: []const u16,
     dst: []u16,
-    ref1: []const u16,
-    ref2: []const u16,
+    ref1: []const i32,
+    ref2: []const i32,
     grain: anytype,
     stride: u32,
     width: u32,
@@ -114,10 +115,28 @@ fn processPlane(
     var ref4_arr: [vec_len]u16 align(32) = undefined;
 
     const thr_32: u32v = @splat(@as(u32, thr));
-    const thr1_32: u32v = @splat(@as(u32, thr1));
-    const thr2_32: u32v = @splat(@as(u32, thr2));
     const minv: i32v = @splat(pixel_min);
     const maxv: i32v = @splat(pixel_max);
+
+    // Mode 7 evaluates the gradient angle at 5 positions per pixel (org + 4
+    // ref-offset reads), each a Sobel kernel over 8 gathered pixels + an atan.
+    // Instead, precompute the angle once for every pixel into a padded scratch
+    // plane and turn the 5 evaluations into cheap lookups. PAD covers the max
+    // |ref offset| (signed-char bound, <=128), so every offset read lands on a
+    // precomputed cell with no clamping — making the lookup bit-identical to the
+    // per-pixel computation (calculateGradientAngle itself is unchanged).
+    const ANGLE_PAD: u32 = 128;
+    const ang_stride: u32 = if (mode == .m7) plugin.ceilN(width + 2 * ANGLE_PAD, vec_len) else 0;
+    const angle_buf: []f32 = if (mode == .m7)
+        (allocator.alloc(f32, (height + 2 * ANGLE_PAD) * ang_stride) catch {
+            var yy: u32 = 0; // graceful passthrough on OOM
+            while (yy < height) : (yy += 1) @memcpy(dst[yy * stride ..][0..width], src[yy * stride ..][0..width]);
+            return;
+        })
+    else
+        &.{};
+    defer if (mode == .m7) allocator.free(angle_buf);
+    if (mode == .m7) fillAnglePlane(src, stride, width, height, angle_buf, ang_stride, ANGLE_PAD);
 
     var y: u32 = 0;
     while (y < height) : (y += 1) {
@@ -132,18 +151,21 @@ fn processPlane(
             var center: i32v = @intCast(src_16);
 
             inline for (0..vec_len) |i| {
-                const cur_xy = row + x + i;
-                const idx1 = ref1_row[x + i];
-                ref1_arr[i] = src[cur_xy + idx1];
-                ref3_arr[i] = src[cur_xy - idx1];
+                const base: isize = @intCast(row + x + i);
+                const idx1: isize = ref1_row[x + i];
+                ref1_arr[i] = src[@intCast(base + idx1)];
+                ref3_arr[i] = src[@intCast(base - idx1)];
             }
 
             if (mode != .m1 and mode != .m3) {
                 inline for (0..vec_len) |i| {
-                    const cur_xy = row + x + i;
-                    const idx2 = ref2_row[x + i];
-                    ref2_arr[i] = src[cur_xy + idx2];
-                    ref4_arr[i] = src[cur_xy - idx2];
+                    const base: isize = @intCast(row + x + i);
+                    // idx2 may be negative (sample_mode 2): +idx2 reads the
+                    // "forward" ref_2, -idx2 the "backward" ref_4 — matching the
+                    // signed ref_pos_2 in neo_f3kdb.
+                    const idx2: isize = ref2_row[x + i];
+                    ref2_arr[i] = src[@intCast(base + idx2)];
+                    ref4_arr[i] = src[@intCast(base - idx2)];
                 }
             }
 
@@ -167,9 +189,11 @@ fn processPlane(
                     center = @select(i32, use_original, center, avg_32);
                 },
                 .m2 => {
-                    const avg1 = (r1_32 + r3_32 + vec1_i32) >> vec1_i32;
-                    const avg2 = (r2_32 + r4_32 + vec1_i32) >> vec1_i32;
-                    const avg_32 = (avg1 + avg2 + vec1_i32) >> vec1_i32;
+                    // neo's SSE/AVX path (opt>=1, what auto-detect runs) pairs the
+                    // two vertical refs (r1=+pos, r3=-pos) and the two horizontal
+                    // refs (r2=+pos2, r4=-pos2) — a different avg_4 pairing than the
+                    // C scalar path (opt=0).
+                    const avg_32 = avg4(r1_32, r3_32, r2_32, r4_32);
                     const use_original = if (blur_first)
                         (@abs(avg_32 - center) >= thr_32)
                     else
@@ -198,22 +222,33 @@ fn processPlane(
                     center = (dst_v + dst_h + vec1_i32) >> vec1_i32;
                 },
                 .m5 => {
-                    const avg_32 = (r1_32 + r2_32 + r3_32 + r4_32 + vec2_i32) >> vec2_i32;
-                    const avg_dif = @abs(avg_32 - center);
-                    const d1 = @abs(r1_32 - center);
-                    const d2 = @abs(r2_32 - center);
-                    const d3 = @abs(r3_32 - center);
-                    const d4 = @abs(r4_32 - center);
-                    const max_dif = @max(@max(d1, d2), @max(d3, d4));
+                    // neo's AVX2 kernel (opt=2) ran m5's diff/threshold math in
+                    // 16-bit lanes, which OVERFLOW on high-contrast content: a true
+                    // |ref-src| > 32767 wraps to a small value, so a sharp edge looks
+                    // flat and gets averaged. That is a genuine SIMD bug — neo's SSE
+                    // path (opt=1), C path (opt=0) and our own float path all compute
+                    // these diffs in 32-bit and don't overflow, so we do the same.
+                    // avg is the FLAT truncated (sum>>2), matching every neo m5 path.
+                    // AVX2 ref order (+v,-v,+h,-h) maps to vszip (r1,r3,r2,r4).
+                    const avg = (r1_32 + r3_32 + r2_32 + r4_32) >> vec2_i32;
+                    const avg_dif = @abs(avg - center);
+                    const max_dif = @max(
+                        @max(@abs(r1_32 - center), @abs(r3_32 - center)),
+                        @max(@abs(r2_32 - center), @abs(r4_32 - center)),
+                    );
                     const two_src = center << vec1_i32;
                     const mid_dif1 = @abs((r1_32 + r3_32) - two_src);
                     const mid_dif2 = @abs((r2_32 + r4_32) - two_src);
-                    const use_original = (avg_dif >= thr_32) |
-                        (max_dif >= thr1_32) |
-                        (mid_dif1 >= thr2_32) |
-                        (mid_dif2 >= thr2_32);
 
-                    center = @select(i32, use_original, center, avg_32);
+                    const thr_v: u32v = @splat(@as(u32, thr));
+                    const thr1_v: u32v = @splat(@as(u32, thr1));
+                    const thr2_v: u32v = @splat(@as(u32, thr2));
+                    const use_original = (avg_dif >= thr_v) |
+                        (max_dif >= thr1_v) |
+                        (mid_dif1 >= thr2_v) |
+                        (mid_dif2 >= thr2_v);
+
+                    center = @select(i32, use_original, center, avg);
                 },
                 .m6, .m7 => {
                     var t_avg: f32v = @splat(@as(f32, @floatFromInt(thr)));
@@ -221,29 +256,36 @@ fn processPlane(
                     var t_mid: f32v = @splat(@as(f32, @floatFromInt(thr2)));
 
                     if (mode == .m7) {
-                        const grad_read_distance: i32 = 20;
                         const angle_boost_v: f32v = @splat(angle_boost);
                         const max_angle_v: f32v = @splat(max_angle);
 
-                        var base_x_coords: i32v = undefined;
-                        const base_y_coords: i32v = @splat(@intCast(y));
-                        inline for (0..vec_len) |i| {
-                            base_x_coords[i] = @intCast(x + i);
-                        }
-
+                        const stride_i: i32 = @intCast(stride);
                         var y_offsets: i32v = undefined;
                         var x_offsets: i32v = undefined;
                         inline for (0..vec_len) |i| {
-                            const offset_val: i32 = @intCast(ref2_row[x + i]);
-                            y_offsets[i] = offset_val;
-                            x_offsets[i] = offset_val;
+                            y_offsets[i] = @divTrunc(ref1_row[x + i], stride_i);
+                            x_offsets[i] = ref2_row[x + i];
                         }
 
-                        const angle_org = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords, grad_read_distance);
-                        const angle_ref1_h = calculateGradientAngle(src, stride, width, height, base_y_coords + y_offsets, base_x_coords, grad_read_distance);
-                        const angle_ref2_h = calculateGradientAngle(src, stride, width, height, base_y_coords - y_offsets, base_x_coords, grad_read_distance);
-                        const angle_ref1_w = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords + x_offsets, grad_read_distance);
-                        const angle_ref2_w = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords - x_offsets, grad_read_distance);
+                        const astride_i: i32 = @intCast(ang_stride);
+                        const pad_i: i32 = @intCast(ANGLE_PAD);
+                        const yi: i32 = @intCast(y);
+                        const angle_org: f32v = angle_buf[(y + ANGLE_PAD) * ang_stride + (x + ANGLE_PAD) ..][0..vec_len].*;
+                        var angle_ref1_h: f32v = undefined;
+                        var angle_ref2_h: f32v = undefined;
+                        var angle_ref1_w: f32v = undefined;
+                        var angle_ref2_w: f32v = undefined;
+                        inline for (0..vec_len) |i| {
+                            const bx: i32 = @intCast(x + i);
+                            const yo = y_offsets[i];
+                            const xo = x_offsets[i];
+                            const col: i32 = bx + pad_i;
+                            const row_y: i32 = (yi + pad_i) * astride_i;
+                            angle_ref1_h[i] = angle_buf[@intCast((yi + yo + pad_i) * astride_i + col)];
+                            angle_ref2_h[i] = angle_buf[@intCast((yi - yo + pad_i) * astride_i + col)];
+                            angle_ref1_w[i] = angle_buf[@intCast(row_y + (bx + xo + pad_i))];
+                            angle_ref2_w[i] = angle_buf[@intCast(row_y + (bx - xo + pad_i))];
+                        }
 
                         var max_angle_diff = @max(@abs(angle_ref1_h - angle_org), @abs(angle_ref2_h - angle_org));
                         max_angle_diff = @max(max_angle_diff, @max(@abs(angle_ref1_w - angle_org), @abs(angle_ref2_w - angle_org)));
@@ -298,6 +340,40 @@ fn processPlane(
 
 fn saturate(x: f32v) f32v {
     return @max(vec0_f32, @min(x, vec1_f32));
+}
+
+/// Fill `buf` with the per-pixel normalized gradient angle for every coordinate
+/// in the padded range X,Y in [-PAD, dim-1+PAD], laid out so that the angle for
+/// coordinate (Y,X) lives at buf[(Y+PAD)*ang_stride + (X+PAD)]. Uses the exact
+/// same calculateGradientAngle as the per-pixel path (which clamps its own
+/// neighbour reads), so a lookup is bit-identical to recomputing on the fly.
+fn fillAnglePlane(src: []const u16, stride: u32, width: u32, height: u32, buf: []f32, ang_stride: u32, comptime PAD: u32) void {
+    const padded_w = width + 2 * PAD;
+    const padded_h = height + 2 * PAD;
+    var yy: u32 = 0;
+    while (yy < padded_h) : (yy += 1) {
+        const yc: i32v = @splat(@as(i32, @intCast(yy)) - @as(i32, @intCast(PAD)));
+        const row = yy * ang_stride;
+        var xx: u32 = 0;
+        while (xx < padded_w) : (xx += vec_len) {
+            var xc: i32v = undefined;
+            inline for (0..vec_len) |i| {
+                xc[i] = @as(i32, @intCast(xx + i)) - @as(i32, @intCast(PAD));
+            }
+            buf[row + xx ..][0..vec_len].* = calculateGradientAngle(src, stride, width, height, yc, xc, 20);
+        }
+    }
+}
+
+/// Bit-exact port of neo_f3kdb's pixel_proc avg_4 (16-bit path): two rounded
+/// pair-averages, with the first decremented by one when positive — a quirk
+/// the original keeps "consistent with SSE code". Argument order matters: the
+/// pairs averaged are (a,b) and (c,d).
+inline fn avg4(a: i32v, b: i32v, c: i32v, d: i32v) i32v {
+    var avg1 = (a + b + vec1_i32) >> vec1_i32;
+    const avg2 = (c + d + vec1_i32) >> vec1_i32;
+    avg1 -= @select(i32, avg1 > vec0_i32, vec1_i32, vec0_i32);
+    return (avg1 + avg2 + vec1_i32) >> vec1_i32;
 }
 
 fn gatherPixelValues(src: []const u16, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v) f32v {

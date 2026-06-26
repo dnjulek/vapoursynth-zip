@@ -170,10 +170,12 @@ pub fn pow(x0: anytype, y: anytype) @TypeOf(x0) {
     const z_bits: U32V = z_bits0 +% (ei_u << shift23);
     z = @bitCast(z_bits);
 
-    // const v_zero: F32V = @splat(@as(f32, 0.0));
-    // const v_inf: F32V = @bitCast(@as(U32V, @splat(0x7F80_0000)));
-    // z = @select(f32, underflow, v_zero, z);
-    // z = @select(f32, overflow, v_inf, z);
+    const v_zero: F32V = @splat(@as(f32, 0.0));
+    const v_inf: F32V = @bitCast(@as(U32V, @splat(0x7F80_0000)));
+    const x0_bits: U32V = @bitCast(x0);
+    const xzero: BoolV = (x0_bits & @as(U32V, @splat(@as(u32, 0x7F80_0000)))) == @as(U32V, @splat(0));
+    const zero_case: F32V = @select(f32, y < v_zero, v_inf, @select(f32, y == v_zero, v_one, v_zero));
+    z = @select(f32, xzero, zero_case, z);
     return z;
 }
 

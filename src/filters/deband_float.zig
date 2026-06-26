@@ -87,8 +87,8 @@ pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain:
 fn processPlane(
     src: []const f32,
     dst: []f32,
-    ref1: []const u16,
-    ref2: []const u16,
+    ref1: []const i32,
+    ref2: []const i32,
     grain: anytype,
     stride: u32,
     width: u32,
@@ -127,18 +127,18 @@ fn processPlane(
             var center: f32v = src[row + x ..][0..vec_len].*;
 
             inline for (0..vec_len) |i| {
-                const cur_xy = row + x + i;
-                const idx1 = ref1_row[x + i];
-                ref1_arr[i] = src[cur_xy + idx1];
-                ref3_arr[i] = src[cur_xy - idx1];
+                const base: isize = @intCast(row + x + i);
+                const idx1: isize = ref1_row[x + i];
+                ref1_arr[i] = src[@intCast(base + idx1)];
+                ref3_arr[i] = src[@intCast(base - idx1)];
             }
 
             if (mode != .m1 and mode != .m3) {
                 inline for (0..vec_len) |i| {
-                    const cur_xy = row + x + i;
-                    const idx2 = ref2_row[x + i];
-                    ref2_arr[i] = src[cur_xy + idx2];
-                    ref4_arr[i] = src[cur_xy - idx2];
+                    const base: isize = @intCast(row + x + i);
+                    const idx2: isize = @abs(ref2_row[x + i]);
+                    ref2_arr[i] = src[@intCast(base + idx2)];
+                    ref4_arr[i] = src[@intCast(base - idx2)];
                 }
             }
 
@@ -220,12 +220,12 @@ fn processPlane(
                             base_x_coords[i] = @intCast(x + i);
                         }
 
+                        const stride_i: i32 = @intCast(stride);
                         var y_offsets: i32v = undefined;
                         var x_offsets: i32v = undefined;
                         inline for (0..vec_len) |i| {
-                            const offset_val: i32 = @intCast(ref2_row[x + i]);
-                            y_offsets[i] = offset_val;
-                            x_offsets[i] = offset_val;
+                            y_offsets[i] = @divTrunc(ref1_row[x + i], stride_i);
+                            x_offsets[i] = ref2_row[x + i];
                         }
 
                         const angle_org: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords, grad_read_distance);
