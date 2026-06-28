@@ -275,11 +275,14 @@ inline fn calcSquaredErrorAndWeight(
     const p_m1: ?[]const T = if (pic_prv1) |p| p[(offset_y * uo + offset_x)..] else null;
     const p_m2: ?[]const T = if (pic_prv2) |p| p[(offset_y * uo + offset_x)..] else null;
     const r_m0 = pic_rec[(offset_y * uo + offset_x)..];
-    const b_val: usize = if ((w0 * h0) > (2048 * 1152)) 2 else 1;
-    const x_act: usize = if (offset_x > 0) 0 else b_val;
-    const y_act: usize = if (offset_y > 0) 0 else b_val;
-    const w_act: usize = if ((offset_x + block_width) < w0) block_width else (block_width - b_val);
-    const h_act: usize = if ((offset_y + block_height) < h0) block_height else (block_height - b_val);
+
+    const b_val: i64 = if ((w0 * h0) > (2048 * 1152)) 2 else 1;
+    const bw: i64 = @intCast(block_width);
+    const bh: i64 = @intCast(block_height);
+    const x_act: i64 = if (offset_x > 0) 0 else b_val;
+    const y_act: i64 = if (offset_y > 0) 0 else b_val;
+    const w_act: i64 = if ((offset_x + block_width) < w0) bw else (bw - b_val);
+    const h_act: i64 = if ((offset_y + block_height) < h0) bh else (bh - b_val);
 
     const sse: f64 = @floatFromInt(calcSquaredError(T, o_m0, stride, r_m0, block_width, block_height));
 
@@ -290,17 +293,24 @@ inline fn calcSquaredErrorAndWeight(
         return sse;
     }
 
+    const xa: usize = @intCast(x_act);
+    const ya: usize = @intCast(y_act);
+    const wa: usize = @intCast(w_act);
+    const ha: usize = @intCast(h_act);
+
     if (b_val > 1) {
-        saAct = highds(T, x_act, y_act, w_act, h_act, o_m0, uo);
+        if (w_act > 12) {
+            saAct = highds(T, xa, ya, wa, ha, o_m0, uo);
+        }
     } else {
-        saAct = spatialAct(T, pic_org, uo, offset_x + x_act, offset_x + w_act, offset_y + y_act, offset_y + h_act);
+        saAct = spatialAct(T, pic_org, uo, offset_x + xa, offset_x + wa, offset_y + ya, offset_y + ha);
     }
 
-    ms_act.* = @as(f64, @floatFromInt(saAct)) / (@as(f64, @floatFromInt(w_act - x_act)) * @as(f64, @floatFromInt(h_act - y_act)));
+    ms_act.* = @as(f64, @floatFromInt(saAct)) / (@as(f64, @floatFromInt(wa - xa)) * @as(f64, @floatFromInt(ha - ya)));
 
     if (temporal) {
         if (b_val > 1) {
-            if (frame_rate <= 32) {
+            if (frame_rate < 32) {
                 taAct = if (p_m1) |pm1|
                     diff1st(T, true, block_width, block_height, o_m0, pm1, uo)
                 else
@@ -316,7 +326,7 @@ inline fn calcSquaredErrorAndWeight(
                 }
             }
         } else {
-            if (frame_rate <= 32) {
+            if (frame_rate < 32) {
                 taAct = if (p_m1) |pm1|
                     tempDiff1(T, true, block_width, block_height, o_m0, pm1, uo)
                 else

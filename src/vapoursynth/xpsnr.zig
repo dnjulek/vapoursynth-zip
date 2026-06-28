@@ -45,7 +45,7 @@ fn XPSNR(comptime T: type) type {
                 zapi.requestFrameFilter(n, d.node2);
                 if (d.temporal) {
                     if (n > 0) zapi.requestFrameFilter(n - 1, d.node1);
-                    if ((d.frame_rate > 32) and (n > 1)) zapi.requestFrameFilter(n - 2, d.node1);
+                    if ((d.frame_rate >= 32) and (n > 1)) zapi.requestFrameFilter(n - 2, d.node1);
                 }
             } else if (activation_reason == .AllFramesReady) {
                 const src1 = zapi.initZFrame(d.node1, n);
@@ -61,7 +61,7 @@ fn XPSNR(comptime T: type) type {
                 var src_p1: ?@TypeOf(src1) = null;
                 var src_p2: ?@TypeOf(src1) = null;
                 if (d.temporal and (n > 0)) src_p1 = zapi.initZFrame(d.node1, n - 1);
-                if (d.temporal and (d.frame_rate > 32) and (n > 1)) src_p2 = zapi.initZFrame(d.node1, n - 2);
+                if (d.temporal and (d.frame_rate >= 32) and (n > 1)) src_p2 = zapi.initZFrame(d.node1, n - 2);
                 defer if (src_p1) |f| f.deinit();
                 defer if (src_p2) |f| f.deinit();
 
@@ -87,6 +87,7 @@ fn XPSNR(comptime T: type) type {
                 }
 
                 d.mutex.lockUncancelable(vszip.io);
+                d.num_frames_64 += 1;
                 i = 0;
                 while (i < d.num_comps) : (i += 1) {
                     d.sum_wdist[i] += @sqrt(@as(f64, @floatFromInt(wsse64[i])));
@@ -114,7 +115,7 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
         var stdout_buffer: [1024]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writerStreaming(vszip.io, &stdout_buffer);
         const stdout = &stdout_writer.interface;
-        stdout.print("XPSNR average, {} frames  ", .{d.vi.numFrames}) catch unreachable;
+        stdout.print("XPSNR average, {} frames  ", .{d.num_frames_64}) catch unreachable;
         const char = [_]u8{ 'y', 'u', 'v' };
 
         for (0..d.num_comps) |i| {
@@ -171,9 +172,14 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.depth = @intCast(d.vi.format.bitsPerSample);
     d.max_error_64 = math.shl(u64, 1, d.depth) - 1;
     d.max_error_64 *= d.max_error_64;
-    d.frame_rate = if (d.vi.fpsDen != 0) @intCast(@divTrunc(d.vi.fpsNum, d.vi.fpsDen)) else 0;
+
+    d.frame_rate = if (vi2.fpsDen != 0)
+        @intCast(@divTrunc(vi2.fpsNum, vi2.fpsDen))
+    else if (d.vi.fpsDen != 0)
+        @intCast(@divTrunc(d.vi.fpsNum, d.vi.fpsDen))
+    else
+        0;
     d.num_comps = @intCast(d.vi.format.numPlanes);
-    d.num_frames_64 = @intCast(d.vi.numFrames);
 
     const whv = whFromVi(d.vi);
     d.width = whv.w;

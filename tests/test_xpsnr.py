@@ -1,15 +1,42 @@
 import math
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 import vapoursynth as vs
 
-from golden import Case, grid, sweep
+from golden import Case, fmt_name, grid, sweep
 from helpers import assert_same_clip, props
 
 TESTS_DIR = Path(__file__).resolve().parent
+IMAGE = TESTS_DIR / "image.png"
+
+
+@lru_cache(maxsize=None)
+def _motion_rgb(frames: int = 3):
+    """N-frame 1880x1040 RGB clip with deterministic vertical motion, cropped
+    from the 1920x1080 test image. Large enough to upscale to >HD while keeping
+    real spatial detail; >=3 frames exercises the 2nd-order temporal diff (which
+    reads the n-2 frame from frame 2 onward)."""
+    img = vs.core.vszip.ImageRead(str(IMAGE))
+    win_w, win_h, shift = 1880, 1040, 6
+    fs = [
+        img.std.Crop(left=0, right=img.width - win_w, top=n * shift,
+                     bottom=img.height - win_h - n * shift)
+        for n in range(frames)
+    ]
+    clip = fs[0]
+    for f in fs[1:]:
+        clip = clip + f
+    return clip
+
+
+def _sized_clip(w: int, h: int, fmt: int, fps: int, frames: int = 3):
+    """A YUV clip at the given resolution/format/fps built from the motion clip."""
+    yuv = _motion_rgb(frames).resize.Bilinear(width=w, height=h, format=fmt, matrix=1)
+    return vs.core.std.AssumeFPS(yuv, fpsnum=fps, fpsden=1)
 
 
 # --- golden snapshot coverage ----------------------------------------------
@@ -101,6 +128,85 @@ def test_golden_cases(golden, make_temporal_clip, case):
             {"Y": p["XPSNR_Y"], "U": p["XPSNR_U"], "V": p["XPSNR_V"]},
             rel=rel,
         )
+
+
+# --- extended path coverage -------------------------------------------------
+# The CASES sweep above only reaches <=HD (<=640x320: b_val==1, and small enough
+# to trigger the in-line min-smoothing) at the source's default fps. The cases
+# below cover the paths it misses:
+#   * <=HD WITHOUT min-smoothing (1280x720, b_val==1, large blocks);
+#   * the >HD high-pass-with-downsampling path (2560x1440, b_val==2: highds /
+#     diff1st / diff2nd) -- never reached by the original suite;
+#   * the 2nd-order temporal diff (fps>=32, incl. the exact fps==32 boundary).
+# Values are snapshotted from the FFmpeg-parity-verified build, so they ARE the
+# reference values; test_xpsnr_ffmpeg.py re-derives them from FFmpeg on demand.
+_EXT = [
+    # label, w, h, fmt, fps, temporal
+    ("hd",  1280, 720,  vs.YUV420P8,  24, True),   # <=HD, no smoothing, 1st-order
+    ("hd",  1280, 720,  vs.YUV420P8,  32, True),   # <=HD, 2nd-order (boundary)
+    ("hd",  1280, 720,  vs.YUV420P10, 24, True),   # <=HD, 10-bit
+    ("hd",  1280, 720,  vs.YUV420P8,  24, False),  # <=HD, spatial only
+    ("uhd", 2560, 1440, vs.YUV420P8,  24, True),   # >HD, 1st-order (highds + diff1st)
+    ("uhd", 2560, 1440, vs.YUV420P8,  32, True),   # >HD, 2nd-order boundary (diff2nd)
+    ("uhd", 2560, 1440, vs.YUV420P8,  60, True),   # >HD, 2nd-order high fps
+    ("uhd", 2560, 1440, vs.YUV420P8,  24, False),  # >HD, spatial-only highds
+    ("uhd", 2560, 1440, vs.YUV420P10, 32, True),   # >HD, 10-bit, 2nd-order
+    ("uhd", 2560, 1440, vs.YUV444P8,  32, True),   # >HD, 4:4:4 chroma, 2nd-order
+    ("uhd", 2560, 1440, vs.YUV422P8,  24, True),   # >HD, 4:2:2 chroma
+]
+
+
+@pytest.mark.usefixtures("core")
+@pytest.mark.parametrize(
+    "label,w,h,fmt,fps,temporal", _EXT,
+    ids=[f"{c[0]}-{fmt_name(c[3])}-fps{c[4]}-t{int(c[5])}" for c in _EXT],
+)
+def test_golden_extended(golden, label, w, h, fmt, fps, temporal):
+    ref = _sized_clip(w, h, fmt, fps)
+    dist = _distort(ref, "box2")
+    out = vs.core.vszip.XPSNR(ref, dist, temporal=temporal, verbose=False)
+    key = f"ext|{label}|{w}x{h}|{fmt_name(fmt)}|fps{fps}|t{int(temporal)}"
+    # request in order: the temporal path carries inter-frame state
+    for n in range(out.num_frames):
+        p = props(out, n)
+        golden.check_value(
+            "xpsnr", f"{key}|n{n}",
+            {"Y": p["XPSNR_Y"], "U": p["XPSNR_U"], "V": p["XPSNR_V"]}, rel=1e-6,
+        )
+
+
+@pytest.mark.usefixtures("core")
+def test_temporal_order_boundary():
+    """fps<32 -> 1st-order temporal diff, fps>=32 -> 2nd-order, a sharp boundary
+    at exactly 32. Below 32 the fps value is unused (only the threshold matters),
+    so 24 and 31 are bit-identical. 32 switches to F(n)-2F(n-1)+F(n-2): frame 0
+    has no previous frame (same as 1st order) but it diverges from frame 1 on."""
+    def ys(fps):
+        ref = _sized_clip(640, 360, vs.YUV420P8, fps, frames=5)
+        out = vs.core.vszip.XPSNR(ref, _distort(ref, "box2"), verbose=False)
+        return [props(out, n)["XPSNR_Y"] for n in range(out.num_frames)]
+
+    s24, s31, s32 = ys(24), ys(31), ys(32)
+    assert s24 == s31, "fps 24 vs 31 must be identical (both 1st-order)"
+    assert s32[0] == pytest.approx(s31[0])
+    assert all(s32[n] != s31[n] for n in range(1, len(s32))), \
+        "fps 32 must use 2nd-order temporal (diverges from 1st-order at frame 1)"
+
+
+@pytest.mark.usefixtures("core")
+@pytest.mark.parametrize("w,h,fmt", [
+    (2381, 1153, vs.YUV444P8),   # odd W and H, >HD: w_act/h_act would underflow usize
+    (2560, 1153, vs.YUV422P8),   # odd H (4:2:2 needs even W), >HD
+])
+def test_uhd_odd_dims_no_crash(w, h, fmt):
+    """Regression: on >HD frames an edge block smaller than b_val made the
+    (unsigned) w_act/h_act wrap to a huge value and walk off the frame; signed
+    arithmetic now early-returns instead. Odd >HD dims are not bit-exact vs
+    FFmpeg (their edge reads are stride-padding dependent), so this only asserts
+    no crash + finite output rather than a golden value."""
+    ref = _sized_clip(w, h, fmt, 24, frames=3)
+    out = vs.core.vszip.XPSNR(ref, _distort(ref, "box2"), verbose=False)
+    assert all(math.isfinite(props(out, n)["XPSNR_Y"]) for n in range(out.num_frames))
 
 
 @pytest.fixture(scope="module")
