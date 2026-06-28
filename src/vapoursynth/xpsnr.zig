@@ -21,9 +21,6 @@ pub const Data = struct {
     vi: *const vs.VideoInfo = undefined,
     mutex: Mutex = .init,
 
-    og_m1: []align(vszip.vec_len) i16 = undefined,
-    og_m2: []align(vszip.vec_len) i16 = undefined,
-
     depth: u6 = 0,
     num_comps: u8 = 0,
     frame_rate: u32 = 0,
@@ -46,18 +43,32 @@ fn XPSNR(comptime T: type) type {
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(n, d.node1);
                 zapi.requestFrameFilter(n, d.node2);
+                if (d.temporal) {
+                    if (n > 0) zapi.requestFrameFilter(n - 1, d.node1);
+                    if ((d.frame_rate > 32) and (n > 1)) zapi.requestFrameFilter(n - 2, d.node1);
+                }
             } else if (activation_reason == .AllFramesReady) {
-                d.mutex.lockUncancelable(vszip.io);
-                defer d.mutex.unlock(vszip.io);
-
                 const src1 = zapi.initZFrame(d.node1, n);
                 const src2 = zapi.initZFrame(d.node2, n);
                 defer src1.deinit();
                 defer src2.deinit();
                 const dst = src2.copyFrame();
 
+                // Temporal activity is computed against the actual previous
+                // frame(s); a missing previous frame (n == 0/1) means "all
+                // zeros", matching the zero-initialized state of the old
+                // serial implementation.
+                var src_p1: ?@TypeOf(src1) = null;
+                var src_p2: ?@TypeOf(src1) = null;
+                if (d.temporal and (n > 0)) src_p1 = zapi.initZFrame(d.node1, n - 1);
+                if (d.temporal and (d.frame_rate > 32) and (n > 1)) src_p2 = zapi.initZFrame(d.node1, n - 2);
+                defer if (src_p1) |f| f.deinit();
+                defer if (src_p2) |f| f.deinit();
+
                 const orgp = src1.getReadSlices2(T);
                 const recp = src2.getReadSlices2(T);
+                const prv1: ?[]const T = if (src_p1) |f| f.getReadSlice2(T, 0) else null;
+                const prv2: ?[]const T = if (src_p2) |f| f.getReadSlice2(T, 0) else null;
                 var wsse64 = [3]u64{ 0, 0, 0 };
                 var cur_xpsnr = [3]f64{ math.inf(f64), math.inf(f64), math.inf(f64) };
 
@@ -67,16 +78,21 @@ fn XPSNR(comptime T: type) type {
                     strides[c] = src1.getStride2(T, c);
                 }
 
-                filter.getWSSE(T, orgp, recp, d.og_m1, d.og_m2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate, d.temporal);
+                filter.getWSSE(T, orgp, recp, prv1, prv2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate, d.temporal);
 
                 var i: u32 = 0;
                 while (i < d.num_comps) : (i += 1) {
                     const sqrt_wsse: f64 = @sqrt(@floatFromInt(wsse64[i]));
                     cur_xpsnr[i] = filter.getFrameXPSNR(sqrt_wsse, d.width[i], d.height[i], d.max_error_64);
+                }
 
-                    d.sum_wdist[i] += sqrt_wsse;
+                d.mutex.lockUncancelable(vszip.io);
+                i = 0;
+                while (i < d.num_comps) : (i += 1) {
+                    d.sum_wdist[i] += @sqrt(@as(f64, @floatFromInt(wsse64[i])));
                     d.sum_xpsnr[i] += cur_xpsnr[i];
                 }
+                d.mutex.unlock(vszip.io);
 
                 const dst_props = dst.getPropertiesRW();
                 dst_props.setFloat("XPSNR_Y", cur_xpsnr[0], .Replace);
@@ -112,9 +128,6 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
-
-    allocator.free(d.og_m1);
-    allocator.free(d.og_m2);
     allocator.destroy(d);
 }
 
@@ -166,17 +179,11 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.width = whv.w;
     d.height = whv.h;
 
-    const wh = hz.strideFromVi(d.vi)[0] * whv.h[0];
-    d.og_m1 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
-    d.og_m2 = allocator.alignedAlloc(i16, vszip.alignment, wh) catch unreachable;
-    @memset(d.og_m1, 0);
-    @memset(d.og_m2, 0);
-
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
     const deps = [_]vs.FilterDependency{
-        .{ .source = d.node1, .requestPattern = .StrictSpatial },
+        .{ .source = d.node1, .requestPattern = .General },
         .{ .source = d.node2, .requestPattern = .StrictSpatial },
     };
 

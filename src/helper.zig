@@ -498,8 +498,8 @@ pub fn strideFromVi(vi: *const vs.VideoInfo) [2]u32 {
     const n: u32 = vsFrameAlignmentT(@intCast(vi.format.bytesPerSample));
     const ssw: u3 = @intCast(vi.format.subSamplingW);
     return .{
-        @intCast(vsh.ceilN(@intCast(vi.width), n)),
-        @intCast(vsh.ceilN(@intCast(vi.width >> ssw), n)),
+        @intCast(ceilN(@intCast(vi.width), n)),
+        @intCast(ceilN(@intCast(vi.width >> ssw), n)),
     };
 }
 
@@ -556,4 +556,8 @@ fn getXCR0() u32 {
         : [_] "={eax}" (-> u32),
         :
         : .{ .edx = true, .ecx = true });
+}
+
+pub inline fn ceilN(x: u32, n: u32) u32 {
+    return (x + (n - 1)) & ~(n - 1);
 }

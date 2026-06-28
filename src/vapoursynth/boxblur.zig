@@ -73,6 +73,15 @@ fn BoxBlurRT(comptime T: type) type {
                 defer allocator.free(temp1);
                 defer allocator.free(temp2);
 
+                const hb = (d.hradius > 0) and (d.hpasses > 0);
+                const vb = (d.vradius > 0) and (d.vpasses > 0);
+
+                // multi-pass vblur ping-pongs between full planes; a VS frame
+                // serves as the scratch plane (the core pools frame memory).
+                // Created lazily: the common single-pass cases don't need it.
+                var scratch: ?@TypeOf(dst) = null;
+                defer if (scratch) |s| s.deinit();
+
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
                     if (!(d.planes[plane])) continue;
@@ -81,8 +90,26 @@ fn BoxBlurRT(comptime T: type) type {
                     const dstp = dst.getWriteSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
 
-                    boxblur_rt.hblur(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, temp1, temp2);
-                    boxblur_rt.vblur(T, dstp, dstp, stride, w, h, d.vradius, d.vpasses, temp1, temp2);
+                    if (vb) {
+                        if ((d.vpasses == 1) and (!hb)) {
+                            boxblur_rt.vblur(T, srcp, dstp, dstp, stride, w, h, d.vradius, 1);
+                        } else if ((d.vpasses == 1) and (h >= 2 * d.vradius + 2)) {
+                            boxblur_rt.hvBlurFused(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, d.vradius, temp1, temp2);
+                        } else {
+                            if (scratch == null) scratch = src.newVideoFrame();
+                            const tmpp = scratch.?.getWriteSlice2(T, plane);
+                            if (hb) {
+                                // land the hblur result so the vblur sweeps end in dstp
+                                const h_out: []T = if (@mod(d.vpasses, 2) == 1) tmpp else dstp;
+                                boxblur_rt.hblur(T, srcp, h_out, stride, w, h, d.hradius, d.hpasses, temp1, temp2);
+                                boxblur_rt.vblur(T, h_out, tmpp, dstp, stride, w, h, d.vradius, d.vpasses);
+                            } else {
+                                boxblur_rt.vblur(T, srcp, tmpp, dstp, stride, w, h, d.vradius, d.vpasses);
+                            }
+                        }
+                    } else {
+                        boxblur_rt.hblur(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, temp1, temp2);
+                    }
                 }
 
                 return dst.frame;

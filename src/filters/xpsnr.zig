@@ -4,6 +4,19 @@ const allocator = std.heap.c_allocator;
 
 const XPSNR_GAMMA: u32 = 2;
 
+const vec32 = std.simd.suggestVectorLength(i32) orelse 8;
+
+// u8 pixels always fit i16 lanes; u16 input (10-bit nominally, but any value
+// memory-wise) gets i32 lanes so results match the scalar i32 math for every
+// possible input.
+fn LaneInt(comptime T: type) type {
+    return if (T == u8) i16 else i32;
+}
+
+fn laneCount(comptime T: type) comptime_int {
+    return std.simd.suggestVectorLength(LaneInt(T)) orelse 8;
+}
+
 fn get(sls: anytype, dist: i32) i32 {
     const ptr = sls.ptr;
     const negatv = dist < 0;
@@ -47,64 +60,189 @@ fn highds(comptime T: type, x_act: usize, y_act: usize, w_act: usize, h_act: usi
     return saAct;
 }
 
-inline fn diff1st(comptime T: type, w_act: usize, h_act: usize, o_m0: []const T, o_m1: []i16, o: usize) u64 {
+// Temporal activity vs the previous frame, 2x2 block sums (large frames).
+// has_prev=false means "previous frame is all zeros" (frame 0), matching the
+// zero-initialized state buffers of the old implementation.
+inline fn diff1st(comptime T: type, comptime has_prev: bool, w_act: usize, h_act: usize, o_m0: []const T, o_p1: anytype, o: usize) u64 {
     var taAct: u64 = 0;
     var y: usize = 0;
     while (y < h_act) : (y += 2) {
         var x: usize = 0;
         while (x < w_act) : (x += 2) {
             // zig fmt: off
-            const t: i32 = @as(i32, o_m0[y * o + x]) + @as(i32, o_m0[y * o + x + 1]) 
-            + @as(i32, o_m0[(y + 1) * o + x]) + @as(i32, o_m0[(y + 1) * o + x + 1]) 
-            - (@as(i32, o_m1[y * o + x]) + @as(i32, o_m1[y * o + x + 1]) 
-            + @as(i32, o_m1[(y + 1) * o + x]) + @as(i32, o_m1[(y + 1) * o + x + 1]));
+            var t: i32 = @as(i32, o_m0[y * o + x]) + @as(i32, o_m0[y * o + x + 1])
+            + @as(i32, o_m0[(y + 1) * o + x]) + @as(i32, o_m0[(y + 1) * o + x + 1]);
+            if (has_prev) {
+                t -= @as(i32, o_p1[y * o + x]) + @as(i32, o_p1[y * o + x + 1])
+                + @as(i32, o_p1[(y + 1) * o + x]) + @as(i32, o_p1[(y + 1) * o + x + 1]);
+            }
             // zig fmt: on
             taAct += @abs(t);
-            o_m1[y * o + x] = @intCast(o_m0[y * o + x]);
-            o_m1[(y + 1) * o + x] = @intCast(o_m0[(y + 1) * o + x]);
-            o_m1[y * o + x + 1] = @intCast(o_m0[y * o + x + 1]);
-            o_m1[(y + 1) * o + x + 1] = @intCast(o_m0[(y + 1) * o + x + 1]);
         }
     }
     return (taAct * XPSNR_GAMMA);
 }
 
-inline fn diff2nd(comptime T: type, w_act: usize, h_act: usize, o_m0: []const T, o_m1: []i16, o_m2: []i16, o: usize) u64 {
+inline fn diff2nd(comptime T: type, comptime has_p1: bool, comptime has_p2: bool, w_act: usize, h_act: usize, o_m0: []const T, o_p1: anytype, o_p2: anytype, o: usize) u64 {
     var taAct: u64 = 0;
-    var tt: i64 = 0;
     var y: usize = 0;
     while (y < h_act) : (y += 2) {
         var x: usize = 0;
         while (x < w_act) : (x += 2) {
-            const t: i32 = @as(i32, o_m0[y * o + x]) + @as(i32, o_m0[y * o + x + 1]) + @as(i32, o_m0[(y + 1) * o + x]) + @as(i32, o_m0[(y + 1) * o + x + 1]) - 2 *
-                (@as(i32, o_m1[y * o + x]) + @as(i32, o_m1[y * o + x + 1]) + @as(i32, o_m1[(y + 1) * o + x]) + @as(i32, o_m1[(y + 1) * o + x + 1])) +
-                @as(i32, o_m2[y * o + x]) + @as(i32, o_m2[y * o + x + 1]) + @as(i32, o_m2[(y + 1) * o + x]) + @as(i32, o_m2[(y + 1) * o + x + 1]);
-
+            // zig fmt: off
+            var t: i32 = @as(i32, o_m0[y * o + x]) + @as(i32, o_m0[y * o + x + 1])
+            + @as(i32, o_m0[(y + 1) * o + x]) + @as(i32, o_m0[(y + 1) * o + x + 1]);
+            if (has_p1) {
+                t -= 2 * (@as(i32, o_p1[y * o + x]) + @as(i32, o_p1[y * o + x + 1])
+                + @as(i32, o_p1[(y + 1) * o + x]) + @as(i32, o_p1[(y + 1) * o + x + 1]));
+            }
+            if (has_p2) {
+                t += @as(i32, o_p2[y * o + x]) + @as(i32, o_p2[y * o + x + 1])
+                + @as(i32, o_p2[(y + 1) * o + x]) + @as(i32, o_p2[(y + 1) * o + x + 1]);
+            }
+            // zig fmt: on
             taAct += @abs(t);
-
-            tt += @as(i32, o_m1[(y + 1) * o + x + 1]);
-
-            o_m2[y * o + x] = o_m1[y * o + x];
-            o_m2[(y + 1) * o + x] = o_m1[(y + 1) * o + x];
-            o_m2[y * o + x + 1] = o_m1[y * o + x + 1];
-            o_m2[(y + 1) * o + x + 1] = o_m1[(y + 1) * o + x + 1];
-            o_m1[y * o + x] = @intCast(o_m0[y * o + x]);
-            o_m1[(y + 1) * o + x] = @intCast(o_m0[(y + 1) * o + x]);
-            o_m1[y * o + x + 1] = @intCast(o_m0[y * o + x + 1]);
-            o_m1[(y + 1) * o + x + 1] = @intCast(o_m0[(y + 1) * o + x + 1]);
         }
     }
-
     return (taAct * XPSNR_GAMMA);
+}
+
+// Temporal activity vs the previous frame, per pixel (small frames).
+inline fn tempDiff1(comptime T: type, comptime has_prev: bool, block_width: usize, block_height: usize, o_m0: []const T, o_p1: anytype, o: usize) u64 {
+    const L = LaneInt(T);
+    const vl = laneCount(T);
+    const LV = @Vector(vl, L);
+
+    var taAct: u64 = 0;
+    var y: usize = 0;
+    while (y < block_height) : (y += 1) {
+        const cur = o_m0[y * o ..];
+        var row_acc: @Vector(vl, u32) = @splat(0);
+        var x: usize = 0;
+        while (x + vl <= block_width) : (x += vl) {
+            const c: LV = @intCast(@as(@Vector(vl, T), cur[x..][0..vl].*));
+            const t: LV = if (has_prev) c - @as(LV, @intCast(@as(@Vector(vl, T), o_p1[y * o + x ..][0..vl].*))) else c;
+            row_acc += @intCast(@abs(t));
+        }
+        taAct += @reduce(.Add, @as(@Vector(vl, u64), @intCast(row_acc))) * XPSNR_GAMMA;
+
+        while (x < block_width) : (x += 1) {
+            const p: i32 = if (has_prev) @as(i32, o_p1[y * o + x]) else 0;
+            const t: i32 = @as(i32, o_m0[y * o + x]) - p;
+            taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
+        }
+    }
+    return taAct;
+}
+
+inline fn tempDiff2(comptime T: type, comptime has_p1: bool, comptime has_p2: bool, block_width: usize, block_height: usize, o_m0: []const T, o_p1: anytype, o_p2: anytype, o: usize) u64 {
+    const L = LaneInt(T);
+    const vl = laneCount(T);
+    const LV = @Vector(vl, L);
+
+    var taAct: u64 = 0;
+    var y: usize = 0;
+    while (y < block_height) : (y += 1) {
+        const cur = o_m0[y * o ..];
+        var row_acc: @Vector(vl, u32) = @splat(0);
+        var x: usize = 0;
+        while (x + vl <= block_width) : (x += vl) {
+            var t: LV = @intCast(@as(@Vector(vl, T), cur[x..][0..vl].*));
+            if (has_p1) {
+                const p1: LV = @intCast(@as(@Vector(vl, T), o_p1[y * o + x ..][0..vl].*));
+                t -= @as(LV, @splat(2)) * p1;
+            }
+            if (has_p2) {
+                t += @as(LV, @intCast(@as(@Vector(vl, T), o_p2[y * o + x ..][0..vl].*)));
+            }
+            row_acc += @intCast(@abs(t));
+        }
+        taAct += @reduce(.Add, @as(@Vector(vl, u64), @intCast(row_acc))) * XPSNR_GAMMA;
+
+        while (x < block_width) : (x += 1) {
+            var t: i32 = @as(i32, o_m0[y * o + x]);
+            if (has_p1) t -= 2 * @as(i32, o_p1[y * o + x]);
+            if (has_p2) t += @as(i32, o_p2[y * o + x]);
+            taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
+        }
+    }
+    return taAct;
+}
+
+/// Spatial activity (3x3 Laplacian) over absolute picture coordinates
+/// [x0, x1) x [y0, y1); the caller guarantees x0/y0 >= 1.
+fn spatialAct(comptime T: type, pic: []const T, o: usize, x0: usize, x1: usize, y0: usize, y1: usize) u64 {
+    const L = LaneInt(T);
+    const vl = laneCount(T);
+    const LV = @Vector(vl, L);
+    const twelve: LV = @splat(12);
+    const two: LV = @splat(2);
+
+    var saAct: u64 = 0;
+    var y: usize = y0;
+    while (y < y1) : (y += 1) {
+        const rm = pic[(y - 1) * o ..];
+        const rc = pic[y * o ..];
+        const rp = pic[(y + 1) * o ..];
+        var row_acc: @Vector(vl, u32) = @splat(0);
+        var x: usize = x0;
+        while (x + vl <= x1) : (x += vl) {
+            const c: LV = @intCast(@as(@Vector(vl, T), rc[x..][0..vl].*));
+            const l: LV = @intCast(@as(@Vector(vl, T), rc[x - 1 ..][0..vl].*));
+            const r: LV = @intCast(@as(@Vector(vl, T), rc[x + 1 ..][0..vl].*));
+            const u: LV = @intCast(@as(@Vector(vl, T), rm[x..][0..vl].*));
+            const d: LV = @intCast(@as(@Vector(vl, T), rp[x..][0..vl].*));
+            const ul: LV = @intCast(@as(@Vector(vl, T), rm[x - 1 ..][0..vl].*));
+            const ur: LV = @intCast(@as(@Vector(vl, T), rm[x + 1 ..][0..vl].*));
+            const dl: LV = @intCast(@as(@Vector(vl, T), rp[x - 1 ..][0..vl].*));
+            const dr: LV = @intCast(@as(@Vector(vl, T), rp[x + 1 ..][0..vl].*));
+            const f = twelve * c - two * (l + r + u + d) - (ul + ur + dl + dr);
+            row_acc += @intCast(@abs(f));
+        }
+        saAct += @reduce(.Add, @as(@Vector(vl, u64), @intCast(row_acc)));
+
+        while (x < x1) : (x += 1) {
+            const f: i32 = 12 * @as(i32, rc[x]) - 2 * (@as(i32, rc[x - 1]) + @as(i32, rc[x + 1]) +
+                @as(i32, rm[x]) + @as(i32, rp[x])) - (@as(i32, rm[x - 1]) +
+                @as(i32, rm[x + 1]) + @as(i32, rp[x - 1]) + @as(i32, rp[x + 1]));
+            saAct += @abs(f);
+        }
+    }
+    return saAct;
 }
 
 fn calcSquaredError(comptime T: type, blk_org: []const T, stride: usize, blk_rec: []const T, block_width: usize, block_height: usize) u64 {
     var sse: u64 = 0;
     var y: usize = 0;
     while (y < block_height) : (y += 1) {
+        const org_row = blk_org[y * stride ..];
+        const rec_row = blk_rec[y * stride ..];
         var x: usize = 0;
+
+        if (T == u8) {
+            const vl = 16;
+            var row_acc: @Vector(vl, u32) = @splat(0);
+            while (x + vl <= block_width) : (x += vl) {
+                const o: @Vector(vl, u8) = org_row[x..][0..vl].*;
+                const r: @Vector(vl, u8) = rec_row[x..][0..vl].*;
+                const ad: @Vector(vl, u16) = @intCast(@max(o, r) - @min(o, r));
+                row_acc += @intCast(ad * ad);
+            }
+            sse += @reduce(.Add, @as(@Vector(vl, u64), @intCast(row_acc)));
+        } else {
+            const vl = 8;
+            var acc: @Vector(vl, u64) = @splat(0);
+            while (x + vl <= block_width) : (x += vl) {
+                const o: @Vector(vl, T) = org_row[x..][0..vl].*;
+                const r: @Vector(vl, T) = rec_row[x..][0..vl].*;
+                const ad: @Vector(vl, u64) = @intCast(@max(o, r) - @min(o, r));
+                acc += ad * ad;
+            }
+            sse += @reduce(.Add, acc);
+        }
+
         while (x < block_width) : (x += 1) {
-            const err: i64 = @as(i32, blk_org[y * stride + x]) - @as(i32, blk_rec[y * stride + x]);
+            const err: i64 = @as(i32, org_row[x]) - @as(i32, rec_row[x]);
             sse += math.lossyCast(u64, err * err);
         }
     }
@@ -117,8 +255,8 @@ inline fn calcSquaredErrorAndWeight(
     pic_org: []const T,
     stride: usize,
     pic_rec: []const T,
-    pic_org_m1: []i16,
-    pic_org_m2: []i16,
+    pic_prv1: ?[]const T,
+    pic_prv2: ?[]const T,
     offset_x: usize,
     offset_y: usize,
     block_width: usize,
@@ -131,12 +269,11 @@ inline fn calcSquaredErrorAndWeight(
     temporal: bool,
 ) f64 {
     const uo: usize = stride;
-    const o: i32 = @intCast(uo);
     const w0: usize = width[0];
     const h0: usize = height[0];
     const o_m0 = pic_org[(offset_y * uo + offset_x)..];
-    const o_m1 = pic_org_m1[(offset_y * uo + offset_x)..];
-    const o_m2 = pic_org_m2[(offset_y * uo + offset_x)..];
+    const p_m1: ?[]const T = if (pic_prv1) |p| p[(offset_y * uo + offset_x)..] else null;
+    const p_m2: ?[]const T = if (pic_prv2) |p| p[(offset_y * uo + offset_x)..] else null;
     const r_m0 = pic_rec[(offset_y * uo + offset_x)..];
     const b_val: usize = if ((w0 * h0) > (2048 * 1152)) 2 else 1;
     const x_act: usize = if (offset_x > 0) 0 else b_val;
@@ -156,18 +293,7 @@ inline fn calcSquaredErrorAndWeight(
     if (b_val > 1) {
         saAct = highds(T, x_act, y_act, w_act, h_act, o_m0, uo);
     } else {
-        var uy = y_act;
-        while (uy < h_act) : (uy += 1) {
-            const y: i32 = @intCast(uy);
-            var ux = x_act;
-            while (ux < w_act) : (ux += 1) {
-                const x: i32 = @intCast(ux);
-                const f: i32 = 12 * get(o_m0, y * o + x) - 2 * (get(o_m0, y * o + x - 1) + get(o_m0, y * o + x + 1) +
-                    get(o_m0, (y - 1) * o + x) + get(o_m0, (y + 1) * o + x)) - (get(o_m0, (y - 1) * o + x - 1) +
-                    get(o_m0, (y - 1) * o + x + 1) + get(o_m0, (y + 1) * o + x - 1) + get(o_m0, (y + 1) * o + x + 1));
-                saAct += @abs(f);
-            }
-        }
+        saAct = spatialAct(T, pic_org, uo, offset_x + x_act, offset_x + w_act, offset_y + y_act, offset_y + h_act);
     }
 
     ms_act.* = @as(f64, @floatFromInt(saAct)) / (@as(f64, @floatFromInt(w_act - x_act)) * @as(f64, @floatFromInt(h_act - y_act)));
@@ -175,31 +301,34 @@ inline fn calcSquaredErrorAndWeight(
     if (temporal) {
         if (b_val > 1) {
             if (frame_rate <= 32) {
-                taAct = diff1st(T, block_width, block_height, o_m0, o_m1, uo);
+                taAct = if (p_m1) |pm1|
+                    diff1st(T, true, block_width, block_height, o_m0, pm1, uo)
+                else
+                    diff1st(T, false, block_width, block_height, o_m0, {}, uo);
             } else {
-                taAct = diff2nd(T, block_width, block_height, o_m0, o_m1, o_m2, uo);
+                if (p_m1) |pm1| {
+                    taAct = if (p_m2) |pm2|
+                        diff2nd(T, true, true, block_width, block_height, o_m0, pm1, pm2, uo)
+                    else
+                        diff2nd(T, true, false, block_width, block_height, o_m0, pm1, {}, uo);
+                } else {
+                    taAct = diff2nd(T, false, false, block_width, block_height, o_m0, {}, {}, uo);
+                }
             }
         } else {
             if (frame_rate <= 32) {
-                var y: usize = 0;
-                while (y < block_height) : (y += 1) {
-                    var x: usize = 0;
-                    while (x < block_width) : (x += 1) {
-                        const t: i32 = @as(i32, o_m0[y * uo + x]) - @as(i32, o_m1[y * uo + x]);
-                        taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
-                        o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
-                    }
-                }
+                taAct = if (p_m1) |pm1|
+                    tempDiff1(T, true, block_width, block_height, o_m0, pm1, uo)
+                else
+                    tempDiff1(T, false, block_width, block_height, o_m0, {}, uo);
             } else {
-                var y: usize = 0;
-                while (y < block_height) : (y += 1) {
-                    var x: usize = 0;
-                    while (x < block_width) : (x += 1) {
-                        const t: i32 = @as(i32, o_m0[y * uo + x]) - 2 * @as(i32, o_m1[y * uo + x]) + @as(i32, o_m2[y * uo + x]);
-                        taAct += @as(u64, XPSNR_GAMMA) * @as(u64, @abs(t));
-                        o_m2[y * uo + x] = o_m1[y * uo + x];
-                        o_m1[y * uo + x] = @intCast(o_m0[y * uo + x]);
-                    }
+                if (p_m1) |pm1| {
+                    taAct = if (p_m2) |pm2|
+                        tempDiff2(T, true, true, block_width, block_height, o_m0, pm1, pm2, uo)
+                    else
+                        tempDiff2(T, true, false, block_width, block_height, o_m0, pm1, {}, uo);
+                } else {
+                    taAct = tempDiff2(T, false, false, block_width, block_height, o_m0, {}, {}, uo);
                 }
             }
         }
@@ -238,8 +367,8 @@ pub fn getWSSE(
     comptime T: type,
     orgp: [3][]const T,
     recp: [3][]const T,
-    og_m1: []i16,
-    og_m2: []i16,
+    prv1: ?[]const T,
+    prv2: ?[]const T,
     wsse64: []u64,
     width: [3]u32,
     height: [3]u32,
@@ -292,8 +421,8 @@ pub fn getWSSE(
                     orgp[0],
                     stride,
                     recp[0],
-                    og_m1,
-                    og_m2,
+                    prv1,
+                    prv2,
                     x,
                     y,
                     block_width,

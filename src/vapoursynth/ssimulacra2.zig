@@ -17,7 +17,24 @@ pub const filter_name = "SSIMULACRA2";
 const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
+    // Reusable scratch buffers; getFrame runs concurrently so each call pops
+    // its own buffer (or allocates one) and pushes it back when done.
+    pool: std.ArrayList([]f32) = .empty,
+    pool_mutex: std.Io.Mutex = .init,
 };
+
+fn acquireScratch(d: *Data, size: usize) []f32 {
+    d.pool_mutex.lockUncancelable(vszip.io);
+    defer d.pool_mutex.unlock(vszip.io);
+    if (d.pool.pop()) |buf| return buf;
+    return allocator.alignedAlloc(f32, vszip.alignment, size) catch unreachable;
+}
+
+fn releaseScratch(d: *Data, buf: []f32) void {
+    d.pool_mutex.lockUncancelable(vszip.io);
+    defer d.pool_mutex.unlock(vszip.io);
+    d.pool.append(allocator, buf) catch unreachable;
+}
 
 fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
     const d: *Data = @ptrCast(@alignCast(instance_data));
@@ -37,7 +54,9 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
 
         const srcp1 = src1.getReadSlices2(f32);
         const srcp2 = src2.getReadSlices2(f32);
-        const val = filter_ssim.process(srcp1, srcp2, stride, w, h);
+        const scratch = acquireScratch(d, filter_ssim.scratchSize(stride, w, h));
+        defer releaseScratch(d, scratch);
+        const val = filter_ssim.process(srcp1, srcp2, stride, w, h, scratch);
         const dst_prop = dst.getPropertiesRW();
         dst_prop.setFloat("SSIMULACRA2", val, .Replace);
         return dst.frame;
@@ -48,6 +67,11 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
 fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
+
+    for (d.pool.items) |buf| {
+        allocator.free(buf);
+    }
+    d.pool.deinit(allocator);
 
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);

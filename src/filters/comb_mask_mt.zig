@@ -39,13 +39,19 @@ pub fn process(
             prod = (@as(vec_i32, su[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*)) *
                 (@as(vec_i32, sd[x..][0..vec_len].*) - @as(vec_i32, s[x..][0..vec_len].*));
 
-            const gray: vec_i32 = if (same_thr) floor else @min(((prod - thresinf_v) * u8_len / thr_diff_v), peak);
-            const sel: vec_i32 = @select(
-                i32,
-                prod < thresinf_v,
-                floor,
-                @select(i32, prod > thressup_v, peak, gray),
-            );
+            // same_thr => thresinf==thressup and gray==floor, so the nested
+            // select collapses to (prod > thressup ? 255 : 0). Bit-identical.
+            const sel: vec_i32 = if (same_thr)
+                @select(i32, prod > thressup_v, peak, floor)
+            else sel: {
+                const gray: vec_i32 = @min(((prod - thresinf_v) * u8_len / thr_diff_v), peak);
+                break :sel @select(
+                    i32,
+                    prod < thresinf_v,
+                    floor,
+                    @select(i32, prod > thressup_v, peak, gray),
+                );
+            };
 
             d[x..][0..vec_len].* = @as(vec_u8, @intCast(sel));
         }

@@ -9,6 +9,7 @@ const vcl = @import("../vcl.zig");
 
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
+const vsh = vapoursynth.vshelper;
 const ZAPI = vapoursynth.ZAPI;
 const Mode = plugin.Mode;
 const Data = plugin.Data;
@@ -41,7 +42,7 @@ pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain:
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node, n);
                 defer src.deinit();
-                const dst = src.newVideoFrame2(add_grain);
+                const dst = src.newVideoFrame();
 
                 inline for (0..np) |plane| {
                     const src_slice = src.getReadSlice2(f32, plane);
@@ -114,6 +115,24 @@ fn processPlane(
     const thr_32: f32v = @splat(thr);
     const thr1_32: f32v = @splat(thr1);
     const thr2_32: f32v = @splat(thr2);
+
+    // Mode 7: precompute the gradient angle once for every (padded) pixel and
+    // turn the 5 per-pixel evaluations (org + 4 ref-offset reads) into cheap
+    // lookups. PAD covers the max |ref offset| (i8-bounded, <=128) so every
+    // offset read lands on a precomputed cell with no clamping — bit-identical
+    // to calculateGradientAngle on the fly (which clamps its own reads).
+    const ANGLE_PAD: u32 = 128;
+    const ang_stride: u32 = if (mode == .m7) hz.ceilN(width + 2 * ANGLE_PAD, hz.vsFrameAlignmentT(@sizeOf(f32))) else 0;
+    const angle_buf: []f32 = if (mode == .m7)
+        (allocator.alloc(f32, (height + 2 * ANGLE_PAD) * ang_stride) catch {
+            var yy: u32 = 0; // graceful passthrough on OOM
+            while (yy < height) : (yy += 1) @memcpy(dst[yy * stride ..][0..width], src[yy * stride ..][0..width]);
+            return;
+        })
+    else
+        &.{};
+    defer if (mode == .m7) allocator.free(angle_buf);
+    if (mode == .m7) fillAnglePlane(src, stride, width, height, angle_buf, ang_stride, ANGLE_PAD);
 
     var y: u32 = 0;
     while (y < height) : (y += 1) {
@@ -210,15 +229,8 @@ fn processPlane(
                     var t_mid: f32v = thr2_32;
 
                     if (mode == .m7) {
-                        const grad_read_distance: i32 = 20;
                         const angle_boost_v: f32v = @splat(angle_boost);
                         const max_angle_v: f32v = @splat(max_angle);
-
-                        var base_x_coords: i32v = undefined;
-                        const base_y_coords: i32v = @splat(@intCast(y));
-                        inline for (0..vec_len) |i| {
-                            base_x_coords[i] = @intCast(x + i);
-                        }
 
                         const stride_i: i32 = @intCast(stride);
                         var y_offsets: i32v = undefined;
@@ -228,11 +240,25 @@ fn processPlane(
                             x_offsets[i] = ref2_row[x + i];
                         }
 
-                        const angle_org: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords, grad_read_distance);
-                        const angle_ref1_h: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords + y_offsets, base_x_coords, grad_read_distance);
-                        const angle_ref2_h: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords - y_offsets, base_x_coords, grad_read_distance);
-                        const angle_ref1_w: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords + x_offsets, grad_read_distance);
-                        const angle_ref2_w: f32v = calculateGradientAngle(src, stride, width, height, base_y_coords, base_x_coords - x_offsets, grad_read_distance);
+                        const astride_i: i32 = @intCast(ang_stride);
+                        const pad_i: i32 = @intCast(ANGLE_PAD);
+                        const yi: i32 = @intCast(y);
+                        const angle_org: f32v = angle_buf[(y + ANGLE_PAD) * ang_stride + (x + ANGLE_PAD) ..][0..vec_len].*;
+                        var angle_ref1_h: f32v = undefined;
+                        var angle_ref2_h: f32v = undefined;
+                        var angle_ref1_w: f32v = undefined;
+                        var angle_ref2_w: f32v = undefined;
+                        inline for (0..vec_len) |i| {
+                            const bx: i32 = @intCast(x + i);
+                            const yo = y_offsets[i];
+                            const xo = x_offsets[i];
+                            const col: i32 = bx + pad_i;
+                            const row_y: i32 = (yi + pad_i) * astride_i;
+                            angle_ref1_h[i] = angle_buf[@intCast((yi + yo + pad_i) * astride_i + col)];
+                            angle_ref2_h[i] = angle_buf[@intCast((yi - yo + pad_i) * astride_i + col)];
+                            angle_ref1_w[i] = angle_buf[@intCast(row_y + (bx + xo + pad_i))];
+                            angle_ref2_w[i] = angle_buf[@intCast(row_y + (bx - xo + pad_i))];
+                        }
 
                         var max_angle_diff = @max(@abs(angle_ref1_h - angle_org), @abs(angle_ref2_h - angle_org));
                         max_angle_diff = @max(max_angle_diff, @max(@abs(angle_ref1_w - angle_org), @abs(angle_ref2_w - angle_org)));
@@ -284,6 +310,28 @@ fn processPlane(
 
 fn saturate(x: f32v) f32v {
     return @max(vec0_f32, @min(x, vec1_f32));
+}
+
+/// Precompute the gradient angle for every padded pixel: the angle for source
+/// coordinate (Y,X) lives at buf[(Y+PAD)*ang_stride + (X+PAD)]. Uses the exact
+/// same calculateGradientAngle as the per-pixel path (which clamps its own
+/// neighbour reads), so a lookup is bit-identical to recomputing on the fly.
+fn fillAnglePlane(src: []const f32, stride: u32, width: u32, height: u32, buf: []f32, ang_stride: u32, comptime PAD: u32) void {
+    const padded_w = width + 2 * PAD;
+    const padded_h = height + 2 * PAD;
+    var yy: u32 = 0;
+    while (yy < padded_h) : (yy += 1) {
+        const yc: i32v = @splat(@as(i32, @intCast(yy)) - @as(i32, @intCast(PAD)));
+        const row = yy * ang_stride;
+        var xx: u32 = 0;
+        while (xx < padded_w) : (xx += vec_len) {
+            var xc: i32v = undefined;
+            inline for (0..vec_len) |i| {
+                xc[i] = @as(i32, @intCast(xx + i)) - @as(i32, @intCast(PAD));
+            }
+            buf[row + xx ..][0..vec_len].* = calculateGradientAngle(src, stride, width, height, yc, xc, 20);
+        }
+    }
 }
 
 fn gatherPixelValues(src: []const f32, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v) f32v {

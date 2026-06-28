@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = std.math;
+const vcl = @import("../vcl.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -35,24 +36,28 @@ const skip_table: [3][6]SkipInfo = blk: {
     break :blk table;
 };
 
-pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32) f64 {
+/// Scratch buffer size (in f32 elements) needed by `process` for a given plane geometry.
+pub fn scratchSize(stride: u32, w: u32, h: u32) usize {
+    const wh: usize = @as(usize, stride) * h;
+    const b_size: usize = @as(usize, (stride + 1) / 2) * ((h + 1) / 2);
+    return 6 * b_size + 10 * wh + w + 64;
+}
+
+pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32, scratch: []f32) f64 {
     const wh: u32 = stride * h;
-    const temp_alloc = allocator.alloc(f32, wh * 16) catch unreachable;
-    defer allocator.free(temp_alloc);
+    // The downscale chain buffers only ever hold scale >= 1 (half resolution).
+    const b_size: u32 = ((stride + 1) / 2) * ((h + 1) / 2);
 
-    const srcp1b = [3][]f32{ temp_alloc[0 * wh .. 1 * wh], temp_alloc[1 * wh .. 2 * wh], temp_alloc[2 * wh .. 3 * wh] };
-    const srcp2b = [3][]f32{ temp_alloc[3 * wh .. 4 * wh], temp_alloc[4 * wh .. 5 * wh], temp_alloc[5 * wh .. 6 * wh] };
-    const tmpp1 = [3][]f32{ temp_alloc[6 * wh .. 7 * wh], temp_alloc[7 * wh .. 8 * wh], temp_alloc[8 * wh .. 9 * wh] };
-    const tmpp2 = [3][]f32{ temp_alloc[9 * wh .. 10 * wh], temp_alloc[10 * wh .. 11 * wh], temp_alloc[11 * wh .. 12 * wh] };
-    const tmpp3 = temp_alloc[12 * wh .. 13 * wh];
-    const tmpsq = temp_alloc[13 * wh .. 14 * wh];
-    const tmpps12 = temp_alloc[14 * wh .. 15 * wh];
-    const tmppmu1 = temp_alloc[15 * wh .. 16 * wh];
-
-    for (0..3) |i| {
-        @memcpy(srcp1b[i], srcp1[i]);
-        @memcpy(srcp2b[i], srcp2[i]);
-    }
+    const srcp1b = [3][]f32{ scratch[0 * b_size .. 1 * b_size], scratch[1 * b_size .. 2 * b_size], scratch[2 * b_size .. 3 * b_size] };
+    const srcp2b = [3][]f32{ scratch[3 * b_size .. 4 * b_size], scratch[4 * b_size .. 5 * b_size], scratch[5 * b_size .. 6 * b_size] };
+    const rest = scratch[6 * b_size ..];
+    const tmpp1 = [3][]f32{ rest[0 * wh .. 1 * wh], rest[1 * wh .. 2 * wh], rest[2 * wh .. 3 * wh] };
+    const tmpp2 = [3][]f32{ rest[3 * wh .. 4 * wh], rest[4 * wh .. 5 * wh], rest[5 * wh .. 6 * wh] };
+    const tmpp3 = rest[6 * wh .. 7 * wh];
+    const tmpsq = rest[7 * wh .. 8 * wh];
+    const tmpps12 = rest[8 * wh .. 9 * wh];
+    const tmppmu1 = rest[9 * wh .. 10 * wh];
+    const blur_tmp = rest[10 * wh ..][0 .. w + 64];
 
     var plane_avg_ssim: [6][6]f64 = undefined;
     var plane_avg_edge: [6][12]f64 = undefined;
@@ -63,16 +68,26 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
     var scale: u32 = 0;
     while (scale < 6) : (scale += 1) {
         if (scale > 0) {
-            downscale(srcp1b, srcp1b, stride2, w2, h2);
-            downscale(srcp2b, srcp2b, stride2, w2, h2);
+            if (scale == 1) {
+                downscale(srcp1, srcp1b, stride2, w2, h2);
+                downscale(srcp2, srcp2b, stride2, w2, h2);
+            } else {
+                downscale(srcp1b, srcp1b, stride2, w2, h2);
+                downscale(srcp2b, srcp2b, stride2, w2, h2);
+            }
             stride2 = @divTrunc((stride2 + 1), 2);
             w2 = @divTrunc((w2 + 1), 2);
             h2 = @divTrunc((h2 + 1), 2);
         }
 
         const one_per_pixels: f64 = 1.0 / @as(f64, @floatFromInt(w2 * h2));
-        toXYB(srcp1b, tmpp1, stride2, w2, h2);
-        toXYB(srcp2b, tmpp2, stride2, w2, h2);
+        if (scale == 0) {
+            toXYB(srcp1, tmpp1, stride2, w2, h2);
+            toXYB(srcp2, tmpp2, stride2, w2, h2);
+        } else {
+            toXYB(srcp1b, tmpp1, stride2, w2, h2);
+            toXYB(srcp2b, tmpp2, stride2, w2, h2);
+        }
 
         var plane: u32 = 0;
         while (plane < 3) : (plane += 1) {
@@ -90,14 +105,14 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
 
             if (!skip.ssim) {
                 multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-                blur(tmpp3, tmpps12, stride2, w2, h2);
+                blur(tmpp3, tmpps12, stride2, w2, h2, blur_tmp);
 
                 addSquare(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-                blur(tmpp3, tmpsq, stride2, w2, h2);
+                blur(tmpp3, tmpsq, stride2, w2, h2, blur_tmp);
             }
 
-            blur(tmpp1[plane], tmppmu1, stride2, w2, h2);
-            blur(tmpp2[plane], tmpp3, stride2, w2, h2);
+            blur(tmpp1[plane], tmppmu1, stride2, w2, h2, blur_tmp);
+            blur(tmpp2[plane], tmpp3, stride2, w2, h2, blur_tmp);
 
             if (!skip.ssim) {
                 ssimMap(tmpsq, tmpps12, tmppmu1, tmpp3, stride2, w2, h2, plane, one_per_pixels, &plane_avg_ssim[scale]);
@@ -120,13 +135,34 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
     return score(plane_avg_ssim, plane_avg_edge);
 }
 
-fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
+fn downscale(src: [3][]const f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
     const fscale: f32 = 2.0;
     const uscale: u32 = 2;
     const out_w = @divTrunc((in_w + uscale - 1), uscale);
     const out_h = @divTrunc((in_h + uscale - 1), uscale);
     const dst_stride = @divTrunc((src_stride + uscale - 1), uscale);
     const normalize: f32 = 1.0 / (fscale * fscale);
+
+    const FV = @Vector(vec_size, f32);
+    const normv: FV = @splat(normalize);
+    // deinterleave masks: even/odd elements of two consecutive vectors
+    const even_mask = comptime blk: {
+        var m: [vec_size]i32 = undefined;
+        for (0..vec_size) |i| {
+            m[i] = if (i < vec_size / 2) @intCast(2 * i) else ~@as(i32, @intCast(2 * (i - vec_size / 2)));
+        }
+        break :blk m;
+    };
+    const odd_mask = comptime blk: {
+        var m: [vec_size]i32 = undefined;
+        for (0..vec_size) |i| {
+            m[i] = if (i < vec_size / 2) @intCast(2 * i + 1) else ~@as(i32, @intCast(2 * (i - vec_size / 2) + 1));
+        }
+        break :blk m;
+    };
+
+    // ox values whose 2x2 window needs no edge clamping
+    const full_w: u32 = in_w / 2;
 
     var plane: u32 = 0;
     while (plane < 3) : (plane += 1) {
@@ -135,6 +171,25 @@ fn downscale(src: [3][]f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32
         var oy: u32 = 0;
         while (oy < out_h) : (oy += 1) {
             var ox: u32 = 0;
+
+            if (oy * 2 + 1 < in_h) {
+                const row0 = srcp[(oy * 2) * src_stride ..];
+                const row1 = srcp[(oy * 2 + 1) * src_stride ..];
+                while (ox + vec_size <= full_w) : (ox += vec_size) {
+                    const a0: FV = row0[ox * 2 ..][0..vec_size].*;
+                    const b0: FV = row0[ox * 2 + vec_size ..][0..vec_size].*;
+                    const a1: FV = row1[ox * 2 ..][0..vec_size].*;
+                    const b1: FV = row1[ox * 2 + vec_size ..][0..vec_size].*;
+                    const e0 = @shuffle(f32, a0, b0, even_mask);
+                    const o0 = @shuffle(f32, a0, b0, odd_mask);
+                    const e1 = @shuffle(f32, a1, b1, even_mask);
+                    const o1 = @shuffle(f32, a1, b1, odd_mask);
+                    // same add order as the scalar 2x2 loop
+                    const sum = ((e0 + o0) + e1) + o1;
+                    dstp[ox..][0..vec_size].* = sum * normv;
+                }
+            }
+
             while (ox < out_w) : (ox += 1) {
                 var sum: f32 = 0.0;
                 var iy: u32 = 0;
@@ -210,7 +265,19 @@ inline fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
     }
 
     j = radius;
-    while (j < w - @min(w, radius)) : (j += 1) {
+    const center_end: i32 = w - @min(w, radius);
+    // srcp is the padded blur row buffer, so vector loads past w are safe
+    while (j + vec_size <= center_end) : (j += vec_size) {
+        const base: u32 = @intCast(j - radius);
+        var acc: @Vector(vec_size, f32) = @splat(0.0);
+        inline for (0..ksize) |k| {
+            const kv: @Vector(vec_size, f32) = @splat(kernel[k]);
+            const sv: @Vector(vec_size, f32) = srcp[base + k ..][0..vec_size].*;
+            acc = acc + kv * sv;
+        }
+        dstp[@intCast(j)..][0..vec_size].* = acc;
+    }
+    while (j < center_end) : (j += 1) {
         var sum: f32 = 0.0;
         var k: i32 = 0;
         while (k < ksize) : (k += 1) {
@@ -262,7 +329,7 @@ inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
     }
 }
 
-fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32, tmp_buf: []f32) void {
     const kernel = [ksize]f32{
         0.0076144188642501831054687500,
         0.0360749699175357818603515625,
@@ -275,8 +342,7 @@ fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
         0.0076144188642501831054687500,
     };
 
-    const tmp = allocator.alloc(f32, w) catch unreachable;
-    defer allocator.free(tmp);
+    const tmp = tmp_buf[0..w];
 
     var i: i32 = 0;
     const ih: i32 = @bitCast(h);
@@ -323,50 +389,78 @@ const K_M22: f32 = 1.0 - K_M20 - K_M21;
 const OPSIN_ABSORBANCE_MATRIX = [9]f32{ K_M00, K_M01, K_M02, K_M10, K_M11, K_M12, K_M20, K_M21, K_M22 };
 const OPSIN_ABSORBANCE_BIAS: f32 = K_D0;
 
-fn mixedToXYB(mixed: [3]f32) [3]f32 {
-    var out: [3]f32 = undefined;
-    out[0] = 0.5 * (mixed[0] - mixed[1]);
-    out[1] = 0.5 * (mixed[0] + mixed[1]);
-    out[2] = mixed[2];
-    return out;
-}
-
-fn opsinAbsorbance(rgb: [3]f32) [3]f32 {
-    var out: [3]f32 = undefined;
-    out[0] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[0], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[1], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[2], rgb[2], OPSIN_ABSORBANCE_BIAS)));
-    out[1] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[3], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[4], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[5], rgb[2], OPSIN_ABSORBANCE_BIAS)));
-    out[2] = @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[6], rgb[0], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[7], rgb[1], @mulAdd(f32, OPSIN_ABSORBANCE_MATRIX[8], rgb[2], OPSIN_ABSORBANCE_BIAS)));
-    return out;
-}
-
-fn linearRGBtoXYB(input: [3]f32) [3]f32 {
-    var mixed: [3]f32 = opsinAbsorbance(input);
-    for (&mixed) |*v| {
-        if (v.* < 0.0) v.* = 0.0;
-        v.* = math.cbrt(v.*) - K_D1;
-    }
-    return mixedToXYB(mixed);
-}
-
-fn makePositiveXYB(xyb: *[3]f32) void {
-    xyb[2] = (xyb[2] - xyb[1]) + 0.55;
-    xyb[0] = xyb[0] * 14.0 + 0.42;
-    xyb[1] += 0.01;
-}
-
 fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
+    const FV = @Vector(vec_size, f32);
+    const zero: FV = @splat(0.0);
+    const bias: FV = @splat(OPSIN_ABSORBANCE_BIAS);
+    const kd1: FV = @splat(K_D1);
+    const half: FV = @splat(0.5);
+    const c14: FV = @splat(14.0);
+    const c042: FV = @splat(0.42);
+    const c055: FV = @splat(0.55);
+    const c001: FV = @splat(0.01);
+    const m00: FV = @splat(OPSIN_ABSORBANCE_MATRIX[0]);
+    const m01: FV = @splat(OPSIN_ABSORBANCE_MATRIX[1]);
+    const m02: FV = @splat(OPSIN_ABSORBANCE_MATRIX[2]);
+    const m10: FV = @splat(OPSIN_ABSORBANCE_MATRIX[3]);
+    const m11: FV = @splat(OPSIN_ABSORBANCE_MATRIX[4]);
+    const m12: FV = @splat(OPSIN_ABSORBANCE_MATRIX[5]);
+    const m20: FV = @splat(OPSIN_ABSORBANCE_MATRIX[6]);
+    const m21: FV = @splat(OPSIN_ABSORBANCE_MATRIX[7]);
+    const m22: FV = @splat(OPSIN_ABSORBANCE_MATRIX[8]);
+
     var srcp = _srcp;
     var dstp = _dstp;
     var y: u32 = 0;
     while (y < h) : (y += 1) {
-        var x: u32 = 0;
-        while (x < w) : (x += 1) {
-            const rgb = [3]f32{ srcp[0][x], srcp[1][x], srcp[2][x] };
-            var out = linearRGBtoXYB(rgb);
-            makePositiveXYB(&out);
-            dstp[0][x] = out[0];
-            dstp[1][x] = out[1];
-            dstp[2][x] = out[2];
+        if (w >= vec_size) {
+            // the final vector backsteps to w - vec_size (overlapping recompute)
+            // so every pixel takes the identical SIMD path
+            var x: u32 = 0;
+            while (true) {
+                if (x + vec_size > w) x = w - vec_size;
+
+                const r: FV = srcp[0][x..][0..vec_size].*;
+                const g: FV = srcp[1][x..][0..vec_size].*;
+                const b: FV = srcp[2][x..][0..vec_size].*;
+
+                const ox = @mulAdd(FV, m00, r, @mulAdd(FV, m01, g, @mulAdd(FV, m02, b, bias)));
+                const oy = @mulAdd(FV, m10, r, @mulAdd(FV, m11, g, @mulAdd(FV, m12, b, bias)));
+                const oz = @mulAdd(FV, m20, r, @mulAdd(FV, m21, g, @mulAdd(FV, m22, b, bias)));
+                const cx = vcl.cbrt(@max(ox, zero)) - kd1;
+                const cy = vcl.cbrt(@max(oy, zero)) - kd1;
+                const cz = vcl.cbrt(@max(oz, zero)) - kd1;
+
+                const xv = half * (cx - cy);
+                const yv = half * (cx + cy);
+                dstp[0][x..][0..vec_size].* = xv * c14 + c042;
+                dstp[1][x..][0..vec_size].* = yv + c001;
+                dstp[2][x..][0..vec_size].* = (cz - yv) + c055;
+
+                if (x + vec_size >= w) break;
+                x += vec_size;
+            }
+        } else {
+            // degenerate width: single-lane vectors keep cbrt rounding identical
+            var x: u32 = 0;
+            while (x < w) : (x += 1) {
+                const F1 = @Vector(1, f32);
+                const r: F1 = @splat(srcp[0][x]);
+                const g: F1 = @splat(srcp[1][x]);
+                const b: F1 = @splat(srcp[2][x]);
+                const b1: F1 = @splat(OPSIN_ABSORBANCE_BIAS);
+                const ox = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[0]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[1]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[2]), b, b1)));
+                const oy = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[3]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[4]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[5]), b, b1)));
+                const oz = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[6]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[7]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[8]), b, b1)));
+                const cx = vcl.cbrt(@max(ox, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
+                const cy = vcl.cbrt(@max(oy, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
+                const cz = vcl.cbrt(@max(oz, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
+                const xs = 0.5 * (cx[0] - cy[0]);
+                const ys = 0.5 * (cx[0] + cy[0]);
+                dstp[0][x] = xs * 14.0 + 0.42;
+                dstp[1][x] = ys + 0.01;
+                dstp[2][x] = (cz[0] - ys) + 0.55;
+            }
         }
 
         var i: u32 = 0;
@@ -395,6 +489,16 @@ fn ssimMap(
     one_per_pixels: f64,
     plane_avg_ssim: []f64,
 ) void {
+    const FV = @Vector(vec_size, f32);
+    const DV = @Vector(vec_size, f64);
+    const onef: FV = @splat(1.0);
+    const twof: FV = @splat(2.0);
+    const e9f: FV = @splat(0.0009);
+    const oned: DV = @splat(1.0);
+    const zerod: DV = @splat(0.0);
+
+    var sum0v: DV = @splat(0.0);
+    var sum1v: DV = @splat(0.0);
     var sum1 = [2]f64{ 0.0, 0.0 };
     var y: u32 = 0;
     while (y < h) : (y += 1) {
@@ -404,6 +508,26 @@ fn ssimMap(
         const mu2p = mu2[(y * stride)..];
 
         var x: u32 = 0;
+        while (x + vec_size <= w) : (x += vec_size) {
+            const m1: FV = mu1p[x..][0..vec_size].*;
+            const m2: FV = mu2p[x..][0..vec_size].*;
+            const s12v: FV = s12p[x..][0..vec_size].*;
+            const sqv: FV = sqp[x..][0..vec_size].*;
+            const m11 = m1 * m1;
+            const m22 = m2 * m2;
+            const m12 = m1 * m2;
+            const m_diff = m1 - m2;
+            const num_m: DV = @floatCast(@mulAdd(FV, m_diff, -m_diff, onef));
+            const num_s: DV = @floatCast(@mulAdd(FV, (s12v - m12), twof, e9f));
+            const denom_s: DV = @floatCast(sqv - twof * s12v - m11 - m22 + e9f);
+            const d1: DV = @max(oned - ((num_m * num_s) / denom_s), zerod);
+
+            sum0v += d1;
+            var t4 = d1 * d1;
+            t4 *= t4;
+            sum1v += t4;
+        }
+
         while (x < w) : (x += 1) {
             const m1: f32 = mu1p[x];
             const m2: f32 = mu2p[x];
@@ -421,6 +545,9 @@ fn ssimMap(
         }
     }
 
+    sum1[0] += @reduce(.Add, sum0v);
+    sum1[1] += @reduce(.Add, sum1v);
+
     plane_avg_ssim[plane * 2] = one_per_pixels * sum1[0];
     plane_avg_ssim[plane * 2 + 1] = @sqrt(@sqrt(one_per_pixels * sum1[1]));
 }
@@ -437,6 +564,15 @@ fn edgeMap(
     one_per_pixels: f64,
     plane_avg_edge: []f64,
 ) void {
+    const FV = @Vector(vec_size, f32);
+    const DV = @Vector(vec_size, f64);
+    const oned: DV = @splat(1.0);
+    const zerod: DV = @splat(0.0);
+
+    var art0: DV = @splat(0.0);
+    var art1: DV = @splat(0.0);
+    var det0: DV = @splat(0.0);
+    var det1: DV = @splat(0.0);
     var sum2 = [4]f64{ 0.0, 0.0, 0.0, 0.0 };
     var y: u32 = 0;
     while (y < h) : (y += 1) {
@@ -446,6 +582,28 @@ fn edgeMap(
         const mu2p = mu2[(y * stride)..];
 
         var x: u32 = 0;
+        while (x + vec_size <= w) : (x += vec_size) {
+            const v1: FV = im1p[x..][0..vec_size].*;
+            const v2: FV = im2p[x..][0..vec_size].*;
+            const m1: FV = mu1p[x..][0..vec_size].*;
+            const m2: FV = mu2p[x..][0..vec_size].*;
+            const n2: DV = @floatCast(@abs(v2 - m2));
+            const n1: DV = @floatCast(@abs(v1 - m1));
+            const d1: DV = (oned + n2) / (oned + n1) - oned;
+
+            const artifact = @max(d1, zerod);
+            art0 += artifact;
+            var a4 = artifact * artifact;
+            a4 *= a4;
+            art1 += a4;
+
+            const detail_lost = @max(-d1, zerod);
+            det0 += detail_lost;
+            var l4 = detail_lost * detail_lost;
+            l4 *= l4;
+            det1 += l4;
+        }
+
         while (x < w) : (x += 1) {
             const d1: f64 = (1.0 + @as(f64, @abs(im2p[x] - mu2p[x]))) /
                 (1.0 + @as(f64, @abs(im1p[x] - mu1p[x]))) - 1.0;
@@ -457,6 +615,11 @@ fn edgeMap(
             sum2[3] += tothe4th(detail_lost);
         }
     }
+
+    sum2[0] += @reduce(.Add, art0);
+    sum2[1] += @reduce(.Add, art1);
+    sum2[2] += @reduce(.Add, det0);
+    sum2[3] += @reduce(.Add, det1);
 
     plane_avg_edge[plane * 4] = one_per_pixels * sum2[0];
     plane_avg_edge[plane * 4 + 1] = @sqrt(@sqrt(one_per_pixels * sum2[1]));

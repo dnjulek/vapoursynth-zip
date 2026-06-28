@@ -83,22 +83,6 @@ pub const pad_buf_w = pad_h * 2;
 pub const flt_max: f32 = std.math.floatMax(f32);
 pub const flt_max_09: f32 = flt_max * 0.9;
 
-inline fn shiftInMask(comptime s: u32) [n_vec]i32 {
-    var m: [n_vec]i32 = undefined;
-    for (0..n_vec) |i| m[i] = if (i >= s) @intCast(i - s) else -1;
-    return m;
-}
-
-inline fn prefixSum(v: Vec) Vec {
-    const zero: Vec = @splat(0.0);
-    var p = v;
-    comptime var s: u32 = 1;
-    inline while (s < n_vec) : (s *= 2) {
-        p += @shuffle(f32, p, zero, shiftInMask(s));
-    }
-    return p;
-}
-
 /// Mirror-reflect a line index (no edge duplication; fractional axis), matching
 /// C++ copyPad. `h` is the number of real samples along the reflected axis.
 pub inline fn reflectRow(y: i32, h: i32) u32 {
@@ -319,20 +303,12 @@ pub fn buildBmask(bmask: []bool, maskp: []const u8, w: u32, mdis: u32) void {
     }
 }
 
-inline fn recomputeWindow(t_base_buf: []const f32, x: i32, u: i32, two_u: i32, nrad_i: i32) struct { f32, f32, f32 } {
-    var sw0: f32 = 0;
-    var sw1: f32 = 0;
-    var sw2: f32 = 0;
-    var ki: i32 = -nrad_i;
-    while (ki <= nrad_i) : (ki += 1) {
-        sw0 += t_base_buf[@intCast(x + u + ki + pad_h)];
-        sw1 += t_base_buf[@intCast(x + ki + pad_h)];
-        sw2 += t_base_buf[@intCast(x + two_u + ki + pad_h)];
-    }
-    return .{ sw0, sw1, sw2 };
-}
-
-inline fn costBlock(
+// Direct per-block windowed sum (no prefix-sum/running-carry): each of sw0/sw1/sw2
+// is a fresh (2*nrad+1)-tap sum of t_base at offsets x+u / x / x+2u. Removes the
+// cross-lane prefix-sum permutes (Zen3 port-5 bottleneck); the fresh sum drifts
+// from the telescoped running sum by tiny rounding (matches the C++ window sum
+// more closely) — never enough to move the discrete min-cost direction map.
+inline fn costBlockDirect(
     tcosts_ptr: []f32,
     t_base_buf: []const f32,
     r1p: []const f32,
@@ -341,38 +317,20 @@ inline fn costBlock(
     u: i32,
     two_u: i32,
     nrad_i: i32,
-    sw0: *f32,
-    sw1: *f32,
-    sw2: *f32,
     alpha: f32,
     beta_abs_u: f32,
     one_minus_ab: f32,
 ) void {
     const xi: i32 = @intCast(x);
-    const zero_v: Vec = @splat(0.0);
-    const add0: Vec = t_base_buf[@intCast(xi + u + nrad_i + 1 + pad_h)..][0..n_vec].*;
-    const sub0: Vec = t_base_buf[@intCast(xi + u - nrad_i + pad_h)..][0..n_vec].*;
-    const add1: Vec = t_base_buf[@intCast(xi + nrad_i + 1 + pad_h)..][0..n_vec].*;
-    const sub1: Vec = t_base_buf[@intCast(xi - nrad_i + pad_h)..][0..n_vec].*;
-    const add2: Vec = t_base_buf[@intCast(xi + two_u + nrad_i + 1 + pad_h)..][0..n_vec].*;
-    const sub2: Vec = t_base_buf[@intCast(xi + two_u - nrad_i + pad_h)..][0..n_vec].*;
-    const d0: Vec = add0 - sub0;
-    const d1: Vec = add1 - sub1;
-    const d2: Vec = add2 - sub2;
-
-    const ps0: Vec = prefixSum(d0);
-    const ps1: Vec = prefixSum(d1);
-    const ps2: Vec = prefixSum(d2);
-    const excl0 = @shuffle(f32, ps0, zero_v, shiftInMask(1));
-    const excl1 = @shuffle(f32, ps1, zero_v, shiftInMask(1));
-    const excl2 = @shuffle(f32, ps2, zero_v, shiftInMask(1));
-    const sw0_v = @as(Vec, @splat(sw0.*)) + excl0;
-    const sw1_v = @as(Vec, @splat(sw1.*)) + excl1;
-    const sw2_v = @as(Vec, @splat(sw2.*)) + excl2;
-
-    sw0.* += ps0[n_vec - 1];
-    sw1.* += ps1[n_vec - 1];
-    sw2.* += ps2[n_vec - 1];
+    var sw0: Vec = @splat(0);
+    var sw1: Vec = @splat(0);
+    var sw2: Vec = @splat(0);
+    var k: i32 = -nrad_i;
+    while (k <= nrad_i) : (k += 1) {
+        sw1 += @as(Vec, t_base_buf[@intCast(xi + k + pad_h)..][0..n_vec].*);
+        sw0 += @as(Vec, t_base_buf[@intCast(xi + u + k + pad_h)..][0..n_vec].*);
+        sw2 += @as(Vec, t_base_buf[@intCast(xi + two_u + k + pad_h)..][0..n_vec].*);
+    }
     const s1p_xu: Vec = r1p[@intCast(xi + u + pad_h)..][0..n_vec].*;
     const s1n_xmu: Vec = r1n[@intCast(xi - u + pad_h)..][0..n_vec].*;
     const ip_v: Vec = (s1p_xu + s1n_xmu) * @as(Vec, @splat(0.5));
@@ -381,7 +339,7 @@ inline fn costBlock(
     const v_v: Vec = @abs(s1p_x - ip_v) + @abs(s1n_x - ip_v);
 
     const cost_v =
-        @as(Vec, @splat(alpha)) * (sw0_v + sw1_v + sw2_v) +
+        @as(Vec, @splat(alpha)) * (sw0 + sw1 + sw2) +
         @as(Vec, @splat(beta_abs_u)) +
         @as(Vec, @splat(one_minus_ab)) * v_v;
 
@@ -466,51 +424,35 @@ pub fn interpLine(
             t_base_buf[bi..][0..n_vec].* = @abs(a - b) + @abs(c - d) + @abs(e - f_);
         }
 
-        var sws = recomputeWindow(t_base_buf, 0, u, two_u, nrad_i);
-        var sw0 = sws[0];
-        var sw1 = sws[1];
-        var sw2 = sws[2];
-
         const tcosts_ptr = t_costs[u_idx * stride ..];
         const beta_abs_u = beta * abs_u_f;
 
         var x: u32 = 0;
         if (bmask != null) {
-            var stale = false;
             while (x + n_vec <= w) : (x += n_vec) {
-                if (x != 0 and !block_active[x / n_vec]) {
-                    stale = true;
-                    continue;
-                }
-                if (stale) {
-                    sws = recomputeWindow(t_base_buf, @intCast(x), u, two_u, nrad_i);
-                    sw0 = sws[0];
-                    sw1 = sws[1];
-                    sw2 = sws[2];
-                    stale = false;
-                }
-                costBlock(tcosts_ptr, t_base_buf, r1p, r1n, x, u, two_u, nrad_i, &sw0, &sw1, &sw2, alpha, beta_abs_u, one_minus_ab);
-            }
-            if (stale and x < w) {
-                sws = recomputeWindow(t_base_buf, @intCast(x), u, two_u, nrad_i);
-                sw0 = sws[0];
-                sw1 = sws[1];
-                sw2 = sws[2];
+                if (x != 0 and !block_active[x / n_vec]) continue;
+                costBlockDirect(tcosts_ptr, t_base_buf, r1p, r1n, x, u, two_u, nrad_i, alpha, beta_abs_u, one_minus_ab);
             }
         } else {
             while (x + n_vec <= w) : (x += n_vec) {
-                costBlock(tcosts_ptr, t_base_buf, r1p, r1n, x, u, two_u, nrad_i, &sw0, &sw1, &sw2, alpha, beta_abs_u, one_minus_ab);
+                costBlockDirect(tcosts_ptr, t_base_buf, r1p, r1n, x, u, two_u, nrad_i, alpha, beta_abs_u, one_minus_ab);
             }
         }
 
         while (x < w) : (x += 1) {
             const xi: i32 = @intCast(x);
+            var sw0: f32 = 0;
+            var sw1: f32 = 0;
+            var sw2: f32 = 0;
+            var k: i32 = -nrad_i;
+            while (k <= nrad_i) : (k += 1) {
+                sw1 += t_base_buf[@intCast(xi + k + pad_h)];
+                sw0 += t_base_buf[@intCast(xi + u + k + pad_h)];
+                sw2 += t_base_buf[@intCast(xi + two_u + k + pad_h)];
+            }
             const ip = (r1p[@intCast(xi + u + pad_h)] + r1n[@intCast(xi - u + pad_h)]) * 0.5;
             const v = @abs(r1p[@intCast(xi + pad_h)] - ip) + @abs(r1n[@intCast(xi + pad_h)] - ip);
             tcosts_ptr[x] = alpha * (sw0 + sw1 + sw2) + beta_abs_u + one_minus_ab * v;
-            sw0 += t_base_buf[@intCast(xi + u + nrad_i + 1 + pad_h)] - t_base_buf[@intCast(xi + u - nrad_i + pad_h)];
-            sw1 += t_base_buf[@intCast(xi + nrad_i + 1 + pad_h)] - t_base_buf[@intCast(xi - nrad_i + pad_h)];
-            sw2 += t_base_buf[@intCast(xi + two_u + nrad_i + 1 + pad_h)] - t_base_buf[@intCast(xi + two_u - nrad_i + pad_h)];
         }
     }
 
@@ -727,6 +669,19 @@ pub fn interpLineHP(
         }
     }
 
+    // s1[x]=sum_k base1[x+k], s2[x]=sum_k base2[x+k] with base2[j]==base1[j+u],
+    // so both are windowed sums of one per-column array `baseM`. Precompute it
+    // once per u (instead of recomputing 3 abs-diffs per k per x) and window-sum.
+    // Exact: each s{0,1,2} keeps its own k-ordered f32 accumulation. s0 (the hp
+    // interpolation cost) stays inline.
+    const baseM = allocator.alloc(f32, r3p.len) catch unreachable;
+    defer allocator.free(baseM);
+    // s0 (hp-interpolation cost) is also a windowed sum: for even u it reuses
+    // baseM at offset uh; for odd u it needs the same base built from the hp
+    // rows. baseHp holds that (only filled on odd u).
+    const baseHp = allocator.alloc(f32, r3p.len) catch unreachable;
+    defer allocator.free(baseHp);
+
     var u: i32 = -cen_i;
     while (u <= cen_i) : (u += 1) {
         const uh: i32 = u >> 1;
@@ -744,6 +699,43 @@ pub fn interpLineHP(
         const oneab_v: Vec = @splat(one_minus_ab);
         const half_v: Vec = @splat(0.5);
 
+        // baseM[pidx(j)] = |r3p[j]-r1p[j-u]| + |r1p[j]-r1n[j-u]| + |r1n[j]-r3n[j-u]|
+        // for columns j in [min(0,u)-nrad, w+max(0,u)+nrad) (the union of the s1
+        // window at x and the s2 window at x+u). Iterate in buffer coordinates.
+        {
+            const lo_col: i32 = @min(@as(i32, 0), u) - nrad_i;
+            const hi_col: i32 = @as(i32, @intCast(w)) + @max(@as(i32, 0), u) + nrad_i;
+            var j: i32 = lo_col;
+            while (j < hi_col) : (j += n_vec) {
+                const a = ldv(r3p, j);
+                const b = ldv(r1p, j - u);
+                const c = ldv(r1p, j);
+                const d = ldv(r1n, j - u);
+                const e = ldv(r1n, j);
+                const f_ = ldv(r3n, j - u);
+                baseM[pidx(j)..][0..n_vec].* = @abs(a - b) + @abs(c - d) + @abs(e - f_);
+            }
+        }
+
+        // For odd u, s0[x] = sum_k baseHp[x+uh+k] with baseHp built from the hp
+        // rows (A0/B0/C0/D0). Build over the s0 window range [uh-nrad, w+uh+nrad).
+        if (odd) {
+            const lo_col: i32 = uh - nrad_i;
+            const hi_col: i32 = @as(i32, @intCast(w)) + uh + nrad_i;
+            var j: i32 = lo_col;
+            while (j < hi_col) : (j += n_vec) {
+                const a = ldv(A0, j);
+                const b = ldv(B0, j - u);
+                const c = ldv(B0, j);
+                const d = ldv(C0, j - u);
+                const e = ldv(C0, j);
+                const f_ = ldv(D0, j - u);
+                baseHp[pidx(j)..][0..n_vec].* = @abs(a - b) + @abs(c - d) + @abs(e - f_);
+            }
+        }
+        // s0 base: even u reuses baseM (offset uh), odd u uses baseHp.
+        const s0base = if (odd) baseHp else baseM;
+
         var x: u32 = 0;
         while (x + n_vec <= w) : (x += n_vec) {
             const xi: i32 = @intCast(x);
@@ -752,15 +744,9 @@ pub fn interpLineHP(
             var s2: Vec = @splat(0);
             var k: i32 = -nrad_i;
             while (k <= nrad_i) : (k += 1) {
-                s1 += @abs(ldv(r3p, xi + k) - ldv(r1p, xi - u + k)) +
-                    @abs(ldv(r1p, xi + k) - ldv(r1n, xi - u + k)) +
-                    @abs(ldv(r1n, xi + k) - ldv(r3n, xi - u + k));
-                s2 += @abs(ldv(r3p, xi + u + k) - ldv(r1p, xi + k)) +
-                    @abs(ldv(r1p, xi + u + k) - ldv(r1n, xi + k)) +
-                    @abs(ldv(r1n, xi + u + k) - ldv(r3n, xi + k));
-                s0 += @abs(ldv(A0, xi + uh + k) - ldv(B0, xi + lo0 + k)) +
-                    @abs(ldv(B0, xi + uh + k) - ldv(C0, xi + lo0 + k)) +
-                    @abs(ldv(C0, xi + uh + k) - ldv(D0, xi + lo0 + k));
+                s1 += ldv(baseM, xi + k);
+                s2 += ldv(baseM, xi + u + k);
+                s0 += ldv(s0base, xi + uh + k);
             }
             const ip: Vec = (ldv(B0, xi + uh) + ldv(C0, xi + lo0)) * half_v;
             const v: Vec = @abs(ldv(r1p, xi) - ip) + @abs(ldv(r1n, xi) - ip);
@@ -774,15 +760,9 @@ pub fn interpLineHP(
             var s2: f32 = 0;
             var k: i32 = -nrad_i;
             while (k <= nrad_i) : (k += 1) {
-                s1 += @abs(r3p[pidx(xi + k)] - r1p[pidx(xi - u + k)]) +
-                    @abs(r1p[pidx(xi + k)] - r1n[pidx(xi - u + k)]) +
-                    @abs(r1n[pidx(xi + k)] - r3n[pidx(xi - u + k)]);
-                s2 += @abs(r3p[pidx(xi + u + k)] - r1p[pidx(xi + k)]) +
-                    @abs(r1p[pidx(xi + u + k)] - r1n[pidx(xi + k)]) +
-                    @abs(r1n[pidx(xi + u + k)] - r3n[pidx(xi + k)]);
-                s0 += @abs(A0[pidx(xi + uh + k)] - B0[pidx(xi + lo0 + k)]) +
-                    @abs(B0[pidx(xi + uh + k)] - C0[pidx(xi + lo0 + k)]) +
-                    @abs(C0[pidx(xi + uh + k)] - D0[pidx(xi + lo0 + k)]);
+                s1 += baseM[pidx(xi + k)];
+                s2 += baseM[pidx(xi + u + k)];
+                s0 += s0base[pidx(xi + uh + k)];
             }
             const ip: f32 = (B0[pidx(xi + uh)] + C0[pidx(xi + lo0)]) * 0.5;
             const v = @abs(r1p[pidx(xi)] - ip) + @abs(r1n[pidx(xi)] - ip);
@@ -828,11 +808,14 @@ pub fn interpLineHP(
         var ui: u32 = 0;
         while (ui + n_vec <= tpitch) : (ui += n_vec) {
             const p = &pcosts[ping];
-            const c_m2 = @min(@as(Vec, p[ui + 0 ..][0..n_vec].*) + g2_v, flt_v);
-            const c_m1 = @min(@as(Vec, p[ui + 1 ..][0..n_vec].*) + g1_v, flt_v);
-            const c_0 = @min(@as(Vec, p[ui + 2 ..][0..n_vec].*), flt_v);
-            const c_p1 = @min(@as(Vec, p[ui + 3 ..][0..n_vec].*) + g1_v, flt_v);
-            const c_p2 = @min(@as(Vec, p[ui + 4 ..][0..n_vec].*) + g2_v, flt_v);
+            // No intermediate clamps (matches the non-HP DP): pcosts is bounded
+            // by flt_max_09 and the +g increments are tiny, so the argmin and the
+            // final @min(bval+tcv, flt_v) below cap identically at reachable nodes.
+            const c_m2 = @as(Vec, p[ui + 0 ..][0..n_vec].*) + g2_v;
+            const c_m1 = @as(Vec, p[ui + 1 ..][0..n_vec].*) + g1_v;
+            const c_0: Vec = p[ui + 2 ..][0..n_vec].*;
+            const c_p1 = @as(Vec, p[ui + 3 ..][0..n_vec].*) + g1_v;
+            const c_p2 = @as(Vec, p[ui + 4 ..][0..n_vec].*) + g2_v;
             var bval = c_m2;
             var bd = i8m2;
             var m = c_m1 < bval;
@@ -858,7 +841,7 @@ pub fn interpLineHP(
             while (dv <= 2) : (dv += 1) {
                 const vi: i32 = @as(i32, @intCast(ui)) + dv;
                 const gv = gamma255 * @as(f32, @floatFromInt(@abs(dv))) * 0.5;
-                const cc = @min(pcosts[ping][@intCast(vi + 2)] + gv, flt_max_09);
+                const cc = pcosts[ping][@intCast(vi + 2)] + gv;
                 if (cc < bval) {
                     bval = cc;
                     best_delta = @intCast(dv);
@@ -1066,7 +1049,7 @@ pub fn vcheckLine(
 /// for the fully-transposed horizontal pipeline; each row spans `stride`
 /// elements. The vertical path passes 0 to skip those allocations.
 pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32, dstT_rows: u32) !*Scratch {
-    const pad_buf_len = vsh.ceilN(w + pad_buf_w, hz.vsFrameAlignmentT(@sizeOf(f32)));
+    const pad_buf_len = hz.ceilN(w + pad_buf_w, hz.vsFrameAlignmentT(@sizeOf(f32)));
     const tpitch_alloc: u32 = if (hp) tpitch_hp_max else tpitch_max;
     const s = try allocator.create(Scratch);
     s.r3p = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);
