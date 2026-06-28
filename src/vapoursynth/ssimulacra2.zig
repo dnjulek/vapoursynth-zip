@@ -13,24 +13,25 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "SSIMULACRA2";
+const Scratch = []align(vszip.vec_len) f32;
 
 const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
     // Reusable scratch buffers; getFrame runs concurrently so each call pops
     // its own buffer (or allocates one) and pushes it back when done.
-    pool: std.ArrayList([]f32) = .empty,
+    pool: std.ArrayList(Scratch) = .empty,
     pool_mutex: std.Io.Mutex = .init,
 };
 
-fn acquireScratch(d: *Data, size: usize) []f32 {
+fn acquireScratch(d: *Data, size: usize) Scratch {
     d.pool_mutex.lockUncancelable(vszip.io);
     defer d.pool_mutex.unlock(vszip.io);
     if (d.pool.pop()) |buf| return buf;
     return allocator.alignedAlloc(f32, vszip.alignment, size) catch unreachable;
 }
 
-fn releaseScratch(d: *Data, buf: []f32) void {
+fn releaseScratch(d: *Data, buf: Scratch) void {
     d.pool_mutex.lockUncancelable(vszip.io);
     defer d.pool_mutex.unlock(vszip.io);
     d.pool.append(allocator, buf) catch unreachable;
