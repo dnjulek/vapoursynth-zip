@@ -47,13 +47,12 @@ def _sized_clip(w: int, h: int, fmt: int, fps: int, frames: int = 3):
 # the reference; the transform kind is carried in Case.variant and mapped to a
 # concrete operation by `_distort` below.
 #
-# Geometry is pinned to "full". The XPSNR kernel indexes its temporal-state
-# buffers (og_m1/og_m2, sized width*height) by frame STRIDE rather than width,
-# so any clip with stride padding -- which "odd" and "tiny" both introduce --
-# walks off the allocation and aborts the process (bounds panic in
-# calcSquaredErrorAndWeight). Until that src bug is fixed the non-"full"
-# geometries cannot be exercised here; coverage breadth instead comes from the
-# distortion x temporal x format x per-frame axes.
+# Geometry is pinned to "full" (even dimensions). XPSNR rejects odd width/height
+# at Create time -- its >HD block kernels read neighborhoods past an odd trailing
+# row/column and VapourSynth frames have no edge padding (see
+# test_odd_dims_rejected) -- so the "odd"/"tiny" geometries are not applicable
+# here; coverage breadth comes from the distortion x temporal x format x
+# per-frame axes instead.
 
 DISTORTIONS = ("box2", "box5", "bright", "shift")
 
@@ -193,20 +192,19 @@ def test_temporal_order_boundary():
         "fps 32 must use 2nd-order temporal (diverges from 1st-order at frame 1)"
 
 
-@pytest.mark.usefixtures("core")
 @pytest.mark.parametrize("w,h,fmt", [
-    (2381, 1153, vs.YUV444P8),   # odd W and H, >HD: w_act/h_act would underflow usize
-    (2560, 1153, vs.YUV422P8),   # odd H (4:2:2 needs even W), >HD
+    (2381, 1153, vs.YUV444P8),   # odd W and H, >HD
+    (2560, 1153, vs.YUV422P8),   # odd H (4:2:2 allows odd height), >HD
+    (641, 360, vs.YUV444P8),     # odd W, <=HD
 ])
-def test_uhd_odd_dims_no_crash(w, h, fmt):
-    """Regression: on >HD frames an edge block smaller than b_val made the
-    (unsigned) w_act/h_act wrap to a huge value and walk off the frame; signed
-    arithmetic now early-returns instead. Odd >HD dims are not bit-exact vs
-    FFmpeg (their edge reads are stride-padding dependent), so this only asserts
-    no crash + finite output rather than a golden value."""
+def test_odd_dims_rejected(core, w, h, fmt):
+    """XPSNR's block activity kernels read 2x2 / downsampled neighborhoods that
+    would walk off an odd trailing row/column (VapourSynth frames have no edge
+    padding), so odd width/height is rejected at Create time rather than handled
+    in the hot path."""
     ref = _sized_clip(w, h, fmt, 24, frames=3)
-    out = vs.core.vszip.XPSNR(ref, _distort(ref, "box2"), verbose=False)
-    assert all(math.isfinite(props(out, n)["XPSNR_Y"]) for n in range(out.num_frames))
+    with pytest.raises(vs.Error, match="only supports even width and height"):
+        core.vszip.XPSNR(ref, _distort(ref, "box2"), verbose=False)
 
 
 @pytest.fixture(scope="module")

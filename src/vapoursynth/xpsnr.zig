@@ -153,6 +153,12 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
         return;
     }
 
+    if (((vi1.width & 1) != 0) or ((vi1.height & 1) != 0)) {
+        map_out.setError(filter_name ++ " : only supports even width and height");
+        zapi.freeNode(d.node1);
+        return;
+    }
+
     d.node2, const vi2 = map_in.getNodeVi("distorted").?;
     const bps1: u32 = @intCast(vi1.format.bitsPerSample);
     const bps2: u32 = @intCast(vi2.format.bitsPerSample);
