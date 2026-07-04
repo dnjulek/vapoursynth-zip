@@ -30,35 +30,44 @@ fn Pack(comptime is_rgb24: bool) type {
                 const w: u32 = @intCast(d.out_vi.width);
                 const h: u32 = @intCast(d.out_vi.height);
 
-                if (comptime is_rgb24) {
-                    const srcp = src.getReadSlices();
-                    const src_stride = src.getStride(0);
-                    const dst_stride = dst.getStride2(u32, 0);
-                    const dstp = dst.getWriteSlice(0);
+                // Both packs are purely vertical (widen + shift + or), but LLVM
+                // never auto-vectorized the scalar loops (measured: 8-10 scalar
+                // instructions per pixel, ~100% of the filter's kernel time), so
+                // the vector shape is explicit: 8 u32 lanes per iteration.
+                const T = if (is_rgb24) u8 else u16;
+                const srcp = src.getReadSlices2(T);
+                const src_stride = src.getStride2(T, 0);
+                const dst_stride = dst.getStride2(u32, 0);
+                const dstp = dst.getWriteSlice2(u32, 0);
 
-                    for (0..h) |y| {
-                        for (0..w) |x| {
-                            const i_src = y * src_stride + x;
-                            const i_dst = (y * dst_stride + x) * 4;
+                const shifts = if (is_rgb24) [2]comptime_int{ 8, 16 } else [2]comptime_int{ 10, 20 };
+                const alpha: u32 = if (is_rgb24) 0xFF00_0000 else 0b11 << 30;
 
-                            dstp[i_dst + 0] = srcp[2][i_src];
-                            dstp[i_dst + 1] = srcp[1][i_src];
-                            dstp[i_dst + 2] = srcp[0][i_src];
-                            dstp[i_dst + 3] = 255;
+                const nv = comptime (std.simd.suggestVectorLength(u32) orelse 1);
+                const wv = if (nv > 1) w - w % nv else 0;
+                for (0..h) |y| {
+                    const rb = srcp[2][y * src_stride ..];
+                    const rg = srcp[1][y * src_stride ..];
+                    const rr = srcp[0][y * src_stride ..];
+                    const rd = dstp[y * dst_stride ..];
+
+                    var x: usize = 0;
+                    if (comptime nv > 1) {
+                        const sh_g: @Vector(nv, u5) = @splat(shifts[0]);
+                        const sh_r: @Vector(nv, u5) = @splat(shifts[1]);
+                        const av: @Vector(nv, u32) = @splat(alpha);
+                        while (x < wv) : (x += nv) {
+                            const b: @Vector(nv, T) = rb[x..][0..nv].*;
+                            const g: @Vector(nv, T) = rg[x..][0..nv].*;
+                            const r: @Vector(nv, T) = rr[x..][0..nv].*;
+                            rd[x..][0..nv].* = @as(@Vector(nv, u32), b) |
+                                (@as(@Vector(nv, u32), g) << sh_g) |
+                                (@as(@Vector(nv, u32), r) << sh_r) | av;
                         }
                     }
-                } else {
-                    const srcp = src.getReadSlices2(u16);
-                    const src_stride = src.getStride2(u16, 0);
-                    const dst_stride = dst.getStride2(u32, 0);
-                    const dstp = dst.getWriteSlice2(u32, 0);
-
-                    for (0..h) |y| {
-                        for (0..w) |x| {
-                            const i_src = y * src_stride + x;
-                            const i_dst = (y * dst_stride + x);
-                            dstp[i_dst] = @as(u32, srcp[2][i_src]) | (@as(u32, srcp[1][i_src]) << 10) | (@as(u32, srcp[0][i_src]) << 20) | (0b11 << 30);
-                        }
+                    while (x < w) : (x += 1) {
+                        rd[x] = @as(u32, rb[x]) | (@as(u32, rg[x]) << shifts[0]) |
+                            (@as(u32, rr[x]) << shifts[1]) | alpha;
                     }
                 }
 

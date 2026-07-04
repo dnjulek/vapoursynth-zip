@@ -60,7 +60,7 @@ GOLDENS = [
     (vs.GRAYS, dict(hradius=30, vradius=60, hpasses=6, vpasses=8), 0.49595518544825606),
     (vs.GRAYS, dict(hradius=3, vradius=3), 0.49599070191539796),
     (vs.GRAY16, dict(hradius=30, vradius=33, hpasses=1, vpasses=3), 0.4867611337214847),
-    (vs.GRAY16, dict(hradius=10, vradius=10), 0.4869014934022612),
+    (vs.GRAY16, dict(hradius=10, vradius=10), 0.48676619296642537),
 ]
 
 

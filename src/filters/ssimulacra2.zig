@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 const math = std.math;
 const vcl = @import("../vcl.zig");
 
@@ -145,21 +146,6 @@ fn downscale(src: [3][]const f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_
 
     const FV = @Vector(vec_size, f32);
     const normv: FV = @splat(normalize);
-    // deinterleave masks: even/odd elements of two consecutive vectors
-    const even_mask = comptime blk: {
-        var m: [vec_size]i32 = undefined;
-        for (0..vec_size) |i| {
-            m[i] = if (i < vec_size / 2) @intCast(2 * i) else ~@as(i32, @intCast(2 * (i - vec_size / 2)));
-        }
-        break :blk m;
-    };
-    const odd_mask = comptime blk: {
-        var m: [vec_size]i32 = undefined;
-        for (0..vec_size) |i| {
-            m[i] = if (i < vec_size / 2) @intCast(2 * i + 1) else ~@as(i32, @intCast(2 * (i - vec_size / 2) + 1));
-        }
-        break :blk m;
-    };
 
     // ox values whose 2x2 window needs no edge clamping
     const full_w: u32 = in_w / 2;
@@ -180,10 +166,14 @@ fn downscale(src: [3][]const f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_
                     const b0: FV = row0[ox * 2 + vec_size ..][0..vec_size].*;
                     const a1: FV = row1[ox * 2 ..][0..vec_size].*;
                     const b1: FV = row1[ox * 2 + vec_size ..][0..vec_size].*;
-                    const e0 = @shuffle(f32, a0, b0, even_mask);
-                    const o0 = @shuffle(f32, a0, b0, odd_mask);
-                    const e1 = @shuffle(f32, a1, b1, even_mask);
-                    const o1 = @shuffle(f32, a1, b1, odd_mask);
+                    // asm deinterleave: the @shuffle form makes LLVM shred
+                    // each plain load into partial loads + blends, rebuilt per
+                    // shuffle (measured ~55 instr/block vs ~14 at 8 lanes, and
+                    // again at 16 lanes on znver4).
+                    const e0 = simd.evenLanesF32(vec_size, a0, b0);
+                    const o0 = simd.oddLanesF32(vec_size, a0, b0);
+                    const e1 = simd.evenLanesF32(vec_size, a1, b1);
+                    const o1 = simd.oddLanesF32(vec_size, a1, b1);
                     // same add order as the scalar 2x2 loop
                     const sum = ((e0 + o0) + e1) + o1;
                     dstp[ox..][0..vec_size].* = sum * normv;
@@ -266,13 +256,24 @@ inline fn blurH(srcp: []f32, dstp: []f32, kernel: [ksize]f32, w: i32) void {
 
     j = radius;
     const center_end: i32 = w - @min(w, radius);
-    // srcp is the padded blur row buffer, so vector loads past w are safe
+    // srcp is the padded blur row buffer, so vector loads past w are safe.
+    // Hoist each tap's base pointer out of the j-loop and launder it once. The
+    // ksize taps are overlapping comptime-offset loads that LLVM would fuse
+    // into shuffle chains (~2x instructions, shuffle-port-bound); making the
+    // bases mutually opaque blocks that fusion. Doing it once here (rather than
+    // laundering every load inside the loop, as loaduOpaque did) lets each load
+    // fold into its vmulps as [tap_k + j*4] instead of re-materializing
+    // tap_k + (j-radius) per tap per iteration (removes 9 lea + 8 add/iter).
+    var taps: [ksize][*]const f32 = undefined;
+    inline for (0..ksize) |k| {
+        taps[k] = simd.opaquePtr(f32, srcp.ptr + k);
+    }
     while (j + vec_size <= center_end) : (j += vec_size) {
         const base: u32 = @intCast(j - radius);
         var acc: @Vector(vec_size, f32) = @splat(0.0);
         inline for (0..ksize) |k| {
             const kv: @Vector(vec_size, f32) = @splat(kernel[k]);
-            const sv: @Vector(vec_size, f32) = srcp[base + k ..][0..vec_size].*;
+            const sv: @Vector(vec_size, f32) = (taps[k] + base)[0..vec_size].*;
             acc = acc + kv * sv;
         }
         dstp[@intCast(j)..][0..vec_size].* = acc;

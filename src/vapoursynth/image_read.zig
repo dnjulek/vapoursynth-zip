@@ -42,10 +42,10 @@ pub fn copyPixels(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Frame), a
     const dst_a = if (alpha) adst.getWriteSlice2(T, 0);
     const width, const height, const stride = dst.getDimensions2(T, 0);
 
-    var x: u32 = 0;
-    while (x < width) : (x += 1) {
-        var y: u32 = 0;
-        while (y < height) : (y += 1) {
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
             const src_index = (y * width + x);
             const dst_index = (y * stride + x);
 
@@ -75,10 +75,10 @@ pub fn copyPixelsIndexed(comptime T: type, src: anytype, dst: ZAPI.ZFrame(*vs.Fr
     const dst_a = if (alpha) adst.getWriteSlice2(T, 0);
     const width, const height, const stride = dst.getDimensions2(T, 0);
 
-    var x: u32 = 0;
-    while (x < width) : (x += 1) {
-        var y: u32 = 0;
-        while (y < height) : (y += 1) {
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
             const src_index = src.indices[y * width + x];
             const dst_index = (y * stride + x);
 

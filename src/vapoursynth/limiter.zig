@@ -42,12 +42,7 @@ pub fn LimiterRT(comptime T: type, np: comptime_int, idx: comptime_int) type {
                     const max: T = if (@typeInfo(T) == .int) @intCast(d.max[plane]) else @floatCast(d.maxf[plane]);
                     const min: T = if (@typeInfo(T) == .int) @intCast(d.min[plane]) else @floatCast(d.minf[plane]);
 
-                    for (
-                        src.getReadSlice2(T, plane),
-                        dst.getWriteSlice2(T, plane),
-                    ) |*srcp, *dstp| {
-                        dstp.* = @min(@max(min, srcp.*), max);
-                    }
+                    filter.clampSlice(T, dst.getWriteSlice2(T, plane), src.getReadSlice2(T, plane), min, max);
                 }
 
                 return dst.frame;
@@ -75,12 +70,7 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
                 inline while (plane < np) : (plane += 1) {
                     if (!(comptime_planes[idx][plane])) continue;
 
-                    for (
-                        src.getReadSlice2(T, plane),
-                        dst.getWriteSlice2(T, plane),
-                    ) |*srcp, *dstp| {
-                        dstp.* = @min(@max(rng[0][plane], srcp.*), rng[1][plane]);
-                    }
+                    filter.clampSlice(T, dst.getWriteSlice2(T, plane), src.getReadSlice2(T, plane), rng[0][plane], rng[1][plane]);
                 }
 
                 return dst.frame;
@@ -144,6 +134,12 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
 
                 d.min[i] = @intCast(val);
             } else {
+                if (math.isNan(arr[i])) {
+                    map_out.setError(filter_name ++ ": min value must not be NaN.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
                 d.minf[i] = @floatCast(arr[i]);
             }
         }
@@ -176,6 +172,12 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
 
                 d.max[i] = @intCast(val);
             } else {
+                if (math.isNan(arr[i])) {
+                    map_out.setError(filter_name ++ ": max value must not be NaN.");
+                    zapi.freeNode(d.node);
+                    return;
+                }
+
                 d.maxf[i] = @floatCast(arr[i]);
             }
         }
@@ -208,6 +210,19 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     }
 
     const bps = BPSType.select(map_out, d.node, d.vi, filter_name) catch return;
+
+    // Default args on an 8/16/32-bit integer clip clamp to the full range of
+    // the carrier type — the identity. Pass the clip through instead of
+    // instantiating a filter that byte-copies every plane (measured: the full8
+    // variant is 100% of kernel work for the default 8-bit invocation).
+    // 9..14-bit formats are excluded: their u16 carrier can hold values above
+    // the nominal peak, which the full-range table really does clamp.
+    if (!has_min and !(map_in.getBool("tv_range") orelse false) and
+        (bps == .U8 or bps == .U16 or bps == .U32))
+    {
+        _ = map_out.consumeNode("clip", d.node, .Replace);
+        return;
+    }
 
     var i: u32 = 0;
     const idx: u32 = while (i < comptime_planes.len) : (i += 1) {

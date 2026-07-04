@@ -1,6 +1,7 @@
 //! BoxBlur with comptime radius size
 
 const std = @import("std");
+const simd = @import("simd.zig");
 const math = std.math;
 
 const allocator = std.heap.c_allocator;
@@ -127,6 +128,55 @@ inline fn colScale(comptime T: type, col: []const u32, tmp: []T, w: u32, comptim
     }
 }
 
+/// Vectorized center segment of the integer sliding-window sum:
+///   for x in [x0, x1): sum += (src[x+radius] - src[x-radius-1]) * inv2; dst[x] = sum >> 16
+/// The scalar running sum is loop-carried, so LLVM never vectorizes it
+/// (measured 8 scalar instr/px = 76% of the default int BoxBlur). Lanes here
+/// compute an in-register prefix sum of the deltas instead. All arithmetic is
+/// mod-2^32 exact and therefore bit-identical to the scalar u64 loop: the
+/// true running sum stays < 2^32 (window_sum*inv2 <= 65535*(inv>>16)*ksize
+/// <= 65535*2^16 plus sub-2^16 init-rounding residue), each |delta*inv2| <
+/// 2^31, and u32 wrapping preserves any value mod 2^32.
+pub inline fn slideSumInt(
+    comptime T: type,
+    srcp: []const T,
+    dstp: []T,
+    x0: u32,
+    x1: u32,
+    radius: u32,
+    inv2: u32,
+    sum0: u64,
+) u64 {
+    const n = comptime (std.simd.suggestVectorLength(u32) orelse 1);
+    var sum: u64 = sum0;
+    var x: u32 = x0;
+    if (comptime n > 1) {
+        var s_prev: u32 = @truncate(sum);
+        const inv2_v: @Vector(n, i32) = @splat(@as(i32, @intCast(inv2)));
+        const sh16: @Vector(n, u5) = @splat(16);
+        while (x + n <= x1) : (x += n) {
+            const a: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[x + radius ..][0..n].*));
+            const b: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[x - radius - 1 ..][0..n].*));
+            var d: @Vector(n, u32) = @bitCast((a - b) * inv2_v);
+            comptime var sh: u32 = 1;
+            inline while (sh < n) : (sh *= 2) {
+                d = d +% std.simd.shiftElementsRight(d, sh, 0);
+            }
+            const s = d +% @as(@Vector(n, u32), @splat(s_prev));
+            const out: @Vector(n, T) = @intCast(s >> sh16);
+            dstp[x..][0..n].* = out;
+            s_prev = s[n - 1];
+        }
+        sum = s_prev;
+    }
+    while (x < x1) : (x += 1) {
+        sum += @as(u32, srcp[radius + x]) * inv2;
+        sum -= @as(u32, srcp[x - radius - 1]) * inv2;
+        dstp[x] = @intCast(sum >> 16);
+    }
+    return sum;
+}
+
 inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksize: u32, comptime inv: u64) void {
     const radius: u32 = ksize >> 1;
     var sum: u64 = srcp[radius];
@@ -145,11 +195,8 @@ inline fn hBlurInt(comptime T: type, srcp: []T, dstp: []T, w: u32, comptime ksiz
         dstp[x] = @intCast(sum >> 16);
     }
 
-    while (x < w - radius) : (x += 1) {
-        sum += @as(u32, srcp[radius + x]) * inv2;
-        sum -= @as(u32, srcp[x - radius - 1]) * inv2;
-        dstp[x] = @intCast(sum >> 16);
-    }
+    sum = slideSumInt(T, srcp, dstp, x, w - radius, radius, @intCast(inv2), sum);
+    x = w - radius;
 
     while (x < w) : (x += 1) {
         sum += @as(u32, srcp[2 * w - radius - x - 1]) * inv2;
@@ -222,7 +269,9 @@ fn hBlurFloat(comptime T: type, srcp: []T, dstp: []T, w: i32, comptime ksize: u3
         const uj: u32 = @intCast(j - radius);
         var acc: FV = @splat(0.0);
         inline for (0..ksize) |k| {
-            const v: @Vector(fvec, T) = srcp[uj + k ..][0..fvec].*;
+            // Laundered: the ksize overlapping tap loads otherwise fuse into
+            // shuffle chains (measured 2x instructions at radius 4, 3x at 18).
+            const v = simd.loaduOpaque(T, fvec, srcp[uj + k ..][0..fvec]);
             const vf: FV = if (T == f32) v else @floatCast(v);
             acc = acc + dv * vf;
         }

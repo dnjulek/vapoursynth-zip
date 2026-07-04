@@ -19,8 +19,20 @@
 //! All inner arithmetic uses wrapping ops on i32 (the bit pattern is identical
 //! to FFmpeg's mixed signed/`unsigned` math) and arithmetic right shifts, so
 //! the result is bit-exact while never tripping Zig's overflow checks.
+//!
+//! The whole per-block DSP core runs lane-parallel on @Vector(8, i32): one
+//! vector holds the same coefficient index of all 8 rows (or columns), so a
+//! 1-D pass transforms the whole block at once, with in-register 8x8
+//! transposes (simd.transposeI32x8) switching between row- and
+//! column-parallel layouts. Every operation is a per-lane wrapping
+//! add/sub/mul/shift with no cross-lane accumulation, so each lane computes
+//! exactly the scalar reference expression — bit-exact by construction.
+//! The scalar reference stores every stage back to a [64]i16 block; trunc16
+//! reproduces those i16 store/reload wraps at the same points.
 
 const std = @import("std");
+
+const simd = @import("simd.zig");
 
 pub const Codec = enum { mpeg2, jpeg };
 
@@ -125,11 +137,27 @@ const FIX_2_053119869: i32 = 16819;
 const FIX_2_562915447: i32 = 20995;
 const FIX_3_072711026: i32 = 25172;
 
-inline fn descale(x: i32, comptime n: comptime_int) i32 {
-    return (x +% (1 << (n - 1))) >> n;
+/// One vector = one coefficient index across the 8 parallel rows/columns.
+const V = @Vector(8, i32);
+/// Quantizer products need 34 bits (i16 coeff × qmat ≤ 2^18).
+const VU = @Vector(8, u64);
+
+inline fn sp(comptime x: i32) V {
+    return @splat(x);
 }
 
-inline fn fdct1d(t: *[8]i32, comptime out_round: comptime_int, comptime even_shift: comptime_int) void {
+/// Reproduce the scalar reference's store to the [64]i16 block between
+/// stages: wrap each lane to i16 and sign-extend back to i32.
+inline fn trunc16(v: V) V {
+    const t: @Vector(8, i16) = @truncate(v);
+    return @intCast(t);
+}
+
+inline fn descale(x: V, comptime n: comptime_int) V {
+    return (x +% sp(1 << (n - 1))) >> @splat(n);
+}
+
+inline fn fdct1d(t: *[8]V, comptime out_round: comptime_int, comptime even_shift: comptime_int) void {
     const tmp0 = t[0] +% t[7];
     const tmp7 = t[0] -% t[7];
     const tmp1 = t[1] +% t[6];
@@ -145,28 +173,28 @@ inline fn fdct1d(t: *[8]i32, comptime out_round: comptime_int, comptime even_shi
     const tmp11 = tmp1 +% tmp2;
     const tmp12 = tmp1 -% tmp2;
 
-    t[0] = if (even_shift < 0) (tmp10 +% tmp11) *% PASS1_MUL else descale(tmp10 +% tmp11, even_shift);
-    t[4] = if (even_shift < 0) (tmp10 -% tmp11) *% PASS1_MUL else descale(tmp10 -% tmp11, even_shift);
+    t[0] = if (even_shift < 0) (tmp10 +% tmp11) *% sp(PASS1_MUL) else descale(tmp10 +% tmp11, even_shift);
+    t[4] = if (even_shift < 0) (tmp10 -% tmp11) *% sp(PASS1_MUL) else descale(tmp10 -% tmp11, even_shift);
 
-    var z1 = (tmp12 +% tmp13) *% FIX_0_541196100;
-    t[2] = descale(z1 +% tmp13 *% FIX_0_765366865, out_round);
-    t[6] = descale(z1 +% tmp12 *% (-FIX_1_847759065), out_round);
+    var z1 = (tmp12 +% tmp13) *% sp(FIX_0_541196100);
+    t[2] = descale(z1 +% tmp13 *% sp(FIX_0_765366865), out_round);
+    t[6] = descale(z1 +% tmp12 *% sp(-FIX_1_847759065), out_round);
 
     // Odd part
     z1 = tmp4 +% tmp7;
     var z2 = tmp5 +% tmp6;
     var z3 = tmp4 +% tmp6;
     var z4 = tmp5 +% tmp7;
-    const z5 = (z3 +% z4) *% FIX_1_175875602;
+    const z5 = (z3 +% z4) *% sp(FIX_1_175875602);
 
-    var o4 = tmp4 *% FIX_0_298631336;
-    var o5 = tmp5 *% FIX_2_053119869;
-    var o6 = tmp6 *% FIX_3_072711026;
-    var o7 = tmp7 *% FIX_1_501321110;
-    z1 = z1 *% (-FIX_0_899976223);
-    z2 = z2 *% (-FIX_2_562915447);
-    z3 = z3 *% (-FIX_1_961570560);
-    z4 = z4 *% (-FIX_0_390180644);
+    var o4 = tmp4 *% sp(FIX_0_298631336);
+    var o5 = tmp5 *% sp(FIX_2_053119869);
+    var o6 = tmp6 *% sp(FIX_3_072711026);
+    var o7 = tmp7 *% sp(FIX_1_501321110);
+    z1 = z1 *% sp(-FIX_0_899976223);
+    z2 = z2 *% sp(-FIX_2_562915447);
+    z3 = z3 *% sp(-FIX_1_961570560);
+    z4 = z4 *% sp(-FIX_0_390180644);
 
     z3 +%= z5;
     z4 +%= z5;
@@ -182,21 +210,21 @@ inline fn fdct1d(t: *[8]i32, comptime out_round: comptime_int, comptime even_shi
     t[1] = descale(o7, out_round);
 }
 
-pub fn fdctIslow(block: *[64]i16) void {
-    // Pass 1: rows. Even outputs scaled by PASS1_BITS, odd descaled by 9.
-    for (0..8) |r| {
-        var t: [8]i32 = undefined;
-        for (0..8) |c| t[c] = block[r * 8 + c];
-        fdct1d(&t, CONST_BITS - PASS1_BITS, -1);
-        for (0..8) |c| block[r * 8 + c] = @truncate(t[c]);
-    }
-    // Pass 2: columns. Removes PASS1_BITS, leaves overall factor of 8.
-    for (0..8) |c| {
-        var t: [8]i32 = undefined;
-        for (0..8) |r| t[r] = block[r * 8 + c];
-        fdct1d(&t, CONST_BITS + OUT_SHIFT, OUT_SHIFT);
-        for (0..8) |r| block[r * 8 + c] = @truncate(t[r]);
-    }
+/// Both islow passes over one block held as 8 row vectors (row-major in/out).
+/// Each pass ends with the i16 wrap the scalar reference gets from storing
+/// the pass back to its i16 block.
+fn fdctIslow(rows: *[8]V) void {
+    // Pass 1: rows (lanes = rows). Even outputs scaled by PASS1_BITS, odd
+    // descaled by 9.
+    var t = simd.transposeI32x8(rows.*);
+    fdct1d(&t, CONST_BITS - PASS1_BITS, -1);
+    for (&t) |*v| v.* = trunc16(v.*);
+    // Pass 2: columns (lanes = columns). Removes PASS1_BITS, leaves overall
+    // factor of 8.
+    var u = simd.transposeI32x8(t);
+    fdct1d(&u, CONST_BITS + OUT_SHIFT, OUT_SHIFT);
+    for (&u) |*v| v.* = trunc16(v.*);
+    rows.* = u;
 }
 
 // ===========================================================================
@@ -211,69 +239,83 @@ const MPEG_THRESH1: i64 = (1 << QMAT_SHIFT) - MPEG_BIAS - 1;
 const MPEG_THRESH2: u64 = @as(u64, @intCast(MPEG_THRESH1)) << 1;
 const JPEG_BIAS: i64 = 1 << (QMAT_SHIFT - 1); // symmetric round-to-nearest
 
-/// MPEG-2 intra quantize (dct_quantize_c, intra path). block in natural order.
-pub fn quantMpeg2(block: *[64]i16, qt: *const QuantTables) void {
-    // DC: special scale, block[0] assumed positive (FFmpeg comment).
-    block[0] = @intCast(@divTrunc(@as(i32, block[0]) + (qt.dc_q >> 1), qt.dc_q));
+// The scalar quantizers branch on sign and (mpeg2) deadzone; both reduce to
+// a branchless magnitude form. qmat > 0, so sign(level) = sign(coeff) and
+// |level| = |coeff| * qmat; the two sign arms `(BIAS + level) >> 21` and
+// `-((BIAS - level) >> 21)` are both `±((BIAS + |level|) >> 21)`, and the
+// mpeg2 window test `(u64)(level + THRESH1) > THRESH2` is exactly
+// `|level| > THRESH1` (THRESH2 == 2*THRESH1). |level| ≥ 0 also makes the u64
+// logical shift identical to the scalar's i64 arithmetic shift.
 
-    // AC: deadzone threshold + rounding bias. Applying the threshold to every
-    // coefficient in natural order is identical to FFmpeg's scan-order
-    // last_non_zero search, since coeffs past the last significant one all fail.
-    var i: usize = 1;
-    while (i < 64) : (i += 1) {
-        const level: i64 = @as(i64, block[i]) * qt.qmat[i];
-        if (@as(u64, @bitCast(level + MPEG_THRESH1)) > MPEG_THRESH2) {
-            block[i] = if (level > 0)
-                @intCast((MPEG_BIAS + level) >> QMAT_SHIFT)
-            else
-                @intCast(-((MPEG_BIAS - level) >> QMAT_SHIFT));
-        } else {
-            block[i] = 0;
-        }
+/// |coeff| * qmat as u64 lanes (the product needs 34 bits).
+inline fn quantMag(b: V, qm: V) VU {
+    return @as(VU, @intCast(@abs(b))) * @as(VU, @intCast(qm));
+}
+
+/// (bias + |level|) >> QMAT_SHIFT, narrowed back to i32 lanes (the result is
+/// < 2^13, so the narrowing and the scalar's i16 store are both lossless).
+inline fn quantLevel(mag: VU, comptime bias: u64) V {
+    const shifted = (mag + @as(VU, @splat(bias))) >> @splat(QMAT_SHIFT);
+    return @bitCast(@as(@Vector(8, u32), @truncate(shifted)));
+}
+
+/// MPEG-2 intra quantize (dct_quantize_c, intra path). Row-major in/out.
+fn quantMpeg2(rows: *[8]V, qt: *const QuantTables) void {
+    const dc: i32 = rows[0][0];
+    for (0..8) |k| {
+        // AC: deadzone threshold + rounding bias. Applying the threshold to
+        // every coefficient in natural order is identical to FFmpeg's
+        // scan-order last_non_zero search, since coeffs past the last
+        // significant one all fail. (Lane 0 of k == 0 computes garbage from
+        // qmat[0]; the DC patch below overwrites it.)
+        const b = rows[k];
+        const qm: V = qt.qmat[k * 8 ..][0..8].*;
+        const mag = quantMag(b, qm);
+        const keep = mag > @as(VU, @splat(MPEG_THRESH1));
+        const level = quantLevel(mag, MPEG_BIAS);
+        const signed = @select(i32, b < sp(0), -%level, level);
+        rows[k] = @select(i32, keep, signed, sp(0));
     }
+    // DC: special scale, block[0] assumed positive (FFmpeg comment).
+    rows[0][0] = @as(i16, @intCast(@divTrunc(dc + (qt.dc_q >> 1), qt.dc_q)));
 }
 
 /// MPEG-2 intra dequantize (dct_unquantize_mpeg2_intra_c). qscale<<1 already
 /// folded into qt.deq; the net >>4 with that doubling removes the FDCT's x8.
-pub fn dequantMpeg2(block: *[64]i16, qt: *const QuantTables) void {
-    block[0] = @truncate(@as(i32, block[0]) *% qt.dc_scale);
-    var i: usize = 1;
-    while (i < 64) : (i += 1) {
-        var level: i32 = block[i];
-        if (level != 0) {
-            if (level < 0) {
-                level = -level;
-                level = (level *% qt.deq[i]) >> 4;
-                level = -level;
-            } else {
-                level = (level *% qt.deq[i]) >> 4;
-            }
-            block[i] = @truncate(level);
-        }
+/// Branchless |level|*deq >> 4 with the sign restored by select; a zero lane
+/// stays zero through the arithmetic, so the scalar's level == 0 skip needs
+/// no separate case.
+fn dequantMpeg2(rows: *[8]V, qt: *const QuantTables) void {
+    const dc: i32 = rows[0][0];
+    for (0..8) |k| {
+        const lv = rows[k];
+        const dq: V = qt.deq[k * 8 ..][0..8].*;
+        const mag: V = @bitCast(@abs(lv)); // |lv| < 2^13 after quant
+        const val = (mag *% dq) >> @splat(4);
+        rows[k] = trunc16(@select(i32, lv < sp(0), -%val, val));
     }
+    rows[0][0] = @as(i16, @truncate(dc *% qt.dc_scale));
 }
 
 /// JPEG quantize: plain round(coeff/(8*qtab)) over all 64 coefficients.
-pub fn quantJpeg(block: *[64]i16, qt: *const QuantTables, idx: usize) void {
+/// Same magnitude form; a zero coefficient yields (JPEG_BIAS >> 21) == 0, so
+/// the scalar's explicit zero case folds into either sign arm.
+fn quantJpeg(rows: *[8]V, qt: *const QuantTables, idx: usize) void {
     const m = &qt.jqmat[idx];
-    var i: usize = 0;
-    while (i < 64) : (i += 1) {
-        const level: i64 = @as(i64, block[i]) * m[i];
-        block[i] = if (level > 0)
-            @intCast((JPEG_BIAS + level) >> QMAT_SHIFT)
-        else if (level < 0)
-            @intCast(-((JPEG_BIAS - level) >> QMAT_SHIFT))
-        else
-            0;
+    for (0..8) |k| {
+        const b = rows[k];
+        const qm: V = m[k * 8 ..][0..8].*;
+        const level = quantLevel(quantMag(b, qm), JPEG_BIAS);
+        rows[k] = @select(i32, b < sp(0), -%level, level);
     }
 }
 
 /// JPEG dequantize: coeff = level * qtab (yields true DCT, the IDCT's scale).
-pub fn dequantJpeg(block: *[64]i16, qt: *const QuantTables, idx: usize) void {
+fn dequantJpeg(rows: *[8]V, qt: *const QuantTables, idx: usize) void {
     const q = &qt.jqtab[idx];
-    var i: usize = 0;
-    while (i < 64) : (i += 1) {
-        block[i] = @truncate(@as(i32, block[i]) *% q[i]);
+    for (0..8) |k| {
+        const dq: V = q[k * 8 ..][0..8].*;
+        rows[k] = trunc16(rows[k] *% dq);
     }
 }
 
@@ -292,137 +334,125 @@ const ROW_SHIFT = 11;
 const COL_SHIFT = 20;
 const COL_DC_BIAS = (1 << (COL_SHIFT - 1)) / W4; // == 32
 
-/// Row pass, in place, with the DC-only fast path (left-shift only, no >>SHIFT).
-fn idctRows(block: *[64]i16) void {
-    for (0..8) |r| {
-        const o = r * 8;
-        const m1 = block[o + 1];
-        const m2 = block[o + 2];
-        const m3 = block[o + 3];
-        const m4 = block[o + 4];
-        const m5 = block[o + 5];
-        const m6 = block[o + 6];
-        const m7 = block[o + 7];
+/// Row pass, row-major in/out; lanes = rows. The scalar (m4..m7) == 0 fast
+/// path only skips adding zero terms, so the vector form always adds them —
+/// identical. The DC-only fast path is a genuinely different rounding
+/// (dc*8, not (W4*dc + rnd) >> 11), so it is kept, as a per-lane blend.
+fn idctRows(rows: *[8]V) void {
+    const t = simd.transposeI32x8(rows.*);
+    const c0 = t[0];
+    const c1 = t[1];
+    const c2 = t[2];
+    const c3 = t[3];
+    const c4 = t[4];
+    const c5 = t[5];
+    const c6 = t[6];
+    const c7 = t[7];
 
-        if ((m1 | m2 | m3 | m4 | m5 | m6 | m7) == 0) {
-            const dc: i16 = @truncate(@as(i32, block[o]) *% 8);
-            for (0..8) |c| block[o + c] = dc;
-            continue;
-        }
+    const dc_only = (c1 | c2 | c3 | c4 | c5 | c6 | c7) == sp(0);
+    const dc = trunc16(c0 *% sp(8));
 
-        const c0: i32 = block[o];
-        const c1: i32 = m1;
-        const c2: i32 = m2;
-        const c3: i32 = m3;
+    var a0 = c0 *% sp(W4) +% sp(1 << (ROW_SHIFT - 1));
+    var a1 = a0;
+    var a2 = a0;
+    var a3 = a0;
+    a0 +%= c2 *% sp(W2);
+    a1 +%= c2 *% sp(W6);
+    a2 -%= c2 *% sp(W6);
+    a3 -%= c2 *% sp(W2);
 
-        var a0 = W4 *% c0 +% (1 << (ROW_SHIFT - 1));
-        var a1 = a0;
-        var a2 = a0;
-        var a3 = a0;
-        a0 +%= W2 *% c2;
-        a1 +%= W6 *% c2;
-        a2 -%= W6 *% c2;
-        a3 -%= W2 *% c2;
+    var b0 = c1 *% sp(W1) +% c3 *% sp(W3);
+    var b1 = c1 *% sp(W3) -% c3 *% sp(W7);
+    var b2 = c1 *% sp(W5) -% c3 *% sp(W1);
+    var b3 = c1 *% sp(W7) -% c3 *% sp(W5);
 
-        var b0 = W1 *% c1 +% W3 *% c3;
-        var b1 = W3 *% c1 -% W7 *% c3;
-        var b2 = W5 *% c1 -% W1 *% c3;
-        var b3 = W7 *% c1 -% W5 *% c3;
+    a0 +%= c4 *% sp(W4) +% c6 *% sp(W6);
+    a1 +%= c4 *% sp(-W4) -% c6 *% sp(W2);
+    a2 +%= c4 *% sp(-W4) +% c6 *% sp(W2);
+    a3 +%= c4 *% sp(W4) -% c6 *% sp(W6);
+    b0 +%= c5 *% sp(W5) +% c7 *% sp(W7);
+    b1 +%= c5 *% sp(-W1) -% c7 *% sp(W5);
+    b2 +%= c5 *% sp(W7) +% c7 *% sp(W3);
+    b3 +%= c5 *% sp(W3) -% c7 *% sp(W1);
 
-        if ((m4 | m5 | m6 | m7) != 0) {
-            const c4: i32 = m4;
-            const c5: i32 = m5;
-            const c6: i32 = m6;
-            const c7: i32 = m7;
-            a0 +%= W4 *% c4 +% W6 *% c6;
-            a1 +%= -W4 *% c4 -% W2 *% c6;
-            a2 +%= -W4 *% c4 +% W2 *% c6;
-            a3 +%= W4 *% c4 -% W6 *% c6;
-            b0 +%= W5 *% c5 +% W7 *% c7;
-            b1 +%= -W1 *% c5 -% W5 *% c7;
-            b2 +%= W7 *% c5 +% W3 *% c7;
-            b3 +%= W3 *% c5 -% W1 *% c7;
-        }
-
-        block[o + 0] = @truncate((a0 +% b0) >> ROW_SHIFT);
-        block[o + 7] = @truncate((a0 -% b0) >> ROW_SHIFT);
-        block[o + 1] = @truncate((a1 +% b1) >> ROW_SHIFT);
-        block[o + 6] = @truncate((a1 -% b1) >> ROW_SHIFT);
-        block[o + 2] = @truncate((a2 +% b2) >> ROW_SHIFT);
-        block[o + 5] = @truncate((a2 -% b2) >> ROW_SHIFT);
-        block[o + 3] = @truncate((a3 +% b3) >> ROW_SHIFT);
-        block[o + 4] = @truncate((a3 -% b3) >> ROW_SHIFT);
-    }
+    var out: [8]V = undefined;
+    out[0] = @select(i32, dc_only, dc, trunc16((a0 +% b0) >> @splat(ROW_SHIFT)));
+    out[7] = @select(i32, dc_only, dc, trunc16((a0 -% b0) >> @splat(ROW_SHIFT)));
+    out[1] = @select(i32, dc_only, dc, trunc16((a1 +% b1) >> @splat(ROW_SHIFT)));
+    out[6] = @select(i32, dc_only, dc, trunc16((a1 -% b1) >> @splat(ROW_SHIFT)));
+    out[2] = @select(i32, dc_only, dc, trunc16((a2 +% b2) >> @splat(ROW_SHIFT)));
+    out[5] = @select(i32, dc_only, dc, trunc16((a2 -% b2) >> @splat(ROW_SHIFT)));
+    out[3] = @select(i32, dc_only, dc, trunc16((a3 +% b3) >> @splat(ROW_SHIFT)));
+    out[4] = @select(i32, dc_only, dc, trunc16((a3 -% b3) >> @splat(ROW_SHIFT)));
+    rows.* = simd.transposeI32x8(out);
 }
 
-/// Column pass, writes clamped pixels to `out` (raster). offset: +128 for JPEG.
-fn idctColsPut(block: *const [64]i16, out: *[64]u8, comptime offset: i32) void {
-    for (0..8) |c| {
-        const c0: i32 = block[c + 8 * 0];
-        const c1: i32 = block[c + 8 * 1];
-        const c2: i32 = block[c + 8 * 2];
-        const c3: i32 = block[c + 8 * 3];
-        const c4: i32 = block[c + 8 * 4];
-        const c5: i32 = block[c + 8 * 5];
-        const c6: i32 = block[c + 8 * 6];
-        const c7: i32 = block[c + 8 * 7];
+/// Column pass, row-major input; lanes = columns. Writes clamped pixels to
+/// `out` (raster). offset: +128 for JPEG. The scalar c4..c7 != 0 guards only
+/// skip adding zero terms, so the vector form always adds them — identical.
+fn idctColsPut(rows: *const [8]V, out: *[64]u8, comptime offset: i32) void {
+    const c0 = rows[0];
+    const c1 = rows[1];
+    const c2 = rows[2];
+    const c3 = rows[3];
+    const c4 = rows[4];
+    const c5 = rows[5];
+    const c6 = rows[6];
+    const c7 = rows[7];
 
-        var a0 = W4 *% (c0 +% COL_DC_BIAS);
-        var a1 = a0;
-        var a2 = a0;
-        var a3 = a0;
-        a0 +%= W2 *% c2;
-        a1 +%= W6 *% c2;
-        a2 -%= W6 *% c2;
-        a3 -%= W2 *% c2;
+    var a0 = (c0 +% sp(COL_DC_BIAS)) *% sp(W4);
+    var a1 = a0;
+    var a2 = a0;
+    var a3 = a0;
+    a0 +%= c2 *% sp(W2);
+    a1 +%= c2 *% sp(W6);
+    a2 -%= c2 *% sp(W6);
+    a3 -%= c2 *% sp(W2);
 
-        var b0 = W1 *% c1;
-        var b1 = W3 *% c1;
-        var b2 = W5 *% c1;
-        var b3 = W7 *% c1;
-        b0 +%= W3 *% c3;
-        b1 -%= W7 *% c3;
-        b2 -%= W1 *% c3;
-        b3 -%= W5 *% c3;
+    var b0 = c1 *% sp(W1);
+    var b1 = c1 *% sp(W3);
+    var b2 = c1 *% sp(W5);
+    var b3 = c1 *% sp(W7);
+    b0 +%= c3 *% sp(W3);
+    b1 -%= c3 *% sp(W7);
+    b2 -%= c3 *% sp(W1);
+    b3 -%= c3 *% sp(W5);
 
-        if (c4 != 0) {
-            a0 +%= W4 *% c4;
-            a1 -%= W4 *% c4;
-            a2 -%= W4 *% c4;
-            a3 +%= W4 *% c4;
-        }
-        if (c5 != 0) {
-            b0 +%= W5 *% c5;
-            b1 -%= W1 *% c5;
-            b2 +%= W7 *% c5;
-            b3 +%= W3 *% c5;
-        }
-        if (c6 != 0) {
-            a0 +%= W6 *% c6;
-            a1 -%= W2 *% c6;
-            a2 +%= W2 *% c6;
-            a3 -%= W6 *% c6;
-        }
-        if (c7 != 0) {
-            b0 +%= W7 *% c7;
-            b1 -%= W5 *% c7;
-            b2 +%= W3 *% c7;
-            b3 -%= W1 *% c7;
-        }
+    a0 +%= c4 *% sp(W4);
+    a1 -%= c4 *% sp(W4);
+    a2 -%= c4 *% sp(W4);
+    a3 +%= c4 *% sp(W4);
+    b0 +%= c5 *% sp(W5);
+    b1 -%= c5 *% sp(W1);
+    b2 +%= c5 *% sp(W7);
+    b3 +%= c5 *% sp(W3);
+    a0 +%= c6 *% sp(W6);
+    a1 -%= c6 *% sp(W2);
+    a2 +%= c6 *% sp(W2);
+    a3 -%= c6 *% sp(W6);
+    b0 +%= c7 *% sp(W7);
+    b1 -%= c7 *% sp(W5);
+    b2 +%= c7 *% sp(W3);
+    b3 -%= c7 *% sp(W1);
 
-        out[c + 8 * 0] = clipU8(((a0 +% b0) >> COL_SHIFT) +% offset);
-        out[c + 8 * 1] = clipU8(((a1 +% b1) >> COL_SHIFT) +% offset);
-        out[c + 8 * 2] = clipU8(((a2 +% b2) >> COL_SHIFT) +% offset);
-        out[c + 8 * 3] = clipU8(((a3 +% b3) >> COL_SHIFT) +% offset);
-        out[c + 8 * 4] = clipU8(((a3 -% b3) >> COL_SHIFT) +% offset);
-        out[c + 8 * 5] = clipU8(((a2 -% b2) >> COL_SHIFT) +% offset);
-        out[c + 8 * 6] = clipU8(((a1 -% b1) >> COL_SHIFT) +% offset);
-        out[c + 8 * 7] = clipU8(((a0 -% b0) >> COL_SHIFT) +% offset);
-    }
+    // The clamp to [0, 255] lives inside packClampU8x4 (its pack saturations
+    // are exactly the scalar reference's std.math.clamp(v, 0, 255)).
+    out[0..32].* = simd.packClampU8x4(
+        colPix(a0 +% b0, offset),
+        colPix(a1 +% b1, offset),
+        colPix(a2 +% b2, offset),
+        colPix(a3 +% b3, offset),
+    );
+    out[32..64].* = simd.packClampU8x4(
+        colPix(a3 -% b3, offset),
+        colPix(a2 -% b2, offset),
+        colPix(a1 -% b1, offset),
+        colPix(a0 -% b0, offset),
+    );
 }
 
-inline fn clipU8(v: i32) u8 {
-    return @intCast(std.math.clamp(v, 0, 255));
+inline fn colPix(v: V, comptime offset: i32) V {
+    return (v >> @splat(COL_SHIFT)) +% sp(offset);
 }
 
 // ===========================================================================
@@ -430,19 +460,24 @@ inline fn clipU8(v: i32) u8 {
 // ===========================================================================
 
 inline fn processBlock(comptime codec: Codec, block: *[64]i16, out: *[64]u8, qt: *const QuantTables, idx: usize) void {
-    fdctIslow(block);
+    var rows: [8]V = undefined;
+    for (0..8) |r| {
+        const t: @Vector(8, i16) = block[r * 8 ..][0..8].*;
+        rows[r] = @intCast(t);
+    }
+    fdctIslow(&rows);
     switch (codec) {
         .mpeg2 => {
-            quantMpeg2(block, qt);
-            dequantMpeg2(block, qt);
+            quantMpeg2(&rows, qt);
+            dequantMpeg2(&rows, qt);
         },
         .jpeg => {
-            quantJpeg(block, qt, idx);
-            dequantJpeg(block, qt, idx);
+            quantJpeg(&rows, qt, idx);
+            dequantJpeg(&rows, qt, idx);
         },
     }
-    idctRows(block);
-    idctColsPut(block, out, if (codec == .jpeg) 128 else 0);
+    idctRows(&rows);
+    idctColsPut(&rows, out, if (codec == .jpeg) 128 else 0);
 }
 
 /// Compress one raw 8x8 pixel block (raster order). Exposed for golden tests;
@@ -477,9 +512,13 @@ pub fn processPlane(
 
             const full = (bx + 8 <= w) and (by + 8 <= h);
             if (full) {
+                // Vector row load: the unrolled scalar form never SLP-vectorizes
+                // (measured ~192 scalar instructions per block vs ~24).
+                const level_v: @Vector(8, i16) = @splat(level);
                 for (0..8) |yy| {
                     const row = (by + yy) * stride + bx;
-                    inline for (0..8) |xx| block[yy * 8 + xx] = @as(i16, srcp[row + xx]) - level;
+                    const v: @Vector(8, u8) = srcp[row..][0..8].*;
+                    block[yy * 8 ..][0..8].* = @as(@Vector(8, i16), v) - level_v;
                 }
             } else {
                 for (0..8) |yy| {
@@ -494,9 +533,14 @@ pub fn processPlane(
             processBlock(codec, &block, &out, qt, idx);
 
             if (full) {
+                // Launder the block buffer: LLVM otherwise forwards the
+                // packed 32-byte stores from idctColsPut into these row
+                // loads and rebuilds each 8-byte row with per-byte
+                // extract/shift/or scalar code (~220 instr/block measured).
+                const outp = simd.opaquePtr(u8, &out);
                 for (0..8) |yy| {
                     const row = (by + yy) * stride + bx;
-                    inline for (0..8) |xx| dstp[row + xx] = out[yy * 8 + xx];
+                    dstp[row..][0..8].* = outp[yy * 8 ..][0..8].*;
                 }
             } else {
                 for (0..8) |yy| {

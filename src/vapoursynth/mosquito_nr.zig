@@ -23,6 +23,15 @@ const Data = struct {
     bits: u6,
     num_planes: u32,
     planes: [3]bool,
+
+    // Pool of per-frame wavelet scratch arenas (~42 MB at 1080p u16),
+    // reused across frames: allocating/freeing them every getFrame call is
+    // mmap/munmap + page-fault traffic (measured ~2900 minor faults per
+    // frame). Reuse is deterministic because process() writes every scratch
+    // element before reading it. The mutex only guards the pool; each
+    // in-flight frame owns one arena exclusively (the filter is .Parallel).
+    pool_mutex: std.Io.Mutex = .init,
+    pool: std.ArrayList(std.heap.ArenaAllocator.State),
 };
 
 fn Filter(comptime T: type) type {
@@ -48,6 +57,18 @@ fn Filter(comptime T: type) type {
                 const dst = src.newVideoFrame2(d.planes);
                 const proc = if (T == f32) core_float.MosquitoNRFloat.process else core.MosquitoNR(T).process;
 
+                var arena = blk: {
+                    d.pool_mutex.lockUncancelable(vszip.io);
+                    defer d.pool_mutex.unlock(vszip.io);
+                    break :blk (d.pool.pop() orelse std.heap.ArenaAllocator.State.init).promote(allocator);
+                };
+                defer {
+                    _ = arena.reset(.retain_capacity);
+                    d.pool_mutex.lockUncancelable(vszip.io);
+                    defer d.pool_mutex.unlock(vszip.io);
+                    d.pool.append(allocator, arena.state) catch arena.deinit();
+                }
+
                 var plane: u32 = 0;
                 while (plane < d.num_planes) : (plane += 1) {
                     if (!d.planes[plane]) continue;
@@ -67,7 +88,7 @@ fn Filter(comptime T: type) type {
                         d.radius[plane],
                         d.bits,
                         plane > 0,
-                        allocator,
+                        arena.allocator(),
                     ) catch {
                         dst.deinit();
                         zapi.setFilterError(filter_name ++ ": out of memory");
@@ -86,6 +107,8 @@ fn Filter(comptime T: type) type {
 fn free(instance_data: ?*anyopaque, c: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, c, null);
+    for (d.pool.items) |state| state.promote(allocator).deinit();
+    d.pool.deinit(allocator);
     zapi.freeNode(d.node);
     allocator.destroy(d);
 }
@@ -135,6 +158,8 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, c: ?*vs.Core, v
 
     d.bits = @intCast(fmt.bitsPerSample);
     d.num_planes = np;
+    d.pool_mutex = .init;
+    d.pool = .empty;
 
     const data = allocator.create(Data) catch unreachable;
     data.* = d;

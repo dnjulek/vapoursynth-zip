@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 
 pub const MosquitoNRFloat = struct {
     const I = f32;
@@ -6,8 +7,18 @@ pub const MosquitoNRFloat = struct {
     const V = @Vector(VL, f32);
     const VI = @Vector(VL, i32);
 
+    // Laundered: same +-1/+-2 sliding-window fusion as the int variant.
     inline fn vload(s: []const I, i: usize) V {
-        return s[i..][0..VL].*;
+        return simd.loaduOpaque(I, VL, s[i..][0..VL]);
+    }
+
+    // fwdH/invH vector regime: engaged whenever the shared f32 lane helpers
+    // have a pinned-asm path at this VL (8-lane AVX2 or 16-lane AVX-512). The
+    // scalar loops stay in place as the semantic reference and fallback.
+    const use_hvec = simd.f32LanesAccelerated(VL);
+
+    inline fn interleave(e: V, o: V) [2]V {
+        return simd.interleaveF32(VL, e, o);
     }
     inline fn vstore(s: []I, i: usize, v: V) void {
         s[i..][0..VL].* = v;
@@ -212,21 +223,47 @@ pub const MosquitoNRFloat = struct {
         }
     }
 
-    fn fwdH(in: []const I, ha: []I, hd: []I, w: usize, rows: usize) void {
+    // Same structure as the int core's fwdH/invH: edge clamps only fire at
+    // the first/last element (Create guarantees w >= 4), so i == 0 is peeled,
+    // the right edge stays in the scalar tails, and every vector lane
+    // computes the exact scalar expression op-for-op (bit-exact; no
+    // accumulation across elements).
+    fn fwdH(in: []const I, ha: []I, hd: []I, w: usize, rows: usize, comptime need_ha: bool) void {
+        std.debug.assert(w >= 4);
         const naw = (w + 1) / 2;
         const ndw = w / 2;
+        const quarter: V = @splat(0.25);
         var r: usize = 0;
         while (r < rows) : (r += 1) {
             const row = in[r * w ..];
             const hdr = hd[r * ndw ..];
-            const har = ha[r * naw ..];
             var i: usize = 0;
+            if (comptime use_hvec) {
+                while (i + VL < ndw) : (i += VL) {
+                    const a = vload(row, 2 * i);
+                    const b = vload(row, 2 * i + VL);
+                    const e = simd.evenLanesF32(VL, a, b);
+                    const o = simd.oddLanesF32(VL, a, b);
+                    const e2 = simd.evenLanesF32(VL, vload(row, 2 * i + 2), vload(row, 2 * i + 2 + VL));
+                    vstore(hdr, i, o - vhalf(e + e2));
+                }
+            }
             while (i < ndw) : (i += 1) {
                 const c0 = row[2 * i];
                 const c2 = row[if (2 * i + 2 < w) 2 * i + 2 else w - 2];
                 hdr[i] = row[2 * i + 1] - (c0 + c2) * 0.5;
             }
+            if (comptime !need_ha) continue;
+            const har = ha[r * naw ..];
             i = 0;
+            if (comptime use_hvec) {
+                har[0] = row[0] + (hdr[0] + hdr[0]) * 0.25;
+                i = 1;
+                while (i + VL <= ndw) : (i += VL) {
+                    const e = simd.evenLanesF32(VL, vload(row, 2 * i), vload(row, 2 * i + VL));
+                    vstore(har, i, e + (vload(hdr, i - 1) + vload(hdr, i)) * quarter);
+                }
+            }
             while (i < naw) : (i += 1) {
                 const il = if (i >= 1) i - 1 else 0;
                 const ir = if (i < ndw) i else ndw - 1;
@@ -236,24 +273,48 @@ pub const MosquitoNRFloat = struct {
     }
 
     fn invH(ha: []const I, hd: []const I, out: []I, w: usize, rows: usize) void {
+        std.debug.assert(w >= 4);
         const naw = (w + 1) / 2;
         const ndw = w / 2;
+        const quarter: V = @splat(0.25);
         var r: usize = 0;
         while (r < rows) : (r += 1) {
             const har = ha[r * naw ..];
             const hdr = hd[r * ndw ..];
             const orow = out[r * w ..];
             var i: usize = 0;
-            while (i < naw) : (i += 1) {
-                const il = if (i >= 1) i - 1 else 0;
-                const ir = if (i < ndw) i else ndw - 1;
-                orow[2 * i] = har[i] - (hdr[il] + hdr[ir]) * 0.25;
+            if (comptime use_hvec) {
+                orow[0] = har[0] - (hdr[0] + hdr[0]) * 0.25;
+                i = 1;
+                while (i + VL < ndw) : (i += VL) {
+                    // Odd outputs need the even outputs one lane to the
+                    // right; e2 recomputes them from source (identical ops
+                    // on identical inputs, so identical bits) instead of
+                    // carrying a lane-shift across blocks.
+                    const dl = vload(hdr, i - 1);
+                    const d0 = vload(hdr, i);
+                    const dr = vload(hdr, i + 1);
+                    const e = vload(har, i) - (dl + d0) * quarter;
+                    const e2 = vload(har, i + 1) - (d0 + dr) * quarter;
+                    const o = d0 + vhalf(e + e2);
+                    const lohi = interleave(e, o);
+                    vstore(orow, 2 * i, lohi[0]);
+                    vstore(orow, 2 * i + VL, lohi[1]);
+                }
             }
-            i = 0;
-            while (i < ndw) : (i += 1) {
-                const xl = orow[2 * i];
-                const xr = orow[if (2 * i + 2 < w) 2 * i + 2 else w - 2];
-                orow[2 * i + 1] = hdr[i] + (xl + xr) * 0.5;
+            var j: usize = i;
+            while (j < naw) : (j += 1) {
+                const il = if (j >= 1) j - 1 else 0;
+                const ir = if (j < ndw) j else ndw - 1;
+                orow[2 * j] = har[j] - (hdr[il] + hdr[ir]) * 0.25;
+            }
+            // odd 0 reads even 1, so it peels after the even tail
+            if (comptime use_hvec) orow[1] = hdr[0] + (orow[0] + orow[2]) * 0.5;
+            j = i;
+            while (j < ndw) : (j += 1) {
+                const xl = orow[2 * j];
+                const xr = orow[if (2 * j + 2 < w) 2 * j + 2 else w - 2];
+                orow[2 * j + 1] = hdr[j] + (xl + xr) * 0.5;
             }
         }
     }
@@ -287,10 +348,10 @@ pub const MosquitoNRFloat = struct {
         const na_w = (w + 1) / 2;
         const nd_w = w / 2;
         const wv = ((w + VL - 1) / VL) * VL;
-
-        var arena_state = std.heap.ArenaAllocator.init(alloc);
-        defer arena_state.deinit();
-        const a = arena_state.allocator();
+        // alloc is the caller's per-frame arena, reused across frames; every
+        // buffer below is fully written before it is read, so the reuse is
+        // deterministic.
+        const a = alloc;
 
         const blur = try a.alloc(I, w * h);
 
@@ -335,15 +396,20 @@ pub const MosquitoNRFloat = struct {
             const scratch_hd = try a.alloc(I, na_h * nd_w);
 
             fwdV(pl, pw, pl_base, va_o, scratch_vd, w, h);
-            fwdH(va_o, ll_o, scratch_hd, w, na_h);
+            fwdH(va_o, ll_o, scratch_hd, w, na_h, true);
             fwdV(blur, w, 0, va_b, vd_b, w, h);
 
             const ll: []const I = ll_o;
-            fwdH(va_b, ll_b, hd_b, w, na_h);
             if (restore != 128) {
+                fwdH(va_b, ll_b, hd_b, w, na_h, true);
                 const wo: f32 = @as(f32, @floatFromInt(restore)) / 128.0;
                 const wb: f32 = 1.0 - wo;
                 for (ll_o, ll_b) |*o, b| o.* = wo * o.* + wb * b;
+            } else {
+                // restore == 128 (default) keeps ll = ll_o untouched, so the
+                // smoothed approximation band would be discarded — skip
+                // computing it.
+                fwdH(va_b, ll_b, hd_b, w, na_h, false);
             }
 
             invH(ll, hd_b, va_rec, w, na_h);

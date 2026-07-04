@@ -34,7 +34,11 @@ pub fn applyCLAHE(
     defer allocator.free(lut);
 
     calcLut(T, srcp, stride, width, height, lut, tile_width, tile_height, tiles, clip_limit, lut_scale);
-    interpolate(T, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+    if (T == u8) {
+        interpolateU8(srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+    } else {
+        interpolate(T, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+    }
 }
 
 fn calcLut(
@@ -60,11 +64,14 @@ fn calcLut(
     const tile_hist = allocator.alloc(i32, hist_size) catch unreachable;
     defer allocator.free(tile_hist);
 
+    // zeroed once; each tile's merge loop re-zeroes the bins it drains, so no
+    // per-tile full-buffer memset sweep (1 MiB/tile for u16) is needed
+    @memset(subs, 0);
+
     var ty: u32 = 0;
     while (ty < tiles_y) : (ty += 1) {
         var tx: u32 = 0;
         while (tx < tiles_x) : (tx += 1) {
-            @memset(subs, 0);
             const h0 = subs[0 * hist_size ..][0..hist_size];
             const h1 = subs[1 * hist_size ..][0..hist_size];
             const h2 = subs[2 * hist_size ..][0..hist_size];
@@ -86,14 +93,19 @@ fn calcLut(
                 }
             }
 
-            // merge sub-histograms
+            // merge sub-histograms, clearing them behind the reads for the next tile
             {
+                const zerov: U32V = @splat(0);
                 var i: u32 = 0;
                 while (i < hist_size) : (i += vec_len) {
                     const a: U32V = h0[i..][0..vec_len].*;
                     const b: U32V = h1[i..][0..vec_len].*;
                     const c: U32V = h2[i..][0..vec_len].*;
                     const d: U32V = h3[i..][0..vec_len].*;
+                    h0[i..][0..vec_len].* = zerov;
+                    h1[i..][0..vec_len].* = zerov;
+                    h2[i..][0..vec_len].* = zerov;
+                    h3[i..][0..vec_len].* = zerov;
                     const sum: I32V = @intCast(a + b + c + d);
                     tile_hist[i..][0..vec_len].* = sum;
                 }
@@ -273,6 +285,133 @@ fn interpolate(
             const lut1: f32 = @floatFromInt(lut[lut_p1h + tx2h[x] + src_val]);
             const lut2: f32 = @floatFromInt(lut[lut_p2h + tx1h[x] + src_val]);
             const lut3: f32 = @floatFromInt(lut[lut_p2h + tx2h[x] + src_val]);
+            const xa = xa_arr[x];
+            const res: f32 = (lut0 * (1 - xa) + lut1 * xa) * (1 - ya) + (lut2 * (1 - xa) + lut3 * xa) * ya;
+
+            dst_row[x] = @trunc(res + 0.5);
+        }
+    }
+}
+
+/// u8 specialization of `interpolate`: the four per-pixel LUT bytes are packed
+/// into one u32 gathered from a small per-band "quad" table, quartering the
+/// extract/insert lookup chains that dominate the pixel loop. tx2 is a pure
+/// function of tx1 (and ty2 of ty1), so a (tx1,tx2) column pair is one of only
+/// tiles_x+1 slots, and the table depends on y only through the (ty1,ty2) band
+/// — it is rebuilt just tiles_y+1 times per plane. The unpacked bytes feed the
+/// exact FP expression of `interpolate`, so results stay bit-identical.
+/// Not used for u16: the table would be tiles_x+1 slots x 65536 entries,
+/// gathering from it is no cheaper than from the LUT rows themselves.
+fn interpolateU8(
+    srcp: []const u8,
+    dstp: []u8,
+    stride: u32,
+    width: u32,
+    height: u32,
+    lut: []const u8,
+    tile_width: u32,
+    tile_height: u32,
+    tiles: []u32,
+) void {
+    const hist_size: u32 = 256;
+    const tiles_x: i32 = @intCast(tiles[0]);
+    const tiles_y: i32 = @intCast(tiles[1]);
+
+    const inv_tw: f32 = 1.0 / @as(f32, @floatFromInt(tile_width));
+    const inv_th: f32 = 1.0 / @as(f32, @floatFromInt(tile_height));
+
+    // x-dependent terms are the same on every row; precompute them once
+    const q_off = allocator.alloc(u32, width) catch unreachable;
+    defer allocator.free(q_off);
+    const xa_arr = allocator.alloc(f32, width) catch unreachable;
+    defer allocator.free(xa_arr);
+    const n_slots: u32 = tiles[0] + 1;
+    const quad = allocator.alloc(u32, n_slots * hist_size) catch unreachable;
+    defer allocator.free(quad);
+
+    {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const txf: f32 = @as(f32, @floatFromInt(x)) * inv_tw - 0.5;
+            const _tx1: i32 = @floor(txf);
+            xa_arr[x] = txf - @as(f32, @floatFromInt(_tx1));
+            // slot s encodes the clamped pair (tx1, tx2) = (max(s-1, 0), min(s, tiles_x-1));
+            // txf >= -0.5 so _tx1 >= -1 and s is in [0, tiles_x]
+            const slot: u32 = @intCast(@min(_tx1, tiles_x - 1) + 1);
+            q_off[x] = slot * hist_size;
+        }
+    }
+
+    var prev_p1h: u32 = std.math.maxInt(u32);
+    var prev_p2h: u32 = std.math.maxInt(u32);
+
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        const tyf: f32 = @as(f32, @floatFromInt(y)) * inv_th - 0.5;
+        var ty1: i32 = @floor(tyf);
+        var ty2: i32 = ty1 + 1;
+        const ya: f32 = tyf - @as(f32, @floatFromInt(ty1));
+
+        ty1 = @min(@max(ty1, 0), tiles_y - 1);
+        ty2 = @min(ty2, tiles_y - 1);
+        const lut_p1h: u32 = @as(u32, @intCast(ty1 * tiles_x)) * hist_size;
+        const lut_p2h: u32 = @as(u32, @intCast(ty2 * tiles_x)) * hist_size;
+
+        if (lut_p1h != prev_p1h or lut_p2h != prev_p2h) {
+            prev_p1h = lut_p1h;
+            prev_p2h = lut_p2h;
+            var slot: u32 = 0;
+            while (slot < n_slots) : (slot += 1) {
+                const c1: u32 = (slot -| 1) * hist_size;
+                const c2: u32 = @min(slot, tiles[0] - 1) * hist_size;
+                const r0 = lut[lut_p1h + c1 ..][0..hist_size];
+                const r1 = lut[lut_p1h + c2 ..][0..hist_size];
+                const r2 = lut[lut_p2h + c1 ..][0..hist_size];
+                const r3 = lut[lut_p2h + c2 ..][0..hist_size];
+                const qrow = quad[slot * hist_size ..][0..hist_size];
+                for (qrow, r0, r1, r2, r3) |*q, a, b, c, d| {
+                    q.* = @as(u32, a) | (@as(u32, b) << 8) | (@as(u32, c) << 16) | (@as(u32, d) << 24);
+                }
+            }
+        }
+
+        const src_row = srcp[y * stride ..];
+        const dst_row = dstp[y * stride ..];
+        const onev: F32V = @splat(1.0);
+        const yav: F32V = @splat(ya);
+        const one_m_yav: F32V = @splat(1 - ya);
+        const halfv: F32V = @splat(0.5);
+        const bytev: U32V = @splat(0xFF);
+
+        var x: u32 = 0;
+        while (x + vec_len <= width) : (x += vec_len) {
+            const sv: U32V = @intCast(@as(@Vector(vec_len, u8), src_row[x..][0..vec_len].*));
+            const qo: U32V = q_off[x..][0..vec_len].*;
+            const idx = qo + sv;
+
+            var g: [vec_len]u32 = undefined;
+            inline for (0..vec_len) |k| {
+                g[k] = quad[idx[k]];
+            }
+            const gv: U32V = g;
+            const lv0: F32V = @floatFromInt(@as(I32V, @intCast(gv & bytev)));
+            const lv1: F32V = @floatFromInt(@as(I32V, @intCast((gv >> @splat(8)) & bytev)));
+            const lv2: F32V = @floatFromInt(@as(I32V, @intCast((gv >> @splat(16)) & bytev)));
+            const lv3: F32V = @floatFromInt(@as(I32V, @intCast(gv >> @splat(24))));
+
+            const xav: F32V = xa_arr[x..][0..vec_len].*;
+            const one_m_xav = onev - xav;
+            const res = (lv0 * one_m_xav + lv1 * xav) * one_m_yav + (lv2 * one_m_xav + lv3 * xav) * yav;
+            const out: @Vector(vec_len, u8) = @intFromFloat(@trunc(res + halfv));
+            dst_row[x..][0..vec_len].* = out;
+        }
+
+        while (x < width) : (x += 1) {
+            const q = quad[q_off[x] + src_row[x]];
+            const lut0: f32 = @floatFromInt(q & 0xFF);
+            const lut1: f32 = @floatFromInt((q >> 8) & 0xFF);
+            const lut2: f32 = @floatFromInt((q >> 16) & 0xFF);
+            const lut3: f32 = @floatFromInt(q >> 24);
             const xa = xa_arr[x];
             const res: f32 = (lut0 * (1 - xa) + lut1 * xa) * (1 - ya) + (lut2 * (1 - xa) + lut3 * xa) * ya;
 

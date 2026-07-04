@@ -15,7 +15,12 @@ const Vu = @Vector(VLEN, u32);
 inline fn rangeIndex(comptime T: type, a: T, b: T) u32 {
     if (@typeInfo(T) == .float) {
         const ad: f32 = @abs(a - b);
-        return @intFromFloat(@trunc(@min(1.0, ad) * 65535 + 0.5));
+        // Convert via i32: the value is provably in [0, 65535], so the signed
+        // convert is exact and a single vcvttps2dq — a u32 destination costs
+        // LLVM's 6-instruction unsigned-convert fixup. @intFromFloat already
+        // truncates toward zero, so no separate @trunc is needed.
+        const idx: i32 = @intFromFloat(@min(1.0, ad) * 65535 + 0.5);
+        return @intCast(idx);
     } else {
         return hz.absDiff(a, b);
     }
@@ -53,7 +58,11 @@ inline fn vRangeGather(comptime T: type, gr_lut: []const f32, cx: Vec(T), nb: Ve
     var idx: Vu = undefined;
     if (@typeInfo(T) == .float) {
         const ad: Vf = @floatCast(@abs(cx - nb)); // |a-b| in T, widened (== scalar)
-        idx = @intFromFloat(@trunc(@min(@as(Vf, @splat(1.0)), ad) * @as(Vf, @splat(65535.0)) + @as(Vf, @splat(0.5))));
+        // Same i32 detour as scalar rangeIndex: value in [0, 65535], one
+        // vcvttps2dq per gather instead of the 6-instruction u32 fixup whose
+        // two extra live constants caused the f32 kernel's accumulator spills.
+        const idx_i: @Vector(VLEN, i32) = @intFromFloat(@min(@as(Vf, @splat(1.0)), ad) * @as(Vf, @splat(65535.0)) + @as(Vf, @splat(0.5)));
+        idx = @intCast(idx_i);
     } else {
         const a: Vu = @intCast(cx);
         const b: Vu = @intCast(nb);
@@ -136,14 +145,22 @@ fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: 
             }
         }
 
-        recursiveGaussian2DHorizontal(wk, wk, height, width, stride, b, b1, b2, b3);
+        recursiveGaussian2DHorizontalPair(wk, jk, height, width, stride, b, b1, b2, b3);
         recursiveGaussian2DVertical(wk, wk, height, width, stride, b, b1, b2, b3);
-        recursiveGaussian2DHorizontal(jk, jk, height, width, stride, b, b1, b2, b3);
         recursiveGaussian2DVertical(jk, jk, height, width, stride, b, b1, b2, b3);
 
+        // Divide all lanes, then blend the wk==0 lanes to 0: zero lanes only
+        // produce inf/NaN that the select discards, kept lanes are the same
+        // single IEEE division as the scalar tail — bit-exact.
+        const zero: Vf = @splat(0.0);
         for (0..height) |j| {
             var i = stride * j;
             const upper = i + width;
+            while (i + VLEN <= upper) : (i += VLEN) {
+                const wv: Vf = wk[i..][0..VLEN].*;
+                const jv: Vf = jk[i..][0..VLEN].*;
+                pbfic_k[i..][0..VLEN].* = @select(f32, wv == zero, zero, jv / wv);
+            }
             while (i < upper) : (i += 1) {
                 pbfic_k[i] = if (wk[i] == 0) 0 else (jk[i] / wk[i]);
             }
@@ -347,10 +364,21 @@ fn recursiveGaussianParameters(sigma: f64, b: *f32, b1: *f32, b2: *f32, b3: *f32
     b3.* = @floatCast(n3 / den);
 }
 
+// The y-recurrence is per COLUMN: within a row every x is independent, so the
+// x loops run VLEN columns at a time (lanes = columns, per-lane op order equal
+// to the scalar loop => bit-exact). LLVM won't auto-vectorize this itself only
+// because output==input in-place aliasing hides the independence. All row
+// loads happen before the store — same read-before-write as scalar, so the
+// aliased rows (x1..x3 clamped onto x0's own row at the borders) stay exact.
 fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, width: u32, stride: u32, b: f32, b1: f32, b2: f32, b3: f32) void {
     if (output.ptr != input.ptr) {
         @memcpy(output[0..width], input[0..width]);
     }
+
+    const bv: Vf = @splat(b);
+    const b1v: Vf = @splat(b1);
+    const b2v: Vf = @splat(b2);
+    const b3v: Vf = @splat(b3);
 
     for (0..height) |j| {
         const lower: usize = stride * j;
@@ -360,6 +388,19 @@ fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, w
         var x1: usize = if (j < 1) x0 else (x0 - stride);
         var x2: usize = if (j < 2) x1 else (x1 - stride);
         var x3: usize = if (j < 3) x2 else (x2 - stride);
+
+        while (x0 + VLEN <= upper) : ({
+            x0 += VLEN;
+            x1 += VLEN;
+            x2 += VLEN;
+            x3 += VLEN;
+        }) {
+            const in0: Vf = input[x0..][0..VLEN].*;
+            const o1: Vf = output[x1..][0..VLEN].*;
+            const o2: Vf = output[x2..][0..VLEN].*;
+            const o3: Vf = output[x3..][0..VLEN].*;
+            output[x0..][0..VLEN].* = bv * in0 + b1v * o1 + b2v * o2 + b3v * o3;
+        }
 
         while (x0 < upper) : ({
             x0 += 1;
@@ -382,6 +423,19 @@ fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, w
         var x2: u32 = if (j >= height - 2) x1 else (x1 + stride);
         var x3: u32 = if (j >= height - 3) x2 else (x2 + stride);
 
+        while (x0 + VLEN <= upper) : ({
+            x0 += VLEN;
+            x1 += VLEN;
+            x2 += VLEN;
+            x3 += VLEN;
+        }) {
+            const o0: Vf = output[x0..][0..VLEN].*;
+            const o1: Vf = output[x1..][0..VLEN].*;
+            const o2: Vf = output[x2..][0..VLEN].*;
+            const o3: Vf = output[x3..][0..VLEN].*;
+            output[x0..][0..VLEN].* = bv * o0 + b1v * o1 + b2v * o2 + b3v * o3;
+        }
+
         while (x0 < upper) : ({
             x0 += 1;
             x1 += 1;
@@ -393,38 +447,60 @@ fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, w
     }
 }
 
-fn recursiveGaussian2DHorizontal(output: []f32, input: []const f32, height: u32, width: u32, stride: u32, b: f32, b1: f32, b2: f32, b3: f32) void {
+// In-place horizontal pass over TWO buffers at once (pbfic always filters wk
+// and jk with the same coefficients). The x recurrence is genuinely
+// loop-carried and latency-bound (~10 cycles/px mul+add chain); carrying both
+// independent chains in one loop lets them overlap in the OoO core. Each
+// buffer keeps the exact single-buffer op order — bit-exact.
+fn recursiveGaussian2DHorizontalPair(buf_a: []f32, buf_c: []f32, height: u32, width: u32, stride: u32, b: f32, b1: f32, b2: f32, b3: f32) void {
     for (0..height) |j| {
         const lower: usize = stride * j;
         const upper: usize = lower + width;
 
         var i: usize = lower;
-        var p1: f32 = input[i];
-        var p2: f32 = p1;
-        var p3: f32 = p2;
-        output[i] = p3;
+        var a1: f32 = buf_a[i];
+        var a2: f32 = a1;
+        var a3: f32 = a2;
+        var c1: f32 = buf_c[i];
+        var c2: f32 = c1;
+        var c3: f32 = c2;
+        buf_a[i] = a3;
+        buf_c[i] = c3;
         i += 1;
 
         while (i < upper) : (i += 1) {
-            const p0 = b * input[i] + b1 * p1 + b2 * p2 + b3 * p3;
-            p3 = p2;
-            p2 = p1;
-            p1 = p0;
-            output[i] = p0;
+            const a0 = b * buf_a[i] + b1 * a1 + b2 * a2 + b3 * a3;
+            const c0 = b * buf_c[i] + b1 * c1 + b2 * c2 + b3 * c3;
+            a3 = a2;
+            a2 = a1;
+            a1 = a0;
+            buf_a[i] = a0;
+            c3 = c2;
+            c2 = c1;
+            c1 = c0;
+            buf_c[i] = c0;
         }
 
         i -= 1;
-        p1 = output[i];
-        p2 = p1;
-        p3 = p2;
+        a1 = buf_a[i];
+        a2 = a1;
+        a3 = a2;
+        c1 = buf_c[i];
+        c2 = c1;
+        c3 = c2;
         if (i == lower) continue;
         i -= 1;
         while (true) : (i -= 1) {
-            const p0 = b * output[i] + b1 * p1 + b2 * p2 + b3 * p3;
-            p3 = p2;
-            p2 = p1;
-            p1 = p0;
-            output[i] = p0;
+            const a0 = b * buf_a[i] + b1 * a1 + b2 * a2 + b3 * a3;
+            const c0 = b * buf_c[i] + b1 * c1 + b2 * c2 + b3 * c3;
+            a3 = a2;
+            a2 = a1;
+            a1 = a0;
+            buf_a[i] = a0;
+            c3 = c2;
+            c2 = c1;
+            c1 = c0;
+            buf_c[i] = c0;
             if (i == lower) break;
         }
     }

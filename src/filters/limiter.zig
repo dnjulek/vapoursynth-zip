@@ -2,7 +2,91 @@ const std = @import("std");
 const vs = @import("../vszip.zig").vapoursynth.vapoursynth4;
 const plugin = @import("../vapoursynth/limiter.zig");
 const hz = @import("../helper.zig");
+const simd = @import("simd.zig");
 const comptime_planes = plugin.comptime_planes;
+
+/// Clamp every element of `srcp` into [min, max]. Lane semantics match the
+/// scalar `@min(@max(min, s), max)` exactly (llvm.minnum/maxnum: a NaN input
+/// yields the bound), so this is bit-exact vs the previous per-element loop.
+/// LLVM never auto-vectorized that loop (scalar cmov chains for ints, a
+/// per-element compiler_rt fminf/fmaxf libcall pair for f16 — measured 81% of
+/// the f16 path's instructions), hence the explicit vector shape.
+pub fn clampSlice(comptime T: type, dstp: []T, srcp: []const T, min: T, max: T) void {
+    std.debug.assert(dstp.len == srcp.len);
+    if (comptime @typeInfo(T) == .float) {
+        // Precondition for simd.clampV's bare-vmaxps/vminps form: the runtime
+        // bounds must be non-NaN. limiterCreate rejects NaN min/max, so this
+        // always holds; the assert documents and (in Debug/ReleaseSafe)
+        // enforces it. See simd.clampV for why the bare form is bit-identical
+        // to @min(@max(min_v, v), max_v) under this precondition.
+        std.debug.assert(!std.math.isNan(min) and !std.math.isNan(max));
+    }
+    if (comptime T == f16) {
+        // No native f16 min/max before AVX512-FP16: clamp in f32 (F16C widen/
+        // narrow). f16 values and bounds are exactly representable in f32, so
+        // the round-trip is exact and NaN handling matches the old libcalls.
+        const n = comptime (std.simd.suggestVectorLength(f32) orelse 8);
+        const min_v: @Vector(n, f32) = @splat(min);
+        const max_v: @Vector(n, f32) = @splat(max);
+        var i: usize = 0;
+        // 4x manual unroll: simd.clampV's inline asm defeats LLVM's loop
+        // unroller, so a plain 1x loop leaves the per-vector loop control
+        // un-amortized (measured +16% kernel Ir vs base). Unrolling by hand
+        // amortizes the control and keeps the bare-vmaxps/vminps win.
+        while (i + n * 4 <= srcp.len) : (i += n * 4) {
+            inline for (0..4) |k| {
+                const off = i + k * n;
+                const v: @Vector(n, f16) = srcp[off..][0..n].*;
+                const c = simd.clampV(n, @as(@Vector(n, f32), @floatCast(v)), min_v, max_v);
+                const w: @Vector(n, f16) = @floatCast(c);
+                dstp[off..][0..n].* = w;
+            }
+        }
+        while (i + n <= srcp.len) : (i += n) {
+            const v: @Vector(n, f16) = srcp[i..][0..n].*;
+            const c = simd.clampV(n, @as(@Vector(n, f32), @floatCast(v)), min_v, max_v);
+            const w: @Vector(n, f16) = @floatCast(c);
+            dstp[i..][0..n].* = w;
+        }
+        while (i < srcp.len) : (i += 1) dstp[i] = @min(@max(min, srcp[i]), max);
+        return;
+    }
+
+    const n_opt = comptime std.simd.suggestVectorLength(T);
+    if (comptime n_opt == null) {
+        for (srcp, dstp) |s, *d| d.* = @min(@max(min, s), max);
+        return;
+    }
+    const n = comptime n_opt.?;
+    const min_v: @Vector(n, T) = @splat(min);
+    const max_v: @Vector(n, T) = @splat(max);
+    var i: usize = 0;
+    if (comptime T == f32) {
+        // f32: bare vmaxps/vminps (bounds non-NaN), 4x manually unrolled —
+        // simd.clampV's inline asm defeats LLVM's loop unroller, so a plain 1x
+        // loop leaves loop control un-amortized (measured +16% kernel Ir vs
+        // base). See the f16 branch above.
+        while (i + n * 4 <= srcp.len) : (i += n * 4) {
+            inline for (0..4) |k| {
+                const off = i + k * n;
+                const v: @Vector(n, f32) = srcp[off..][0..n].*;
+                dstp[off..][0..n].* = simd.clampV(n, v, min_v, max_v);
+            }
+        }
+        while (i + n <= srcp.len) : (i += n) {
+            const v: @Vector(n, f32) = srcp[i..][0..n].*;
+            dstp[i..][0..n].* = simd.clampV(n, v, min_v, max_v);
+        }
+    } else {
+        // Ints have no NaN issue and already lower to bare vpmax/vpmin, which
+        // LLVM auto-unrolls; keep the portable form.
+        while (i + n <= srcp.len) : (i += n) {
+            const v: @Vector(n, T) = srcp[i..][0..n].*;
+            dstp[i..][0..n].* = @min(@max(min_v, v), max_v);
+        }
+    }
+    while (i < srcp.len) : (i += 1) dstp[i] = @min(@max(min, srcp[i]), max);
+}
 
 pub fn getFrame(use_rt: bool, tv_range: bool, yuv: bool, num_planes: i32, bps: hz.BPSType, idx: u32) vs.FilterGetFrame {
     var get_frame: vs.FilterGetFrame = undefined;

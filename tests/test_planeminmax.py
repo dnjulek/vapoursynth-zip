@@ -131,7 +131,7 @@ def test_float_no_thr_exact_minmax(src32):
 
 def test_clipb_diff_golden(src16, src32):
     p16 = props(src16.vszip.PlaneMinMax(minthr=0.2, maxthr=0.3, clipb=src16.vszip.BoxBlur(hradius=1, vradius=1), planes=[0, 1, 2]))
-    assert p16["psmDiff"] == pytest.approx([0.04060555502903982, 0.03211699557011521, 0.07426088248407339], rel=1e-6)
+    assert p16["psmDiff"] == pytest.approx([0.04054763787658789, 0.032036208288033115, 0.07411115452382315], rel=1e-6)
     p32 = props(src32.vszip.PlaneMinMax(minthr=0.2, maxthr=0.3, clipb=src32.vszip.BoxBlur(hradius=1, vradius=1)))
     assert p32["psmDiff"] == pytest.approx(0.04750444493987743, rel=1e-6)
 

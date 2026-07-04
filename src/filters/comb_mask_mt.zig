@@ -21,7 +21,7 @@ pub fn process(
 ) void {
     const thresinf_v: vec_u8 = @splat(thresinf);
     const thressup_v: vec_u8 = @splat(thressup);
-    const thr_diff_v: vec_i32 = @splat(thr_diff);
+    const thr_diff_f: @Vector(vec_len, f32) = @splat(@floatFromInt(thr_diff));
 
     var su = srcp;
     var d = dstp;
@@ -44,7 +44,16 @@ pub fn process(
             const sel: vec_i32 = if (same_thr)
                 @select(i32, prod > thressup_v, peak, floor)
             else sel: {
-                const gray: vec_i32 = @min(((prod - thresinf_v) * u8_len / thr_diff_v), peak);
+                // f32 division: x86 has no vector integer divide, so the i32
+                // form scalarized to 8x unpipelined idiv (~60 instr/block).
+                // Exact: |dividend| = |prod - thresinf|*256 < 2^24 and
+                // quotient*divisor < 2^24, so the correctly-rounded f32
+                // quotient truncates (@intFromFloat) to the same integer as
+                // @divTrunc for every lane; out-of-window lanes are selected
+                // away below anyway.
+                const num: @Vector(vec_len, f32) = @floatFromInt((prod - thresinf_v) * u8_len);
+                const q: vec_i32 = @intFromFloat(num / thr_diff_f);
+                const gray: vec_i32 = @min(q, peak);
                 break :sel @select(
                     i32,
                     prod < thresinf_v,

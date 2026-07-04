@@ -19,6 +19,43 @@ inline fn toCache(comptime T: type, v: T) f32 {
     return if (T == f32) v else @floatFromInt(v);
 }
 
+/// Build one mirror-padded cache row. Interior columns [rh, rh+w) map to
+/// mx = cx - rh (mirror is the identity there), so they convert/copy directly
+/// and vectorized; the horizontal border cells then copy already-converted f32
+/// from the interior of this same row — bit-identical to reconverting, since
+/// int->f32 widening is exact and f32 copies preserve bits.
+inline fn buildCacheRow(
+    comptime T: type,
+    srow: []const T,
+    crow: []f32,
+    w: usize,
+    rh: usize,
+    w_i: i32,
+    rh_i: i32,
+) void {
+    if (T == f32) {
+        @memcpy(crow[rh..][0..w], srow[0..w]);
+    } else {
+        var x: usize = 0;
+        while (x + vec_len <= w) : (x += vec_len) {
+            const iv: @Vector(vec_len, T) = srow[x..][0..vec_len].*;
+            const fv: @Vector(vec_len, f32) = @floatFromInt(iv);
+            crow[rh + x ..][0..vec_len].* = fv;
+        }
+        while (x < w) : (x += 1) crow[rh + x] = toCache(T, srow[x]);
+    }
+    var cx: usize = 0;
+    while (cx < rh) : (cx += 1) {
+        const mx: usize = @intCast(mirror(@as(i32, @intCast(cx)) - rh_i, w_i));
+        crow[cx] = crow[rh + mx];
+    }
+    cx = rh + w;
+    while (cx < crow.len) : (cx += 1) {
+        const mx: usize = @intCast(mirror(@as(i32, @intCast(cx)) - rh_i, w_i));
+        crow[cx] = crow[rh + mx];
+    }
+}
+
 /// f32 accumulator vector -> `T` output vector: integers round-to-nearest and
 /// clamp to [0, peak]; float passes through unchanged.
 inline fn fromAccum(
@@ -87,33 +124,38 @@ pub fn processPlane(
     defer if (ref != null) allocator.free(ref_cache);
     if (subspl_active and ref != null) @memset(ref_cache[cstride * cheight ..], 0);
 
-    // Build the mirror-padded float cache(s).
+    // Build the mirror-padded float cache(s): interior rows convert directly
+    // (vectorized in buildCacheRow), then each of the 2*rv vertical pad rows
+    // duplicates interior cache row rv + mirror(cy - rv, h) — a whole-row copy
+    // instead of re-mirroring/reconverting every cell.
     var cy: usize = 0;
+    while (cy < height) : (cy += 1) {
+        const crow_off = (cy + rv) * cstride;
+        buildCacheRow(T, src[cy * stride ..], src_cache[crow_off..][0..cstride], width, rh, w_i, rh_i);
+        if (ref) |refp| buildCacheRow(T, refp[cy * stride ..], ref_cache[crow_off..][0..cstride], width, rh, w_i, rh_i);
+    }
+    cy = 0;
     while (cy < cheight) : (cy += 1) {
+        if (cy == rv) { // interior rows already built above
+            cy += height - 1;
+            continue;
+        }
         const my: usize = @intCast(mirror(@as(i32, @intCast(cy)) - rv_i, h_i));
-        const srow = src[my * stride ..];
-        const scrow = src_cache[cy * cstride ..];
-        var cx: usize = 0;
-        while (cx < cstride) : (cx += 1) {
-            const mx: usize = @intCast(mirror(@as(i32, @intCast(cx)) - rh_i, w_i));
-            scrow[cx] = toCache(T, srow[mx]);
-        }
-        if (ref) |refp| {
-            const rrow = refp[my * stride ..];
-            const rcrow = ref_cache[cy * cstride ..];
-            cx = 0;
-            while (cx < cstride) : (cx += 1) {
-                const mx: usize = @intCast(mirror(@as(i32, @intCast(cx)) - rh_i, w_i));
-                rcrow[cx] = toCache(T, rrow[mx]);
-            }
-        }
+        @memcpy(src_cache[cy * cstride ..][0..cstride], src_cache[(rv + my) * cstride ..][0..cstride]);
+        if (ref != null) @memcpy(ref_cache[cy * cstride ..][0..cstride], ref_cache[(rv + my) * cstride ..][0..cstride]);
     }
 
     const cstride_i: isize = @intCast(cstride);
 
     if (point_lists) |pls| {
-        // ---- sub-sampled "speed hack" (4-wide, matching the SSE subspl path) ----
+        // ---- sub-sampled "speed hack" (matching the SSE subspl path) ----
         const v4 = @Vector(4, f32);
+        const v8 = @Vector(8, f32);
+        const m8: v8 = @splat(m);
+        const wmax8: v8 = @splat(wmax);
+        const swmin8: v8 = @splat(sum_w_min);
+        const zero8: v8 = @splat(0.0);
+        const peak8: v8 = @splat(peak);
         const m4: v4 = @splat(m);
         const wmax4: v4 = @splat(wmax);
         const swmin4: v4 = @splat(sum_w_min);
@@ -127,6 +169,38 @@ pub fn processPlane(
             const center_base: usize = (y + rv) * cstride + rh;
             const drow: usize = y * stride;
             var x: usize = 0;
+            // Two adjacent 4-px groups per iteration: the tap loop is bound by
+            // its 2-deep dependent-FMA chain (~8-9 cy per 2 taps), so an 8-lane
+            // body retires 8 px per chain step instead of 4 at the same latency.
+            // Low lanes = group x / list la, high lanes = group x+4 / list lb —
+            // exactly the loads/taps two 4-wide iterations would do, in the same
+            // per-lane order, so the accumulation is bit-exact per pixel.
+            while (x + 8 <= width) : (x += 8) {
+                const la = (start + (x >> 2)) % NBR;
+                const lb = if (la + 1 == NBR) 0 else la + 1;
+                const cla = pls[la * k ..][0..k];
+                const clb = pls[lb * k ..][0..k];
+                const base: usize = center_base + x;
+                const cen: v8 = src_cache[base..][0..8].*;
+                const cen_ref: v8 = ref_cache[base..][0..8].*;
+                var sum: v8 = zero8;
+                var sum_w: v8 = zero8;
+                for (cla, clb) |pa, pb| {
+                    const offa: usize = @intCast(@as(isize, @intCast(base)) + @as(isize, pa.y) * cstride_i + @as(isize, pa.x));
+                    const offb: usize = @intCast(@as(isize, @intCast(base + 4)) + @as(isize, pb.y) * cstride_i + @as(isize, pb.x));
+                    const v = std.simd.join(@as(v4, src_cache[offa..][0..4].*), @as(v4, src_cache[offb..][0..4].*));
+                    const vr = std.simd.join(@as(v4, ref_cache[offa..][0..4].*), @as(v4, ref_cache[offb..][0..4].*));
+                    const diff = v - cen;
+                    const dist = @abs(vr - cen_ref);
+                    const wgt = @max(@min(m8 - dist, wmax8), zero8);
+                    sum_w += wgt;
+                    sum = @mulAdd(v8, diff, wgt, sum); // FMA
+                }
+                const denom = @max(sum_w, swmin8);
+                const p = cen + sum / denom;
+                dst[drow + x ..][0..8].* = fromAccum(T, 8, p, peak8, zero8);
+            }
+            // trailing <8 px: the original 4-wide groups with per-pixel tail
             while (x < width) : (x += 4) {
                 const take = @min(@as(usize, 4), width - x);
                 const list_idx = (start + (x >> 2)) % NBR;

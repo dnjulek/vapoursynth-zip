@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 
 pub fn MosquitoNR(comptime T: type) type {
     return struct {
@@ -8,8 +9,11 @@ pub fn MosquitoNR(comptime T: type) type {
         const VT = @Vector(VL, T);
         const VShift = @Vector(VL, std.math.Log2Int(I));
 
+        // Laundered: smooth()'s direction passes load 9-25 windows at fixed
+        // +-1/+-2 column offsets; unlaundered, LLVM fuses them into
+        // vpermd/vpalignr shuffle chains (measured).
         inline fn vload(s: []const I, i: usize) V {
-            return s[i..][0..VL].*;
+            return simd.loaduOpaque(I, VL, s[i..][0..VL]);
         }
         inline fn vstore(s: []I, i: usize, v: V) void {
             s[i..][0..VL].* = v;
@@ -26,6 +30,46 @@ pub fn MosquitoNR(comptime T: type) type {
 
         inline fn w32(x: I) i32 {
             return x;
+        }
+
+        // fwdH/invH vector regime: pinned to the shapes of the shared shuffle
+        // helpers (16x i16 / 8x i32), independent of VL so a wider-vector
+        // build cannot desync from them. The scalar loops stay in place as
+        // the semantic reference and the non-AVX2 path.
+        const HVL = if (I == i16) 16 else 8;
+        const HV = @Vector(HVL, I);
+        const HVShift = @Vector(HVL, std.math.Log2Int(I));
+        const use_hvec = if (I == i16) simd.use_avx2 else simd.f32LanesAccelerated(HVL);
+
+        // Laundered: fwdH/invH load the same span at +1/+2 element offsets
+        // (row / row+2, hdr-1 / hdr / hdr+1); same fusion pessimization as
+        // vload above.
+        inline fn hload(s: []const I, i: usize) HV {
+            return simd.loaduOpaque(I, HVL, s[i..][0..HVL]);
+        }
+        inline fn hstore(s: []I, i: usize, v: HV) void {
+            s[i..][0..HVL].* = v;
+        }
+        inline fn hshr(v: HV, comptime n: comptime_int) HV {
+            return v >> @as(HVShift, @splat(n));
+        }
+        inline fn hEven(a: HV, b: HV) HV {
+            return if (I == i16)
+                simd.evenLanesI16x16(a, b)
+            else
+                @bitCast(simd.evenLanesF32(HVL, @bitCast(a), @bitCast(b)));
+        }
+        inline fn hDeinterleave(a: HV, b: HV) [2]HV {
+            return if (I == i16)
+                simd.deinterleaveI16x16(a, b)
+            else
+                .{ @bitCast(simd.evenLanesF32(HVL, @bitCast(a), @bitCast(b))), @bitCast(simd.oddLanesF32(HVL, @bitCast(a), @bitCast(b))) };
+        }
+        inline fn hInterleave(e: HV, o: HV) [2]HV {
+            return if (I == i16) simd.interleaveI16x16(e, o) else blk: {
+                const p = simd.interleaveF32(HVL, @bitCast(e), @bitCast(o));
+                break :blk .{ @bitCast(p[0]), @bitCast(p[1]) };
+            };
         }
 
         fn smooth(pl: []const I, pw: usize, dirs: []I, blur: []I, wv: usize, w: usize, h: usize, strength: i32, comptime radius: u32) void {
@@ -215,21 +259,43 @@ pub fn MosquitoNR(comptime T: type) type {
             }
         }
 
-        fn fwdH(in: []const I, ha: []I, hd: []I, w: usize, rows: usize) void {
+        // The wavelet edge clamps only fire at the first/last element of a
+        // row (Create guarantees w >= 4), so the vector bodies below are
+        // branch-free: i == 0 is peeled, the right edge stays in the scalar
+        // tails, and the vector trip bounds keep every lane unclamped and
+        // every (laundered, overlapping) load in bounds.
+        fn fwdH(in: []const I, ha: []I, hd: []I, w: usize, rows: usize, comptime need_ha: bool) void {
+            std.debug.assert(w >= 4);
             const naw = (w + 1) / 2;
             const ndw = w / 2;
             var r: usize = 0;
             while (r < rows) : (r += 1) {
                 const row = in[r * w ..];
                 const hdr = hd[r * ndw ..];
-                const har = ha[r * naw ..];
                 var i: usize = 0;
+                if (comptime use_hvec) {
+                    while (i + HVL < ndw) : (i += HVL) {
+                        const eo = hDeinterleave(hload(row, 2 * i), hload(row, 2 * i + HVL));
+                        const e2 = hEven(hload(row, 2 * i + 2), hload(row, 2 * i + 2 + HVL));
+                        hstore(hdr, i, eo[1] -% hshr(eo[0] +% e2, 1));
+                    }
+                }
                 while (i < ndw) : (i += 1) {
                     const c0 = row[2 * i];
                     const c2 = row[if (2 * i + 2 < w) 2 * i + 2 else w - 2];
                     hdr[i] = row[2 * i + 1] -% ((c0 +% c2) >> 1);
                 }
+                if (comptime !need_ha) continue;
+                const har = ha[r * naw ..];
                 i = 0;
+                if (comptime use_hvec) {
+                    har[0] = row[0] +% ((hdr[0] +% hdr[0]) >> 2);
+                    i = 1;
+                    while (i + HVL <= ndw) : (i += HVL) {
+                        const e = hEven(hload(row, 2 * i), hload(row, 2 * i + HVL));
+                        hstore(har, i, e +% hshr(hload(hdr, i - 1) +% hload(hdr, i), 2));
+                    }
+                }
                 while (i < naw) : (i += 1) {
                     const il = if (i >= 1) i - 1 else 0;
                     const ir = if (i < ndw) i else ndw - 1;
@@ -239,6 +305,7 @@ pub fn MosquitoNR(comptime T: type) type {
         }
 
         fn invH(ha: []const I, hd: []const I, out: []I, w: usize, rows: usize) void {
+            std.debug.assert(w >= 4);
             const naw = (w + 1) / 2;
             const ndw = w / 2;
             var r: usize = 0;
@@ -247,16 +314,38 @@ pub fn MosquitoNR(comptime T: type) type {
                 const hdr = hd[r * ndw ..];
                 const orow = out[r * w ..];
                 var i: usize = 0;
-                while (i < naw) : (i += 1) {
-                    const il = if (i >= 1) i - 1 else 0;
-                    const ir = if (i < ndw) i else ndw - 1;
-                    orow[2 * i] = har[i] -% ((hdr[il] +% hdr[ir]) >> 2);
+                if (comptime use_hvec) {
+                    orow[0] = har[0] -% ((hdr[0] +% hdr[0]) >> 2);
+                    i = 1;
+                    while (i + HVL < ndw) : (i += HVL) {
+                        // Odd outputs need the even outputs one lane to the
+                        // right; e2 recomputes them from source (identical
+                        // ops on identical inputs, so identical values)
+                        // instead of carrying a lane-shift across blocks.
+                        const dl = hload(hdr, i - 1);
+                        const d0 = hload(hdr, i);
+                        const dr = hload(hdr, i + 1);
+                        const e = hload(har, i) -% hshr(dl +% d0, 2);
+                        const e2 = hload(har, i + 1) -% hshr(d0 +% dr, 2);
+                        const o = d0 +% hshr(e +% e2, 1);
+                        const lohi = hInterleave(e, o);
+                        hstore(orow, 2 * i, lohi[0]);
+                        hstore(orow, 2 * i + HVL, lohi[1]);
+                    }
                 }
-                i = 0;
-                while (i < ndw) : (i += 1) {
-                    const xl = orow[2 * i];
-                    const xr = orow[if (2 * i + 2 < w) 2 * i + 2 else w - 2];
-                    orow[2 * i + 1] = hdr[i] +% ((xl +% xr) >> 1);
+                var j: usize = i;
+                while (j < naw) : (j += 1) {
+                    const il = if (j >= 1) j - 1 else 0;
+                    const ir = if (j < ndw) j else ndw - 1;
+                    orow[2 * j] = har[j] -% ((hdr[il] +% hdr[ir]) >> 2);
+                }
+                // odd 0 reads even 1, so it peels after the even tail
+                if (comptime use_hvec) orow[1] = hdr[0] +% ((orow[0] +% orow[2]) >> 1);
+                j = i;
+                while (j < ndw) : (j += 1) {
+                    const xl = orow[2 * j];
+                    const xr = orow[if (2 * j + 2 < w) 2 * j + 2 else w - 2];
+                    orow[2 * j + 1] = hdr[j] +% ((xl +% xr) >> 1);
                 }
             }
         }
@@ -290,9 +379,10 @@ pub fn MosquitoNR(comptime T: type) type {
             const na_w = (w + 1) / 2;
             const nd_w = w / 2;
             const wv = ((w + VL - 1) / VL) * VL;
-            var arena_state = std.heap.ArenaAllocator.init(alloc);
-            defer arena_state.deinit();
-            const a = arena_state.allocator();
+            // alloc is the caller's per-frame arena, reused across frames;
+            // every buffer below is fully written before it is read, so the
+            // reuse is deterministic.
+            const a = alloc;
 
             const blur = try a.alloc(I, w * h);
 
@@ -346,17 +436,22 @@ pub fn MosquitoNR(comptime T: type) type {
                 const scratch_hd = try a.alloc(I, na_h * nd_w);
 
                 fwdV(pl, pw, pl_base, va_o, scratch_vd, w, h); // original: read pl interior
-                fwdH(va_o, ll_o, scratch_hd, w, na_h);
+                fwdH(va_o, ll_o, scratch_hd, w, na_h, true);
 
                 fwdV(blur, w, 0, va_b, vd_b, w, h); // smoothed: tight plane
 
                 const ll: []const I = ll_o;
-                fwdH(va_b, ll_b, hd_b, w, na_h);
                 if (restore != 128) {
+                    fwdH(va_b, ll_b, hd_b, w, na_h, true);
                     const inv: i32 = 128 - restore;
                     for (ll_o, ll_b) |*o, b| {
                         o.* = @intCast((restore * w32(o.*) + inv * w32(b) + 64) >> 7);
                     }
+                } else {
+                    // restore == 128 (default) keeps ll = ll_o untouched, so
+                    // the smoothed approximation band would be discarded —
+                    // skip computing it.
+                    fwdH(va_b, ll_b, hd_b, w, na_h, false);
                 }
 
                 invH(ll, hd_b, va_rec, w, na_h);

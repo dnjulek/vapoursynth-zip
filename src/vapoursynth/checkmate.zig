@@ -18,6 +18,7 @@ const Data = struct {
 
     thr: i32 = 0,
     tmax: i32 = 0,
+    tmax_multiplier: i32 = 0,
     tthr2: i32 = 0,
 };
 
@@ -68,7 +69,7 @@ fn Checkmate(comptime use_tthr2: bool) type {
 
                     var y: u32 = 2;
                     while (y < h - 2) : (y += 1) {
-                        filter.process(dstp, srcp_p2, srcp_p1, srcp, srcp_n1, srcp_n2, stride, w, d.thr, d.tmax, d.tthr2, use_tthr2);
+                        filter.process(dstp, srcp_p2, srcp_p1, srcp, srcp_n1, srcp_n2, stride, w, d.thr, d.tmax, d.tmax_multiplier, d.tthr2, use_tthr2);
                         srcp_p1 = srcp_p1[stride..];
                         srcp = srcp[stride..];
                         srcp_n1 = srcp_n1[stride..];
@@ -151,6 +152,9 @@ pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
             return;
         }
     }
+
+    // hoisted out of the per-row kernel call (was an idiv per row)
+    d.tmax_multiplier = @divTrunc((1 << 13), d.tmax);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;

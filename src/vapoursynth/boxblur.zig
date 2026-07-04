@@ -185,7 +185,23 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    const use_rt: bool = (d.hradius != d.vradius) or (d.hradius > 22) or (d.hpasses > 1) or (d.vpasses > 1);
+    // CT (comptime-radius tap kernels) vs RT (running-sum) selection, measured
+    // 2026-07-03 on Zen 3 (callgrind Ir at every radius + 3-rep wall-clock):
+    //  - integer: RT wins at every radius (Ir -7..-19%, wall >= CT incl. the
+    //    default r=1), so int always takes RT;
+    //  - float: CT's O(ksize) tap kernels only beat the (scalar-h) running sum
+    //    below ~r9 on this box; from r>=9 RT is 1.5-2.7x. CT therefore remains
+    //    for float radius 1..8 only.
+    //  - !hblur/!vblur must take RT: CT's hvBlur applies both directions
+    //    unconditionally (an hpasses=0 request used to get h-blurred anyway).
+    // Boundary moves change outputs slightly (CT and RT differ in pass order,
+    // fixed-point rounding and edge-mirror convention: interior <=2 LSB int /
+    // ~1e-5 f32, edge bands up to ~0.1% of range) — the same difference that
+    // always existed across the old r22 boundary.
+    const is_float = (dt == .F16) or (dt == .F32);
+    const use_rt: bool = !hblur or !vblur or !is_float or
+        (d.hradius != d.vradius) or (d.hradius > 8) or
+        (d.hpasses > 1) or (d.vpasses > 1);
     var get_frame: vs.FilterGetFrame = undefined;
     if (use_rt) {
         get_frame = switch (dt) {
@@ -197,12 +213,10 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         };
     } else {
         get_frame = switch (d.hradius) {
-            inline 1...22 => |r| switch (dt) {
-                .U8 => &BoxBlurCT(u8, r).getFrame,
-                .U16 => &BoxBlurCT(u16, r).getFrame,
+            inline 1...8 => |r| switch (dt) {
                 .F16 => &BoxBlurCT(f16, r).getFrame,
                 .F32 => &BoxBlurCT(f32, r).getFrame,
-                .U32 => unreachable,
+                .U8, .U16, .U32 => unreachable,
             },
             else => unreachable,
         };

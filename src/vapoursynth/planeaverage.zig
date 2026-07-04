@@ -132,9 +132,23 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
             zapi.freeNode(d.node1);
             return;
         } else {
-            d.exclude = filter.Exclude{ .i = allocator.alloc(i32, ein.len) catch unreachable };
-            for (d.exclude.i, ein) |*di, *ei| {
-                di.* = math.lossyCast(i32, ei.*);
+            // The kernels compare the i32-widened pixel against i32 excludes,
+            // so a value outside T's storage range can never match — strip
+            // them here (the conventional never-match sentinel is
+            // exclude=[-1]) so getFrame takes the compare-free fast path on
+            // an empty slice.
+            const tmax: i64 = if (dt == .U8) math.maxInt(u8) else math.maxInt(u16);
+            var m: usize = 0;
+            for (ein) |e| {
+                if (e >= 0 and e <= tmax) m += 1;
+            }
+            d.exclude = filter.Exclude{ .i = allocator.alloc(i32, m) catch unreachable };
+            var idx: usize = 0;
+            for (ein) |e| {
+                if (e >= 0 and e <= tmax) {
+                    d.exclude.i[idx] = @intCast(e);
+                    idx += 1;
+                }
             }
         }
     }

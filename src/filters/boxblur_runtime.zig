@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const math = std.math;
+const simd = @import("simd.zig");
+const ct = @import("boxblur_comptime.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -27,10 +29,17 @@ inline fn blurInt(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, d
         dstp[x * dst_step] = @intCast(sum >> 16);
     }
 
-    while (x < len - radius) : (x += 1) {
-        sum += srcp[(radius + x) * src_step] * inv2;
-        sum -= srcp[(x - radius - 1) * src_step] * inv2;
-        dstp[x * dst_step] = @intCast(sum >> 16);
+    if (src_step == 1 and dst_step == 1) {
+        // contiguous rows take the vectorized prefix-sum center segment
+        // (bit-exact mod-2^32; see boxblur_comptime.slideSumInt)
+        sum = ct.slideSumInt(T, srcp, dstp, x, len - radius, radius, @intCast(inv2), sum);
+        x = len - radius;
+    } else {
+        while (x < len - radius) : (x += 1) {
+            sum += srcp[(radius + x) * src_step] * inv2;
+            sum -= srcp[(x - radius - 1) * src_step] * inv2;
+            dstp[x * dst_step] = @intCast(sum >> 16);
+        }
     }
 
     while (x < len) : (x += 1) {
@@ -154,7 +163,7 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
     const ring_rows: u32 = 2 * vradius + 2;
     const ring_alloc = allocator.alloc(T, ring_rows * w) catch unreachable;
     defer allocator.free(ring_alloc);
-    const sums = allocator.alloc(u64, w) catch unreachable;
+    const sums = allocator.alloc(u32, w) catch unreachable;
     defer allocator.free(sums);
 
     const ring = struct {
@@ -163,7 +172,12 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
         w: u32,
 
         inline fn row(self: @This(), j: u32) []T {
-            return self.buf[(j % self.rows) * self.w ..][0..self.w];
+            // opaquePtr pins the `%` here: without it LLVM re-sinks this
+            // (loop-invariant) modulo + address math into the callers' inner
+            // per-pixel loops after inlining — an unpipelined 32-bit div per
+            // vector block (measured in all four BoxBlurRT variants).
+            const s = self.buf[(j % self.rows) * self.w ..][0..self.w];
+            return simd.opaquePtr(T, s.ptr)[0..self.w];
         }
     }{ .buf = ring_alloc, .rows = ring_rows, .w = w };
 
@@ -210,7 +224,7 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 
             c = 0;
             while (c < w) : (c += 1) {
-                sums[c] = (sums[c] * inv + (1 << 31)) >> 16;
+                sums[c] = @intCast((@as(u64, sums[c]) * inv + (1 << 31)) >> 16);
             }
         }
 
@@ -283,7 +297,7 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32) void {
     if ((passes <= 0) or (radius <= 0)) return;
 
-    const sums = allocator.alloc(u64, w) catch unreachable;
+    const sums = allocator.alloc(u32, w) catch unreachable;
     defer allocator.free(sums);
 
     var src_cur: []const T = first_src;
@@ -299,7 +313,7 @@ pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride
     }
 }
 
-fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u64, stride: u32, w: u32, h: u32, radius: u32) void {
+fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u32, stride: u32, w: u32, h: u32, radius: u32) void {
     const len = h;
     const ksize: u32 = (radius << 1) + 1;
     const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
@@ -324,7 +338,7 @@ fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u64, stride: u3
 
         c = 0;
         while (c < w) : (c += 1) {
-            sums[c] = (sums[c] * inv + (1 << 31)) >> 16;
+            sums[c] = @intCast((@as(u64, sums[c]) * inv + (1 << 31)) >> 16);
         }
     }
 
@@ -342,11 +356,10 @@ fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u64, stride: u3
     }
 }
 
-inline fn rowAddSubInt(comptime T: type, sums: []u64, add_row: []const T, sub_row: []const T, dst_row: []T, w: u32, inv2: u32) void {
-    const U64V = @Vector(vec_len, u64);
+inline fn rowAddSubInt(comptime T: type, sums: []u32, add_row: []const T, sub_row: []const T, dst_row: []T, w: u32, inv2: u32) void {
     const U32V = @Vector(vec_len, u32);
     const inv2v: U32V = @splat(inv2);
-    const shift: @Vector(vec_len, u6) = @splat(16);
+    const shift: @Vector(vec_len, u5) = @splat(16);
 
     var c: u32 = 0;
     const w_vec = w - (w % vec_len);
@@ -356,19 +369,23 @@ inline fn rowAddSubInt(comptime T: type, sums: []u64, add_row: []const T, sub_ro
         const a32: U32V = @intCast(at);
         const s32: U32V = @intCast(st);
         // pixel * inv2 < 2^31 (inv2 < 2^15, pixel < 2^16), u32 multiply is exact
-        const pa: U64V = @intCast(a32 * inv2v);
-        const pb: U64V = @intCast(s32 * inv2v);
-        var s: U64V = sums[c..][0..vec_len].*;
-        s += pa;
-        s -= pb;
+        const pa = a32 * inv2v;
+        const pb = s32 * inv2v;
+        // Sums live in u32 (previously u64): the true window value stays
+        // < 2^32 (window_sum*inv2 + init rounding residue <= 65535*2^16 +
+        // 2^15), so wrapping updates keep every stored value exact — only
+        // the transient s+pa may wrap. Halves the sums traffic and drops the
+        // widen/narrow dance (measured 25 -> ~12 instr per 8 px).
+        var s: U32V = sums[c..][0..vec_len].*;
+        s = s +% pa;
+        s = s -% pb;
         sums[c..][0..vec_len].* = s;
         const out: @Vector(vec_len, T) = @intCast(s >> shift);
         dst_row[c..][0..vec_len].* = out;
     }
 
     while (c < w) : (c += 1) {
-        sums[c] += @as(u32, add_row[c]) * @as(u64, inv2);
-        sums[c] -= @as(u32, sub_row[c]) * @as(u64, inv2);
+        sums[c] = sums[c] +% @as(u32, add_row[c]) * inv2 -% @as(u32, sub_row[c]) * inv2;
         dst_row[c] = @intCast(sums[c] >> 16);
     }
 }
