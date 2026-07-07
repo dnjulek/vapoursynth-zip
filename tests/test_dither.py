@@ -16,7 +16,7 @@ FMTC_DMODE = {0: 1, 4: 0, 5: 3, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8, 11: 9}
 CASES = (
     sweep(
         base_fmt=vs.GRAY16,
-        base_args=dict(bitdepth=8),  # default dither_type = filterlite
+        base_args=dict(bitdepth=8),  # default dither_type = zimg random (blue noise)
         # int depths both containers, f16/f32, subsampled + RGB inputs
         formats=[vs.GRAY8, vs.GRAY10, vs.GRAY14, vs.GRAY16, vs.GRAYS, vs.GRAYH,
                  vs.YUV420P10, vs.YUV444P16, vs.RGB24, vs.RGB48],

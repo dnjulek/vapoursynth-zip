@@ -368,7 +368,7 @@ pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*v
         return;
     }
 
-    const imode = map_in.getInt(i32, "dither_type") orelse @intFromEnum(Mode.fmtc_filter_lite);
+    const imode = map_in.getInt(i32, "dither_type") orelse @intFromEnum(Mode.zimg_random);
     if (imode < 0 or imode > @intFromEnum(Mode.fmtc_quasirnd)) {
         map_out.setError(filter_name ++ ": dither_type must be 0-11.");
         zapi.freeNode(d.node);
