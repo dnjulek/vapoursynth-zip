@@ -17,18 +17,19 @@ const fillPaddedRow = core.fillPaddedRow;
 const buildBmask = core.buildBmask;
 const vcheckLine = core.vcheckLine;
 const srcCol = core.srcCol;
-const transposeF32 = core.transposeF32;
+const transposeAny = core.transposeAny;
 const transposeBlocked = core.transposeBlocked;
 const allocScratch = core.allocScratch;
 const freeScratch = core.freeScratch;
 const n_vec = core.n_vec;
 
 fn processPlane(
+    comptime T: type,
     d: *const Data,
     scratch: *Scratch,
-    srcl: []const f32,
-    dstl: []f32,
-    scpl: ?[]const f32,
+    srcl: []const T,
+    dstl: []T,
+    scpl: ?[]const T,
     maskl: ?[]const u8,
     mask_stride: u32,
     field: u8,
@@ -64,15 +65,15 @@ fn processPlane(
         const line_i: i32 = @intCast(line);
 
         if (interp_off == 0) {
-            fillPaddedRow(p3p, srcl[srcCol(d.dh, line_i - 3, n_src_i) * lstride ..][0..L], L);
-            fillPaddedRow(p1p, srcl[srcCol(d.dh, line_i - 1, n_src_i) * lstride ..][0..L], L);
-            fillPaddedRow(p1n, srcl[srcCol(d.dh, line_i + 1, n_src_i) * lstride ..][0..L], L);
-            fillPaddedRow(p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p3p, srcl[srcCol(d.dh, line_i - 3, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p1p, srcl[srcCol(d.dh, line_i - 1, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p1n, srcl[srcCol(d.dh, line_i + 1, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
         } else {
             std.mem.swap([]f32, &p3p, &p1p);
             std.mem.swap([]f32, &p1p, &p1n);
             std.mem.swap([]f32, &p1n, &p3n);
-            fillPaddedRow(p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
         }
 
         const bmask_row: ?[]const bool = if (maskl) |mp| blk: {
@@ -84,6 +85,7 @@ fn processPlane(
         const out_line = dstl[line * lstride ..];
         if (d.hp) {
             interpLineHP(
+                T,
                 p3p,
                 p1p,
                 p1n,
@@ -109,10 +111,12 @@ fn processPlane(
                 d.beta,
                 d.gamma,
                 d.one_minus_ab,
+                d.peak,
                 bmask_row,
             );
         } else {
             interpLine(
+                T,
                 p3p,
                 p1p,
                 p1n,
@@ -132,6 +136,7 @@ fn processPlane(
                 d.beta,
                 d.gamma,
                 d.one_minus_ab,
+                d.peak,
                 bmask_row,
                 scratch.block_active,
             );
@@ -140,138 +145,144 @@ fn processPlane(
     }
 
     if (d.vcheck > 0) {
-        vcheckLine(srcl, dstl, scpl, scratch.dmap, scratch.tline, field, L, n_dst, n_src, lstride, n_interp, d);
+        const tline: []T = @alignCast(std.mem.bytesAsSlice(T, scratch.tline));
+        vcheckLine(T, srcl, dstl, scpl, scratch.dmap, tline, field, L, n_dst, n_src, lstride, n_interp, d);
     }
 }
 
-fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
-    const d: *Data = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core_ptr, frame_ctx);
-    const src_n: c_int = if (d.field > 1) @divTrunc(n, 2) else n;
+fn Filter(comptime T: type) type {
+    return struct {
+        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
+            const d: *Data = @ptrCast(@alignCast(instance_data));
+            const zapi = ZAPI.init(vsapi, core_ptr, frame_ctx);
+            const src_n: c_int = if (d.field > 1) @divTrunc(n, 2) else n;
 
-    if (activation_reason == .Initial) {
-        zapi.requestFrameFilter(src_n, d.node);
-        if (d.vcheck > 0 and d.sclip != null) zapi.requestFrameFilter(n, d.sclip);
-        if (d.mclip != null) zapi.requestFrameFilter(src_n, d.mclip);
-    } else if (activation_reason == .AllFramesReady) {
-        const src = zapi.initZFrame(d.node, src_n);
-        defer src.deinit();
+            if (activation_reason == .Initial) {
+                zapi.requestFrameFilter(src_n, d.node);
+                if (d.vcheck > 0 and d.sclip != null) zapi.requestFrameFilter(n, d.sclip);
+                if (d.mclip != null) zapi.requestFrameFilter(src_n, d.mclip);
+            } else if (activation_reason == .AllFramesReady) {
+                const src = zapi.initZFrame(d.node, src_n);
+                defer src.deinit();
 
-        const scp = if (d.vcheck > 0 and d.sclip != null) zapi.initZFrame(d.sclip, n) else null;
-        defer if (scp) |s| s.deinit();
+                const scp = if (d.vcheck > 0 and d.sclip != null) zapi.initZFrame(d.sclip, n) else null;
+                defer if (scp) |s| s.deinit();
 
-        const mcp = if (d.mclip != null) zapi.initZFrame(d.mclip, src_n) else null;
-        defer if (mcp) |m| m.deinit();
+                const mcp = if (d.mclip != null) zapi.initZFrame(d.mclip, src_n) else null;
+                defer if (mcp) |m| m.deinit();
 
-        const dst = if (d.horizontal)
-            src.newVideoFrame3(.{ .width = d.vi.width })
-        else
-            src.newVideoFrame3(.{ .height = d.vi.height });
-        const dst_props = dst.getPropertiesRW();
+                const dst = if (d.horizontal)
+                    src.newVideoFrame3(.{ .width = d.vi.width })
+                else
+                    src.newVideoFrame3(.{ .height = d.vi.height });
+                const dst_props = dst.getPropertiesRW();
 
-        var field: u8 = d.field & 1;
-        switch (dst_props.getFieldBased() orelse .PROGRESSIVE) {
-            .BOTTOM => field = 0,
-            .TOP => field = 1,
-            else => {},
-        }
-        if (d.field > 1) field = @as(u8, @intCast(n & 1)) ^ field;
+                var field: u8 = d.field & 1;
+                switch (dst_props.getFieldBased() orelse .PROGRESSIVE) {
+                    .BOTTOM => field = 0,
+                    .TOP => field = 1,
+                    else => {},
+                }
+                if (d.field > 1) field = @as(u8, @intCast(n & 1)) ^ field;
 
-        // Size the per-thread scratch off plane 0. The internal pipeline is
-        // vertical, so the horizontal path sizes its line buffers off the source
-        // HEIGHT (the transposed line length) and requests the srcT/dstT frames.
-        const p0_w: u32, const p0_h: u32, const p0_stride: u32 = src.getDimensions2(f32, 0);
-        var alloc_w: u32 = undefined;
-        var alloc_stride: u32 = undefined;
-        var alloc_n_interp: u32 = undefined;
-        var srcT_rows: u32 = 0;
-        var dstT_rows: u32 = 0;
-        if (d.horizontal) {
-            alloc_w = p0_h;
-            alloc_stride = std.mem.alignForward(u32, p0_h, n_vec);
-            alloc_n_interp = if (d.dh) p0_w else p0_w / 2;
-            srcT_rows = p0_w;
-            dstT_rows = if (d.dh) p0_w * 2 else p0_w;
-        } else {
-            alloc_w = p0_w;
-            alloc_stride = p0_stride;
-            alloc_n_interp = if (d.dh) p0_h else p0_h / 2;
-        }
+                // Size the per-thread scratch off plane 0. The internal pipeline is
+                // vertical, so the horizontal path sizes its line buffers off the source
+                // HEIGHT (the transposed line length) and requests the srcT/dstT frames.
+                const p0_w: u32, const p0_h: u32, const p0_stride: u32 = src.getDimensions2(T, 0);
+                var alloc_w: u32 = undefined;
+                var alloc_stride: u32 = undefined;
+                var alloc_n_interp: u32 = undefined;
+                var srcT_rows: u32 = 0;
+                var dstT_rows: u32 = 0;
+                if (d.horizontal) {
+                    alloc_w = p0_h;
+                    alloc_stride = std.mem.alignForward(u32, p0_h, n_vec);
+                    alloc_n_interp = if (d.dh) p0_w else p0_w / 2;
+                    srcT_rows = p0_w;
+                    dstT_rows = if (d.dh) p0_w * 2 else p0_w;
+                } else {
+                    alloc_w = p0_w;
+                    alloc_stride = p0_stride;
+                    alloc_n_interp = if (d.dh) p0_h else p0_h / 2;
+                }
 
-        const tid = std.Thread.getCurrentId();
-        const scratch: *Scratch = blk: {
-            d.pool_lock.lockUncancelable(io);
-            defer d.pool_lock.unlock(io);
-            if (d.pool.get(tid)) |s| break :blk s;
-            const s = allocScratch(alloc_w, alloc_stride, alloc_n_interp, d.hp, srcT_rows, dstT_rows) catch {
-                zapi.setFilterError(if (d.horizontal) "EEDI3H: failed to allocate memory." else "EEDI3: failed to allocate memory.");
-                dst.deinit();
-                return null;
-            };
-            d.pool.put(tid, s) catch unreachable;
-            break :blk s;
-        };
+                const tid = std.Thread.getCurrentId();
+                const scratch: *Scratch = blk: {
+                    d.pool_lock.lockUncancelable(io);
+                    defer d.pool_lock.unlock(io);
+                    if (d.pool.get(tid)) |s| break :blk s;
+                    const s = allocScratch(alloc_w, alloc_stride, alloc_n_interp, d.hp, srcT_rows, dstT_rows, @sizeOf(T)) catch {
+                        zapi.setFilterError(if (d.horizontal) "EEDI3H: failed to allocate memory." else "EEDI3: failed to allocate memory.");
+                        dst.deinit();
+                        return null;
+                    };
+                    d.pool.put(tid, s) catch unreachable;
+                    break :blk s;
+                };
 
-        var plane: u32 = 0;
-        while (plane < d.vi.format.numPlanes) : (plane += 1) {
-            const srcp: []const f32 = src.getReadSlice2(f32, plane);
-            const dstp: []f32 = dst.getWriteSlice2(f32, plane);
-            const scpp: ?[]const f32 = if (scp) |s| s.getReadSlice2(f32, plane) else null;
-            // mclip is always a single Gray plane (see createImpl); the same mask
-            // drives every processed plane.
-            const maskp: ?[]const u8 = if (mcp) |m| m.getReadSlice2(u8, 0) else null;
-            const mask_stride: u32 = if (mcp) |m| m.getStride2(u8, 0) else 0;
+                var plane: u32 = 0;
+                while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    const srcp: []const T = src.getReadSlice2(T, plane);
+                    const dstp: []T = dst.getWriteSlice2(T, plane);
+                    const scpp: ?[]const T = if (scp) |s| s.getReadSlice2(T, plane) else null;
+                    // mclip is always a single Gray plane (see createImpl); the same mask
+                    // drives every processed plane.
+                    const maskp: ?[]const u8 = if (mcp) |m| m.getReadSlice2(u8, 0) else null;
+                    const mask_stride: u32 = if (mcp) |m| m.getStride2(u8, 0) else 0;
 
-            if (d.horizontal) {
-                const src_w: u32, const src_h: u32, const src_stride: u32 = src.getDimensions2(f32, plane);
-                const dst_w: u32 = dst.getWidth(plane);
-                const dst_stride: u32 = dst.getStride2(f32, plane);
-                const Lstride: u32 = std.mem.alignForward(u32, src_h, n_vec);
+                    if (d.horizontal) {
+                        const src_w: u32, const src_h: u32, const src_stride: u32 = src.getDimensions2(T, plane);
+                        const dst_w: u32 = dst.getWidth(plane);
+                        const dst_stride: u32 = dst.getStride2(T, plane);
+                        const Lstride: u32 = std.mem.alignForward(u32, src_h, n_vec);
 
-                // The only strided work: bring src (and mclip/sclip) into
-                // column-major layout, run the vertical pipeline on contiguous
-                // columns, then transpose the result back into the dst frame.
-                const srcT: []f32 = scratch.srcT;
-                const dstT: []f32 = scratch.dstT;
-                transposeF32(srcT, Lstride, srcp, src_stride, src_w, src_h);
+                        // The only strided work: bring src (and mclip/sclip) into
+                        // column-major layout, run the vertical pipeline on contiguous
+                        // columns, then transpose the result back into the dst frame.
+                        const srcT: []T = @alignCast(std.mem.bytesAsSlice(T, scratch.srcT));
+                        const dstT: []T = @alignCast(std.mem.bytesAsSlice(T, scratch.dstT));
+                        transposeAny(T, srcT, Lstride, srcp, src_stride, src_w, src_h);
 
-                const maskT: ?[]const u8 = if (maskp) |mp| blk: {
-                    transposeBlocked(u8, scratch.maskT, Lstride, mp, mask_stride, src_w, src_h);
-                    break :blk scratch.maskT;
-                } else null;
+                        const maskT: ?[]const u8 = if (maskp) |mp| blk: {
+                            transposeBlocked(u8, scratch.maskT, Lstride, mp, mask_stride, src_w, src_h);
+                            break :blk scratch.maskT;
+                        } else null;
 
-                const scpT: ?[]const f32 = if (d.vcheck > 0) (if (scpp) |sp| blk: {
-                    const scp_stride: u32 = scp.?.getStride2(f32, plane);
-                    transposeF32(scratch.scpT, Lstride, sp, scp_stride, dst_w, src_h);
-                    break :blk scratch.scpT;
-                } else null) else null;
+                        const scpT: ?[]const T = if (d.vcheck > 0) (if (scpp) |sp| blk: {
+                            const scpT_buf: []T = @alignCast(std.mem.bytesAsSlice(T, scratch.scpT));
+                            const scp_stride: u32 = scp.?.getStride2(T, plane);
+                            transposeAny(T, scpT_buf, Lstride, sp, scp_stride, dst_w, src_h);
+                            break :blk scpT_buf;
+                        } else null) else null;
 
-                processPlane(d, scratch, srcT, dstT, scpT, maskT, Lstride, field, src_h, Lstride, src_w, dst_w);
+                        processPlane(T, d, scratch, srcT, dstT, scpT, maskT, Lstride, field, src_h, Lstride, src_w, dst_w);
 
-                transposeF32(dstp, dst_stride, dstT, Lstride, src_h, dst_w);
-            } else {
-                const w: u32, const src_h: u32, const stride: u32 = src.getDimensions2(f32, plane);
-                const dst_h: u32 = dst.getHeight(plane);
-                processPlane(d, scratch, srcp, dstp, scpp, maskp, mask_stride, field, w, stride, src_h, dst_h);
+                        transposeAny(T, dstp, dst_stride, dstT, Lstride, src_h, dst_w);
+                    } else {
+                        const w: u32, const src_h: u32, const stride: u32 = src.getDimensions2(T, plane);
+                        const dst_h: u32 = dst.getHeight(plane);
+                        processPlane(T, d, scratch, srcp, dstp, scpp, maskp, mask_stride, field, w, stride, src_h, dst_h);
+                    }
+                }
+
+                dst_props.setFieldBased(.PROGRESSIVE);
+
+                if (d.field > 1) {
+                    var duration_num = dst_props.getDurationNum();
+                    var duration_den = dst_props.getDurationDen();
+                    if (duration_num != null and duration_den != null) {
+                        vsh.muldivRational(&duration_num.?, &duration_den.?, 1, 2);
+                        dst_props.setDurationNum(duration_num.?);
+                        dst_props.setDurationDen(duration_den.?);
+                    }
+                }
+
+                return dst.frame;
             }
+
+            return null;
         }
-
-        dst_props.setFieldBased(.PROGRESSIVE);
-
-        if (d.field > 1) {
-            var duration_num = dst_props.getDurationNum();
-            var duration_den = dst_props.getDurationDen();
-            if (duration_num != null and duration_den != null) {
-                vsh.muldivRational(&duration_num.?, &duration_den.?, 1, 2);
-                dst_props.setDurationNum(duration_num.?);
-                dst_props.setDurationDen(duration_den.?);
-            }
-        }
-
-        return dst.frame;
-    }
-
-    return null;
+    };
 }
 
 fn free(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
@@ -318,8 +329,10 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
         zapi.freeNode(d.mclip);
     };
 
-    if (d.vi.format.sampleType != .Float or d.vi.format.bitsPerSample != 32) {
-        map_out.setError(filter_name ++ ": only 32-bit float input is supported.");
+    if ((d.vi.format.sampleType == .Integer and d.vi.format.bitsPerSample > 16) or
+        (d.vi.format.sampleType == .Float and d.vi.format.bitsPerSample != 32))
+    {
+        map_out.setError(filter_name ++ ": only 8-16 bit integer and 32-bit float input is supported.");
         return;
     }
 
@@ -469,10 +482,24 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
     d.vcheck = @intCast(vcheck);
     d.one_minus_ab = 1.0 - d.alpha - d.beta;
     d.alpha /= 3.0;
-    d.beta /= 255.0;
-    d.gamma /= 255.0;
-    d.vthresh0 /= 255.0;
-    d.vthresh1 /= 255.0;
+    // beta/gamma/vthresh0/vthresh1 are given on the 8-bit scale. The pipeline
+    // runs at the format's native scale: int formats scale the params UP by
+    // 1 << (bits - 8) (like eedi3m); float formats normalize them down to
+    // [0, 1] instead. vthresh2 is in direction units — never scaled.
+    if (d.vi.format.sampleType == .Integer) {
+        const bits: u5 = @intCast(d.vi.format.bitsPerSample);
+        const scale: f32 = @floatFromInt(@as(u32, 1) << (bits - 8));
+        d.beta *= scale;
+        d.gamma *= scale;
+        d.vthresh0 *= scale;
+        d.vthresh1 *= scale;
+        d.peak = @floatFromInt((@as(u32, 1) << bits) - 1);
+    } else {
+        d.beta /= 255.0;
+        d.gamma /= 255.0;
+        d.vthresh0 /= 255.0;
+        d.vthresh1 /= 255.0;
+    }
     d.rcpVthresh0 = 1.0 / d.vthresh0;
     d.rcpVthresh1 = 1.0 / d.vthresh1;
     d.rcpVthresh2 = 1.0 / d.vthresh2;
@@ -493,7 +520,13 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
             ndeps += 1;
         }
     }
-    zapi.createVideoFilter(out, filter_name, &d.vi, getFrame, free, .Parallel, dep_buf[0..ndeps], data);
+    const get_frame: vs.FilterGetFrame = if (d.vi.format.sampleType == .Float)
+        &Filter(f32).getFrame
+    else switch (d.vi.format.bytesPerSample) {
+        1 => &Filter(u8).getFrame,
+        else => &Filter(u16).getFrame,
+    };
+    zapi.createVideoFilter(out, filter_name, &d.vi, get_frame, free, .Parallel, dep_buf[0..ndeps], data);
 }
 
 pub const args_string = "clip:vnode;field:int;dh:int:opt;alpha:float:opt;beta:float:opt;gamma:float:opt;nrad:int:opt;mdis:int:opt;hp:int:opt;vcheck:int:opt;vthresh0:float:opt;vthresh1:float:opt;vthresh2:float:opt;sclip:vnode:opt;mclip:vnode:opt;";

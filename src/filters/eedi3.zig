@@ -21,7 +21,7 @@ pub const Scratch = struct {
     pbackt: []align(vec_align) i8,
     fpath: []align(vec_align) i32,
     dmap: []i32,
-    tline: []f32,
+    tline: []align(vec_align) u8,
     bmask: []bool,
     block_active: []bool,
 
@@ -40,11 +40,14 @@ pub const Scratch = struct {
     // srcT/dstT hold the source and destination in transposed (column-major)
     // layout so all per-line gathers/scatters/vcheck become contiguous; maskT
     // and scpT mirror the mclip/sclip frames in the same layout. Sized off
-    // plane 0 in allocScratch.
-    srcT: []align(vec_align) f32,
-    dstT: []align(vec_align) f32,
+    // plane 0 in allocScratch. srcT/dstT/scpT (and tline above) hold native
+    // frame samples, so they are byte buffers viewed as []T at the glue layer
+    // (Scratch itself stays non-generic so the per-instance pool doesn't need
+    // a comptime type).
+    srcT: []align(vec_align) u8,
+    dstT: []align(vec_align) u8,
     maskT: []u8,
-    scpT: []align(vec_align) f32,
+    scpT: []align(vec_align) u8,
 };
 
 pub const Data = struct {
@@ -63,6 +66,7 @@ pub const Data = struct {
     hp: bool = false,
     dh: bool = false,
     horizontal: bool = false,
+    peak: f32 = 0, // int formats only: (1 << bits) - 1; unused for f32
     field: u8 = 0,
     vcheck: u8 = 0,
     vthresh0: f32 = 0,
@@ -80,6 +84,11 @@ pub const mdis_max = 40;
 pub const nrad_max = 3;
 pub const tpitch_max = mdis_max * 2 + 1;
 pub const tpitch_hp_max = mdis_max * 4 + 1;
+// NOTE (mt_mode.md 5e): padding the DP scratch rows (pcosts_buf /
+// block_cost_x_major) to 64B strides + align(64) removes ~8.6M cache-line-
+// split loads per frame — and measured 8% SLOWER: those splits are
+// L1-resident (nearly free on Zen 3) while the fatter rows cost real L1
+// footprint. Tried 2026-07-06, reverted; don't re-pad without new evidence.
 pub const dp_block = 64;
 
 pub const n_vec = std.simd.suggestVectorLength(f32) orelse 8;
@@ -91,6 +100,32 @@ pub const pad_buf_w = pad_h * 2;
 
 pub const flt_max: f32 = std.math.floatMax(f32);
 pub const flt_max_09: f32 = flt_max * 0.9;
+
+// --- sample <-> pipeline conversion (T in {u8, u16, f32}) -------------------
+// The whole cost/DP pipeline runs in f32 at the format's NATIVE scale (int
+// samples are not normalized; Create scales beta/gamma/vthresh by
+// 1 << (bits - 8) instead, mirroring eedi3m). Values up to 16-bit stay exact
+// in f32, and the per-u SAD/window sums top out below 2^24, so the int cost
+// stage is bit-identical to eedi3m's integer SADs.
+
+/// Frame sample -> f32 pipeline value.
+pub inline fn fromT(comptime T: type, v: T) f32 {
+    return if (T == f32) v else @floatFromInt(v);
+}
+
+/// Quantize a pipeline value for an int store: round half up + clamp to
+/// [0, peak]. This matches eedi3m's int rounding (`(... + 8) / 16`,
+/// `(a + b + 1) / 2` followed by std::clamp: for negative values the C++
+/// truncating division rounds differently, but those all clamp to 0 anyway).
+/// No-op for f32 — float output is intentionally unclamped (cubic ringing).
+pub inline fn quantF(comptime T: type, v: f32, peak: f32) f32 {
+    return if (T == f32) v else std.math.clamp(@floor(v + 0.5), 0.0, peak);
+}
+
+/// f32 -> sample store; for int, `v` must already be quantized (see quantF).
+pub inline fn toT(comptime T: type, v: f32) T {
+    return if (T == f32) v else @intFromFloat(v);
+}
 
 /// Mirror-reflect a line index (no edge duplication; fractional axis), matching
 /// C++ copyPad. `h` is the number of real samples along the reflected axis.
@@ -118,9 +153,14 @@ pub fn mirrorPad(buf: []f32, w: u32) void {
     for (0..pad_h) |i| buf[i] = buf[2 * pad_h - i];
 }
 
-/// Vertical path: copy a contiguous source row into a padded line buffer.
-pub fn fillPaddedRow(buf: []f32, src: []const f32, w: u32) void {
-    @memcpy(buf[pad_h..][0..w], src[0..w]);
+/// Vertical path: copy a contiguous source row into a padded f32 line buffer,
+/// converting int samples to float at native scale (auto-vectorizes).
+pub fn fillPaddedRow(comptime T: type, buf: []f32, src: []const T, w: u32) void {
+    if (T == f32) {
+        @memcpy(buf[pad_h..][0..w], src[0..w]);
+    } else {
+        for (buf[pad_h..][0..w], src[0..w]) |*b, s| b.* = @floatFromInt(s);
+    }
     mirrorPad(buf, w);
 }
 
@@ -209,6 +249,23 @@ pub fn transposeBlocked(
             }
         }
     }
+}
+
+/// Frame-boundary transpose with element-type dispatch: vectorized in-register
+/// path for f32, cache-tiled scalar path for int samples.
+pub fn transposeAny(
+    comptime T: type,
+    dst: []T,
+    dst_stride: u32,
+    src: []const T,
+    src_stride: u32,
+    w: u32,
+    h: u32,
+) void {
+    if (T == f32)
+        transposeF32(dst, dst_stride, src, src_stride, w, h)
+    else
+        transposeBlocked(T, dst, dst_stride, src, src_stride, w, h);
 }
 
 pub fn buildBmask(bmask: []bool, maskp: []const u8, w: u32, mdis: u32) void {
@@ -303,11 +360,12 @@ inline fn costBlockWin(
 }
 
 pub fn interpLine(
+    comptime T: type,
     r3p: []const f32,
     r1p: []const f32,
     r1n: []const f32,
     r3n: []const f32,
-    dstp_row: []f32,
+    dstp_row: []T,
     pbackt: []i8,
     fpath: []i32,
     t_base_buf: []f32,
@@ -322,23 +380,25 @@ pub fn interpLine(
     beta: f32,
     gamma_v: f32,
     one_minus_ab: f32,
+    peak: f32,
     bmask: ?[]const bool,
     block_active: []bool,
 ) void {
     // Comptime-specialize over nrad so the window-tap loop fully unrolls.
     switch (nrad) {
-        inline 0...nrad_max => |nr| interpLineN(nr, r3p, r1p, r1n, r3n, dstp_row, pbackt, fpath, t_base_buf, t_win, t_costs, dmap_row, stride, w, mdis, alpha, beta, gamma_v, one_minus_ab, bmask, block_active),
+        inline 0...nrad_max => |nr| interpLineN(T, nr, r3p, r1p, r1n, r3n, dstp_row, pbackt, fpath, t_base_buf, t_win, t_costs, dmap_row, stride, w, mdis, alpha, beta, gamma_v, one_minus_ab, peak, bmask, block_active),
         else => unreachable,
     }
 }
 
 fn interpLineN(
+    comptime T: type,
     comptime nrad: u32,
     r3p: []const f32,
     r1p: []const f32,
     r1n: []const f32,
     r3n: []const f32,
-    dstp_row: []f32,
+    dstp_row: []T,
     pbackt: []i8,
     fpath: []i32,
     t_base_buf: []f32,
@@ -352,6 +412,7 @@ fn interpLineN(
     beta: f32,
     gamma_v: f32,
     one_minus_ab: f32,
+    peak: f32,
     bmask: ?[]const bool,
     block_active: []bool,
 ) void {
@@ -381,7 +442,7 @@ fn interpLineN(
             const xi: i32 = @intCast(x);
             const bi: u32 = @intCast(xi + pad_h);
             dmap_row[x] = 0;
-            dstp_row[x] = 0.5625 * (r1p[bi] + r1n[bi]) - 0.0625 * (r3p[bi] + r3n[bi]);
+            dstp_row[x] = toT(T, quantF(T, 0.5625 * (r1p[bi] + r1n[bi]) - 0.0625 * (r3p[bi] + r3n[bi]), peak));
         }
         return;
     }
@@ -570,11 +631,12 @@ fn interpLineN(
         dmap_row[x] = dir;
         const dir_i: i32 = @intCast(dir);
         const ad: u32 = @intCast(@abs(dir));
-        dstp_row[x] = if (x >= ad * 3 and x + ad * 3 <= w - 1)
+        const val: f32 = if (x >= ad * 3 and x + ad * 3 <= w - 1)
             0.5625 * (r1p[@intCast(xi + dir_i + pad_h)] + r1n[@intCast(xi - dir_i + pad_h)]) -
                 0.0625 * (r3p[@intCast(xi + dir_i * 3 + pad_h)] + r3n[@intCast(xi - dir_i * 3 + pad_h)])
         else
             (r1p[@intCast(xi + dir_i + pad_h)] + r1n[@intCast(xi - dir_i + pad_h)]) * 0.5;
+        dstp_row[x] = toT(T, quantF(T, val, peak));
     }
 }
 
@@ -604,6 +666,7 @@ fn computeHpRow(dst: []f32, a: []const f32) void {
 }
 
 pub fn interpLineHP(
+    comptime T: type,
     r3p: []const f32,
     r1p: []const f32,
     r1n: []const f32,
@@ -616,7 +679,7 @@ pub fn interpLineHP(
     base_hp: []f32,
     win_m: []f32,
     win_hp: []f32,
-    dstp_row: []f32,
+    dstp_row: []T,
     pbackt: []i8,
     fpath: []i32,
     t_costs: []f32,
@@ -629,16 +692,18 @@ pub fn interpLineHP(
     beta255: f32,
     gamma255: f32,
     one_minus_ab: f32,
+    peak: f32,
     bmask: ?[]const bool,
 ) void {
     // Comptime-specialize over nrad so the window-tap loop fully unrolls.
     switch (nrad) {
-        inline 0...nrad_max => |nr| interpLineHPN(nr, r3p, r1p, r1n, r3n, hp3p, hp1p, hp1n, hp3n, base_m, base_hp, win_m, win_hp, dstp_row, pbackt, fpath, t_costs, dmap_row, stride, w, mdis, alpha3, beta255, gamma255, one_minus_ab, bmask),
+        inline 0...nrad_max => |nr| interpLineHPN(T, nr, r3p, r1p, r1n, r3n, hp3p, hp1p, hp1n, hp3n, base_m, base_hp, win_m, win_hp, dstp_row, pbackt, fpath, t_costs, dmap_row, stride, w, mdis, alpha3, beta255, gamma255, one_minus_ab, peak, bmask),
         else => unreachable,
     }
 }
 
 fn interpLineHPN(
+    comptime T: type,
     comptime nrad: u32,
     r3p: []const f32,
     r1p: []const f32,
@@ -652,7 +717,7 @@ fn interpLineHPN(
     base_hp: []f32,
     win_m: []f32,
     win_hp: []f32,
-    dstp_row: []f32,
+    dstp_row: []T,
     pbackt: []i8,
     fpath: []i32,
     t_costs: []f32,
@@ -664,6 +729,7 @@ fn interpLineHPN(
     beta255: f32,
     gamma255: f32,
     one_minus_ab: f32,
+    peak: f32,
     bmask: ?[]const bool,
 ) void {
     if (w == 0) return;
@@ -689,7 +755,7 @@ fn interpLineHPN(
             for (0..w) |x| {
                 const bi = pidx(@intCast(x));
                 dmap_row[x] = 0;
-                dstp_row[x] = 0.5625 * (r1p[bi] + r1n[bi]) - 0.0625 * (r3p[bi] + r3n[bi]);
+                dstp_row[x] = toT(T, quantF(T, 0.5625 * (r1p[bi] + r1n[bi]) - 0.0625 * (r3p[bi] + r3n[bi]), peak));
             }
             return;
         }
@@ -900,20 +966,21 @@ fn interpLineHPN(
         if (bmask) |bm| {
             if (!bm[xx]) {
                 dmap_row[xx] = 0;
-                dstp_row[xx] = 0.5625 * (r1p[pidx(xi)] + r1n[pidx(xi)]) - 0.0625 * (r3p[pidx(xi)] + r3n[pidx(xi)]);
+                dstp_row[xx] = toT(T, quantF(T, 0.5625 * (r1p[pidx(xi)] + r1n[pidx(xi)]) - 0.0625 * (r3p[pidx(xi)] + r3n[pidx(xi)]), peak));
                 continue;
             }
         }
         const dir: i32 = fpath[xx];
         dmap_row[xx] = dir;
+        var val: f32 = undefined;
         if ((dir & 1) == 0) {
             const d2 = dir >> 1;
             const ad: u32 = @intCast(@abs(d2));
             if (xx >= ad * 3 and xx + ad * 3 <= w - 1) {
-                dstp_row[xx] = 0.5625 * (r1p[pidx(xi + d2)] + r1n[pidx(xi - d2)]) -
+                val = 0.5625 * (r1p[pidx(xi + d2)] + r1n[pidx(xi - d2)]) -
                     0.0625 * (r3p[pidx(xi + d2 * 3)] + r3n[pidx(xi - d2 * 3)]);
             } else {
-                dstp_row[xx] = (r1p[pidx(xi + d2)] + r1n[pidx(xi - d2)]) * 0.5;
+                val = (r1p[pidx(xi + d2)] + r1n[pidx(xi - d2)]) * 0.5;
             }
         } else {
             const d20 = dir >> 1;
@@ -926,11 +993,12 @@ fn interpLineHPN(
                 const c1 = r1p[pidx(xi + d20)] + r1p[pidx(xi + d21)];
                 const c2 = r1n[pidx(xi - d20)] + r1n[pidx(xi - d21)];
                 const c3 = r3n[pidx(xi - d30)] + r3n[pidx(xi - d31)];
-                dstp_row[xx] = 0.28125 * (c1 + c2) - 0.03125 * (c0 + c3);
+                val = 0.28125 * (c1 + c2) - 0.03125 * (c0 + c3);
             } else {
-                dstp_row[xx] = (r1p[pidx(xi + d20)] + r1p[pidx(xi + d21)] + r1n[pidx(xi - d20)] + r1n[pidx(xi - d21)]) * 0.25;
+                val = (r1p[pidx(xi + d20)] + r1p[pidx(xi + d21)] + r1n[pidx(xi - d20)] + r1n[pidx(xi - d21)]) * 0.25;
             }
         }
+        dstp_row[xx] = toT(T, quantF(T, val, peak));
     }
 }
 
@@ -944,11 +1012,12 @@ fn interpLineHPN(
 ///   horizontal); `i` is the position along the interpolated line; the warp
 ///   shifts `i`. All accesses are contiguous.
 pub fn vcheckLine(
-    src: []const f32,
-    dst: []f32,
-    scp: ?[]const f32,
+    comptime T: type,
+    src: []const T,
+    dst: []T,
+    scp: ?[]const T,
     dmap: []const i32,
-    tline: []f32,
+    tline: []T,
     field: u8,
     L: u32, // interpolated-line length (w vertical / src_h horizontal)
     n_dst: u32, // number of dst lines (dst_h vertical / dst_w horizontal)
@@ -978,17 +1047,20 @@ pub fn vcheckLine(
         const dmap_cur = dmap[off * lstride ..];
         const dmap_prev = dmap[(off - 1) * lstride ..];
         const dmap_next = dmap[(off + 1) * lstride ..];
-        const scp_line: ?[]const f32 = if (scp) |sc| sc[pd * lstride ..] else null;
+        const scp_line: ?[]const T = if (scp) |sc| sc[pd * lstride ..] else null;
 
         for (0..L) |i| {
             const dirc = dmap_cur[i];
-            const cint = if (scp_line) |r|
-                r[i]
+            // For int the fallback cubic cint is quantized like an interp store
+            // (eedi3m's int vCheck clamps `(9*(...) + 8) / 16` the same way);
+            // it may be stored as-is below, so it must be a valid sample value.
+            const cint: f32 = if (scp_line) |r|
+                fromT(T, r[i])
             else
-                0.5625 * (dst1p[i] + dst1n[i]) - 0.0625 * (dst3p[i] + dst3n[i]);
+                quantF(T, 0.5625 * (fromT(T, dst1p[i]) + fromT(T, dst1n[i])) - 0.0625 * (fromT(T, dst3p[i]) + fromT(T, dst3n[i])), d.peak);
 
             if (dirc == 0) {
-                tline[i] = cint;
+                tline[i] = toT(T, cint);
                 continue;
             }
 
@@ -996,7 +1068,7 @@ pub fn vcheckLine(
             const dirb = dmap_next[i];
 
             if (@max(dirc * dirt, dirc * dirb) < 0 or (dirt == dirb and dirt == 0)) {
-                tline[i] = cint;
+                tline[i] = toT(T, cint);
                 continue;
             }
 
@@ -1009,7 +1081,7 @@ pub fn vcheckLine(
                 break :blk @intCast(@max(@abs(dirc_i >> 1), @abs((dirc_i + 1) >> 1)));
             } else @intCast(@abs(dirc_i));
             if (ii + maxoff >= Li or ii - maxoff < 0) {
-                tline[i] = cint;
+                tline[i] = toT(T, cint);
                 continue;
             }
 
@@ -1025,12 +1097,12 @@ pub fn vcheckLine(
                 const ip1: u32 = @intCast(ii + d21);
                 const im0: u32 = @intCast(ii - d20);
                 const im1: u32 = @intCast(ii - d21);
-                const s2psum = dst2p[ip0] + dst2p[ip1];
-                const s1psum = dst1p[ip0] + dst1p[ip1];
-                const pa0 = dst_line[ip0] + dst_line[ip1];
-                const ps0 = dst_line[im0] + dst_line[im1];
-                const s1nsum = dst1n[im0] + dst1n[im1];
-                const s2nsum = dst2n[im0] + dst2n[im1];
+                const s2psum = fromT(T, dst2p[ip0]) + fromT(T, dst2p[ip1]);
+                const s1psum = fromT(T, dst1p[ip0]) + fromT(T, dst1p[ip1]);
+                const pa0 = fromT(T, dst_line[ip0]) + fromT(T, dst_line[ip1]);
+                const ps0 = fromT(T, dst_line[im0]) + fromT(T, dst_line[im1]);
+                const s1nsum = fromT(T, dst1n[im0]) + fromT(T, dst1n[im1]);
+                const s2nsum = fromT(T, dst2n[im0]) + fromT(T, dst2n[im1]);
                 it = (s2psum + ps0) * 0.25;
                 vt = (@abs(s2psum - s1psum) + @abs(pa0 - s1psum)) * 0.5;
                 ib = (pa0 + s2nsum) * 0.25;
@@ -1040,16 +1112,16 @@ pub fn vcheckLine(
                 const offh: i32 = if (d.hp) dirc_i >> 1 else dirc_i;
                 const ipd: u32 = @intCast(ii + offh);
                 const imd: u32 = @intCast(ii - offh);
-                it = (dst2p[ipd] + dst_line[imd]) * 0.5;
-                ib = (dst_line[ipd] + dst2n[imd]) * 0.5;
-                vt = @abs(dst2p[ipd] - dst1p[ipd]) + @abs(dst_line[ipd] - dst1p[ipd]);
-                vb = @abs(dst2n[imd] - dst1n[imd]) + @abs(dst_line[imd] - dst1n[imd]);
+                it = (fromT(T, dst2p[ipd]) + fromT(T, dst_line[imd])) * 0.5;
+                ib = (fromT(T, dst_line[ipd]) + fromT(T, dst2n[imd])) * 0.5;
+                vt = @abs(fromT(T, dst2p[ipd]) - fromT(T, dst1p[ipd])) + @abs(fromT(T, dst_line[ipd]) - fromT(T, dst1p[ipd]));
+                vb = @abs(fromT(T, dst2n[imd]) - fromT(T, dst1n[imd])) + @abs(fromT(T, dst_line[imd]) - fromT(T, dst1n[imd]));
                 dabs = if (d.hp) @intCast(@abs(dirc_i) >> 1) else @intCast(@abs(dirc_i));
             }
-            const vc = @abs(dst_line[i] - dst1p[i]) + @abs(dst_line[i] - dst1n[i]);
+            const vc = @abs(fromT(T, dst_line[i]) - fromT(T, dst1p[i])) + @abs(fromT(T, dst_line[i]) - fromT(T, dst1n[i]));
 
-            const d0 = @abs(it - dst1p[i]);
-            const d1 = @abs(ib - dst1n[i]);
+            const d0 = @abs(it - fromT(T, dst1p[i]));
+            const d1 = @abs(ib - fromT(T, dst1n[i]));
             const d2 = @abs(vt - vc);
             const d3 = @abs(vb - vc);
 
@@ -1069,7 +1141,9 @@ pub fn vcheckLine(
             const a2 = @max((d.vthresh2 - @as(f32, @floatFromInt(dabs))) * d.rcpVthresh2, 0.0);
             const a = @min(@max(a0, @max(a1, a2)), 1.0);
 
-            tline[i] = (1.0 - a) * dst_line[i] + a * cint;
+            // Int store rounds (quantF); eedi3m's int vCheck truncates this
+            // blend instead — an accepted sub-LSB divergence.
+            tline[i] = toT(T, quantF(T, (1.0 - a) * fromT(T, dst_line[i]) + a * cint, d.peak));
         }
 
         @memcpy(dst_line[0..L], tline[0..L]);
@@ -1078,8 +1152,10 @@ pub fn vcheckLine(
 
 /// `srcT_rows`/`dstT_rows` are the number of transposed rows (= src_w / dst_w)
 /// for the fully-transposed horizontal pipeline; each row spans `stride`
-/// elements. The vertical path passes 0 to skip those allocations.
-pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32, dstT_rows: u32) !*Scratch {
+/// elements. The vertical path passes 0 to skip those allocations. `elem_size`
+/// is @sizeOf(T) of the frame sample type; it sizes the byte buffers that hold
+/// native samples (tline/srcT/dstT/scpT).
+pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32, dstT_rows: u32, elem_size: u32) !*Scratch {
     const pad_buf_len = hz.ceilN(w + pad_buf_w, hz.vsFrameAlignmentT(@sizeOf(f32)));
     const tpitch_alloc: u32 = if (hp) tpitch_hp_max else tpitch_max;
     const s = try allocator.create(Scratch);
@@ -1093,7 +1169,7 @@ pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32
     s.pbackt = try allocator.alignedAlloc(i8, .fromByteUnits(vec_align), stride * tpitch_alloc);
     s.fpath = try allocator.alignedAlloc(i32, .fromByteUnits(vec_align), stride);
     s.dmap = try allocator.alloc(i32, n_interp * stride);
-    s.tline = try allocator.alloc(f32, stride);
+    s.tline = try allocator.alignedAlloc(u8, .fromByteUnits(vec_align), stride * elem_size);
     s.bmask = try allocator.alloc(bool, stride);
     s.block_active = try allocator.alloc(bool, stride / n_vec + 1);
     const hp_len: usize = if (hp) pad_buf_len else 0;
@@ -1105,10 +1181,10 @@ pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32
     s.base_hp = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), hp_len);
     s.win_m = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), hp_len);
     s.win_hp = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), hp_len);
-    s.srcT = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), srcT_rows * stride);
-    s.dstT = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), dstT_rows * stride);
+    s.srcT = try allocator.alignedAlloc(u8, .fromByteUnits(vec_align), srcT_rows * stride * elem_size);
+    s.dstT = try allocator.alignedAlloc(u8, .fromByteUnits(vec_align), dstT_rows * stride * elem_size);
     s.maskT = try allocator.alloc(u8, srcT_rows * stride);
-    s.scpT = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), dstT_rows * stride);
+    s.scpT = try allocator.alignedAlloc(u8, .fromByteUnits(vec_align), dstT_rows * stride * elem_size);
     return s;
 }
 
