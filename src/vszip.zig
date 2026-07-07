@@ -6,6 +6,7 @@ pub const zigimg = @import("zigimg");
 const zon = @import("zon");
 
 const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
+const adaptive_grain_mask = @import("vapoursynth/adaptive_grain_mask.zig");
 const bilateral = @import("vapoursynth/bilateral.zig");
 const bilateral_dither = @import("vapoursynth/bilateral_dither.zig");
 const boxblur = @import("vapoursynth/boxblur.zig");
@@ -16,6 +17,7 @@ const compress = @import("vapoursynth/compress.zig");
 const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
 const comb_mask = @import("vapoursynth/comb_mask.zig");
 const deband = @import("vapoursynth/deband.zig");
+const dither = @import("vapoursynth/dither.zig");
 const eedi3 = @import("vapoursynth/eedi3.zig");
 const image_read = @import("vapoursynth/image_read.zig");
 const limit_filter = @import("vapoursynth/limit_filter.zig");
@@ -40,6 +42,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "clip:vnode;clip2:vnode;c:int:opt;",
         "clip:vnode;",
         adaptive_binarize.adaptiveBinarizeCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        adaptive_grain_mask.filter_name,
+        "clip:vnode;luma_scaling:float:opt;",
+        "clip:vnode;",
+        adaptive_grain_mask.adaptiveGrainMaskCreate,
         plugin,
         vspapi,
     );
@@ -122,6 +132,14 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
             "thr1:float[]:opt;thr2:float[]:opt;angle_boost:float:opt;max_angle:float:opt;",
         "clip:vnode;",
         deband.create,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        dither.filter_name,
+        "clip:vnode;bitdepth:int;dither_type:int:opt;sample_type:int:opt;fulls:int:opt;fulld:int:opt;",
+        "clip:vnode;",
+        dither.ditherCreate,
         plugin,
         vspapi,
     );

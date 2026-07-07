@@ -557,6 +557,45 @@ pub inline fn packClampU8x4(r0: I32x8, r1: I32x8, r2: I32x8, r3: I32x8) @Vector(
     return out;
 }
 
+/// The 16 rows of a 256-entry byte LUT, each 16-entry piece duplicated across
+/// both 128-bit lanes for vpshufb's per-lane indexing. Built once per plane.
+pub fn lutChunksU8(lut: *const [256]u8) [16]@Vector(32, u8) {
+    var ch: [16]@Vector(32, u8) = undefined;
+    for (0..16) |c| {
+        const piece: @Vector(16, u8) = lut[c * 16 ..][0..16].*;
+        ch[c] = std.simd.join(piece, piece);
+    }
+    return ch;
+}
+
+/// 256-entry byte LUT over 32 bytes: 16-chunk vpshufb network. There is no u8
+/// gather on AVX2, so LLVM (correctly) leaves a `lut[src[i]]` loop scalar —
+/// but that loop is store-commit-bound: 32 single-byte stores + 64 loads per
+/// 32 px (measured 88% of AdaptiveGrainMask(u8).getFrame cycles, ~73% parked
+/// on the byte stores). This form is ~5 vector ops per chunk pass and ONE
+/// 32-byte store. Chunk selection is free via the vpshufb zeroing rule
+/// (output byte = 0 when the index byte's bit 7 is set): for chunk c,
+/// sel = (v ^ (c<<4)) +| 0x70 has bit 7 clear iff hi(v) == c, and its low
+/// nibble is then lo(v), so OR-ing the 16 chunk results composes the full
+/// lookup. Only the vpshufb itself is pinned asm (no Zig builtin maps to it);
+/// xor/saturating-add/or are portable ops LLVM lowers 1:1. Bit-exact by
+/// construction: same LUT bytes, pure integer selection. The portable twin is
+/// the scalar loop in the caller (adaptive_grain_mask.processIntU8).
+pub inline fn lutU8x32(chunks: *const [16]@Vector(32, u8), v: @Vector(32, u8)) @Vector(32, u8) {
+    const V = @Vector(32, u8);
+    const bias: V = @splat(0x70);
+    var acc: V = @splat(0);
+    inline for (0..16) |c| {
+        const sel = (v ^ @as(V, @splat(@as(u8, c << 4)))) +| bias;
+        acc |= asm ("vpshufb %[sel], %[tbl], %[out]"
+            : [out] "=x" (-> V),
+            : [tbl] "x" (chunks[c]),
+              [sel] "x" (sel),
+        );
+    }
+    return acc;
+}
+
 /// vpshufb control packing the even words of each 128-bit lane into its low
 /// qword and the odd words into its high qword.
 const eo_bytes: @Vector(32, u8) = .{
@@ -608,4 +647,142 @@ pub inline fn interleaveI16x16(e: I16x16, o: I16x16) [2]I16x16 {
         @shuffle(i16, e, o, [16]i32{ 0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8 }),
         @shuffle(i16, e, o, [16]i32{ 8, -9, 9, -10, 10, -11, 11, -12, 12, -13, 13, -14, 14, -15, 15, -16 }),
     };
+}
+
+// ---------------------------------------------------------------------------
+// IEEE round-to-nearest-even f32 -> i32 (fmtconv-compatible rounding)
+// ---------------------------------------------------------------------------
+
+const use_sse41 = builtin.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.cpu.features, .sse4_1);
+
+/// 1.5 * 2^23: (x + magic) - magic rounds x to the nearest even integer for
+/// |x| < 2^22 (both ops exactly representable; the add forces the fraction out
+/// of the mantissa under the default rounding mode). Portable twin of
+/// vcvtps2dq/roundss used by the Dither kernels, whose domain is
+/// [-32769, 65536].
+const round_magic: f32 = 12582912.0;
+
+/// Vector f32 -> i32 with round-to-nearest-even (vcvtps2dq semantics; Zig has
+/// no builtin for it — @intFromFloat truncates and @round rounds half away
+/// from zero). Callers guarantee |v| < 2^22 so the portable magic-number twin
+/// is exact and the conversion never overflows.
+pub inline fn cvtRoundI32(comptime n: comptime_int, v: @Vector(n, f32)) @Vector(n, i32) {
+    const V = @Vector(n, i32);
+    if (comptime ((n == 4 and use_avx) or (n == 8 and use_avx) or (n == 16 and use_avx512f))) {
+        return asm ("vcvtps2dq %[v], %[out]"
+            : [out] "=x" (-> V),
+            : [v] "x" (v),
+        );
+    }
+    if (comptime (n == 4 and builtin.cpu.arch == .x86_64)) {
+        // Baseline (non-AVX) wheel: SSE2 cvtps2dq, non-VEX 2-operand form.
+        return asm ("cvtps2dq %[v], %[out]"
+            : [out] "=x" (-> V),
+            : [v] "x" (v),
+        );
+    }
+    const magic: @Vector(n, f32) = @splat(round_magic);
+    return @intFromFloat((v + magic) - magic);
+}
+
+/// Scalar twin of cvtRoundI32 kept in the f32 domain (the error-diffusion
+/// quantizer needs both the rounded float and the pixel). roundss keeps the
+/// loop-carried error-feedback chain 1 op; the magic-number twin is the
+/// semantic reference (identical results for |v| < 2^22).
+pub inline fn roundNearestEven(v: f32) f32 {
+    if (comptime use_avx) {
+        const arr: @Vector(4, f32) = .{ v, 0, 0, 0 };
+        const r = asm ("vroundss $0, %[v], %[v], %[out]"
+            : [out] "=x" (-> @Vector(4, f32)),
+            : [v] "x" (arr),
+        );
+        return r[0];
+    }
+    if (comptime use_sse41) {
+        // Non-VEX roundss is 2-operand; tie output to the input register.
+        const arr: @Vector(4, f32) = .{ v, 0, 0, 0 };
+        const r = asm ("roundss $0, %[v], %[out]"
+            : [out] "=x" (-> @Vector(4, f32)),
+            : [v] "0" (arr),
+        );
+        return r[0];
+    }
+    return (v + round_magic) - round_magic;
+}
+
+// ---------------------------------------------------------------------------
+// Saturating narrowing packs (zimg-style store tails)
+// ---------------------------------------------------------------------------
+
+/// Two 8-lane i32 vectors -> one 16-lane u16 vector with unsigned saturation
+/// (vpackusdw + vpermq). The saturation IS the [0, 65535] clamp — callers
+/// drop their float-domain lower clamp and bias tricks. LLVM lowers the
+/// portable min/max+trunc form through generic shuffles (vextracti128 +
+/// vpshufb pairs — measured at 71-74% of the Dither ordered-kernel samples),
+/// so the 2-op form is pinned as asm. The portable twin is the semantic
+/// reference and bit-identical.
+///
+/// AVX2-only BY DESIGN — there is deliberately no AVX-512 twin (avx512.md §3.4,
+/// verified 2026-07-07). This helper synthesizes a narrow that AVX2 lacks; on
+/// AVX-512 builds the Dither paired path is inert (n_vec == 16) and LLVM emits
+/// the narrow LLVM couldn't on AVX2 — a single `vpmovdw [mem],zmm` that folds
+/// the store. A pinned pack would return a register and lose that fold, so it
+/// cannot beat the native lowering. Confirmed bit-exact vs v3 under SDE.
+pub inline fn packUsI32ToU16(lo: I32x8, hi: I32x8) @Vector(16, u16) {
+    if (comptime use_avx2) {
+        const p = asm ("vpackusdw %[hi], %[lo], %[out]"
+            : [out] "=x" (-> @Vector(16, u16)),
+            : [lo] "x" (lo),
+              [hi] "x" (hi),
+        );
+        return asm ("vpermq $0xd8, %[p], %[out]"
+            : [out] "=x" (-> @Vector(16, u16)),
+            : [p] "x" (p),
+        );
+    }
+    const zero: I32x8 = @splat(0);
+    const maxv: I32x8 = @splat(65535);
+    const lo_t: @Vector(8, u16) = @intCast(@min(@max(lo, zero), maxv));
+    const hi_t: @Vector(8, u16) = @intCast(@min(@max(hi, zero), maxv));
+    return std.simd.join(lo_t, hi_t);
+}
+
+/// 16-lane u16 -> 16-lane u8. PRECONDITION: every lane <= 255 (vpackuswb
+/// reads lanes as SIGNED i16, so values >= 32768 would saturate to 0, and
+/// 256..32767 to 255); the Dither callers guarantee it by clamping to an
+/// 8-bit peak in float. The portable twin's @intCast asserts the
+/// precondition in Debug builds.
+///
+/// AVX2-only BY DESIGN (see packUsI32ToU16 / avx512.md §3.4): the AVX-512
+/// Dither build never reaches here — LLVM narrows i32->u8 directly with a
+/// single `vpmovdb [mem],zmm` (store folded), which a pinned pack cannot beat.
+pub inline fn packU16ToU8(v: @Vector(16, u16)) @Vector(16, u8) {
+    if (comptime use_avx2) {
+        const p = asm ("vpackuswb %[v], %[v], %[out]"
+            : [out] "=x" (-> @Vector(32, u8)),
+            : [v] "x" (v),
+        );
+        const q = asm ("vpermq $0xd8, %[p], %[out]"
+            : [out] "=x" (-> @Vector(32, u8)),
+            : [p] "x" (p),
+        );
+        return std.simd.extract(q, 0, 16);
+    }
+    return @intCast(v);
+}
+
+/// vminps against a non-NaN bound (NaN lanes come back as the bound).
+/// The plain @min emits a NaN-fixup compare+blend on the critical chain
+/// when LLVM cannot prove the value non-NaN (measured in the errdiff
+/// wavefront); bit-identical to @min for every non-NaN input.
+pub inline fn minPs(comptime n: comptime_int, v: @Vector(n, f32), bound: @Vector(n, f32)) @Vector(n, f32) {
+    const V = @Vector(n, f32);
+    if (comptime (use_avx and n * 4 <= 32)) {
+        return xop2("vminps", V, v, bound);
+    }
+    if (comptime (use_avx512f and n * 4 == 64)) {
+        return zop2("vminps", V, v, bound);
+    }
+    return @min(v, bound);
 }
