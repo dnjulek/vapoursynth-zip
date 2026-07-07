@@ -4,21 +4,26 @@ import vapoursynth as vs
 from golden import Case, grid, sweep
 from helpers import assert_same_clip, diff, max_abs_diff, repack
 
-# EEDI3 / EEDI3H (Zig SIMD port of eedi3m's float EEDI3). Edge-directed
+# EEDI3 / EEDI3H (Zig SIMD port of eedi3m's EEDI3). Edge-directed
 # interpolation: the missing field is reconstructed by a DP that finds the
 # best non-crossing warping between neighbour lines. EEDI3 interpolates rows
 # (vertical), EEDI3H interpolates columns (horizontal) by running the very same
-# kernel over a transposed copy, so EEDI3H is bit-exact to T+EEDI3+T. The plugin
-# is 32-bit-float only and works on any planar/gray format; every plane is
-# interpolated independently. All math is deterministic f32, so goldens are
-# stable. Output differs from eedi3m only by a documented, accepted edge-cost
-# divergence (a handful of border pixels) and by `hp` actually doing half-pel
-# (eedi3m's `hp` is a no-op).
+# kernel over a transposed copy, so EEDI3H is bit-exact to T+EEDI3+T. The
+# plugin accepts 8-16 bit integer and 32-bit float on any planar/gray format;
+# every plane is interpolated independently. Int clips run the identical f32
+# cost/DP pipeline at native pixel scale (beta/gamma/vthresh scaled by
+# 1 << (bits-8) like eedi3m) with stores rounded half-up and clamped to
+# [0, peak]. All math is deterministic, so goldens are stable. Output differs
+# from eedi3m only by documented, accepted divergences (always-padded cost3 at
+# borders, f32 vs int rounding inside the cost/vcheck heuristics — a small
+# fraction of near-tie pixels) and by `hp` actually doing half-pel (eedi3m's
+# `hp` is a no-op).
 #
 # dh=False requires the interpolated axis (height for EEDI3, width for EEDI3H)
 # to be mod 2, so the base 640x320 "full" geometry is used for goldens; the
 # "odd"/"tiny" geometries would make that axis odd and are rejected.
 FLOAT_FMTS = [vs.GRAYS, vs.YUV420PS, vs.YUV444PS, vs.RGBS]
+INT_FMTS = [vs.GRAY8, vs.GRAY16, vs.YUV420P10, vs.RGB24]
 
 CASES = (
     sweep(
@@ -42,6 +47,21 @@ CASES = (
         # strong edge connection
         Case(vs.GRAYS, args=dict(field=1, alpha=0.9, beta=0.05, gamma=2.0, mdis=30)),
     ]
+    # integer path: same kernel at native scale + quantized stores; sweep the
+    # int formats on the base args and the store-quantization-heavy modes on
+    # GRAY8 (hp/vcheck quantize in extra places, dh copies the kept field).
+    + sweep(
+        base_fmt=vs.GRAY8,
+        base_args=dict(field=1),
+        formats=INT_FMTS,
+        args=(
+            grid(dh=[True])
+            + grid(hp=[True])
+            + grid(vcheck=[0, 3])
+            + grid(nrad=[0], mdis=[40])
+        ),
+    )
+    + [Case(vs.GRAY16, args=dict(field=2))]
 )
 
 # EEDI3H mirrors EEDI3 but on the width axis (640 is even, so dh=False is fine).
@@ -59,6 +79,12 @@ CASES_H = (
         ),
     )
     + [Case(vs.GRAYS, args=dict(field=2))]
+    + sweep(
+        base_fmt=vs.GRAY8,
+        base_args=dict(field=1),
+        formats=[vs.GRAY8, vs.GRAY16, vs.YUV420P10],
+        args=grid(hp=[True]) + grid(vcheck=[0]),
+    )
 )
 
 
@@ -108,13 +134,16 @@ def test_eedi3h_doubles_width(grays):
     assert (out.width, out.height) == (grays.width * 2, grays.height)
 
 
-def test_eedi3h_matches_transpose_eedi3(grays):
+@pytest.mark.parametrize("fmt", [vs.GRAYS, vs.GRAY8, vs.GRAY16])
+def test_eedi3h_matches_transpose_eedi3(make_clip, fmt):
     # EEDI3H runs the identical kernel on a transposed copy, so it is bit-exact
-    # to Transpose -> EEDI3 -> Transpose for every option combination.
+    # to Transpose -> EEDI3 -> Transpose for every option combination and
+    # sample type (the int path quantizes at the same logical points).
+    src = make_clip(fmt)
     for kw in (dict(field=1), dict(field=0, vcheck=0), dict(field=1, dh=True),
                dict(field=1, hp=True, vcheck=3), dict(field=1, nrad=3, mdis=40)):
-        h = grays.vszip.EEDI3H(**kw)
-        t = grays.std.Transpose().vszip.EEDI3(**kw).std.Transpose()
+        h = src.vszip.EEDI3H(**kw)
+        t = src.std.Transpose().vszip.EEDI3(**kw).std.Transpose()
         assert max_abs_diff(h, t) == 0.0, kw
 
 
@@ -148,6 +177,17 @@ def test_float_output_is_finite(make_clip):
         assert -2.0 < s["PlaneStatsMin"] <= s["PlaneStatsMax"] < 2.0
 
 
+@pytest.mark.parametrize("fmt,bits", [(vs.GRAY8, 8), (vs.YUV420P10, 10), (vs.GRAY16, 16)])
+def test_int_output_format_preserved(make_clip, fmt, bits):
+    # int output keeps the input format; unlike float, cubic overshoot is
+    # clamped to [0, peak] on store (verified against eedi3m's int path).
+    src = make_clip(fmt)
+    out = src.vszip.EEDI3(field=1, vcheck=3)
+    assert out.format.id == src.format.id
+    f = out.std.PlaneStats().get_frame(0).props
+    assert 0 <= f["PlaneStatsMin"] <= f["PlaneStatsMax"] <= (1 << bits) - 1
+
+
 def test_stride_handling(grays):
     # odd width (cropped) exercises the scalar tail of the per-line kernel; the
     # height stays even so dh=False is valid.
@@ -160,23 +200,28 @@ def test_stride_handling(grays):
 # --- sclip / mclip ----------------------------------------------------------
 
 
-def test_sclip_changes_vcheck_output(grays):
+@pytest.mark.parametrize("fmt", [vs.GRAYS, vs.GRAY8])
+def test_sclip_changes_vcheck_output(make_clip, fmt):
     # with vcheck>0 the reliability check blends toward `cint`; sclip supplies a
-    # custom cint, so a non-trivial sclip changes the result.
-    sclip = grays.std.BoxBlur(hradius=4, vradius=4)
-    with_sclip = grays.vszip.EEDI3(field=1, vcheck=3, sclip=sclip)
-    no_sclip = grays.vszip.EEDI3(field=1, vcheck=3)
+    # custom cint, so a non-trivial sclip changes the result (float and int).
+    src = make_clip(fmt)
+    sclip = src.std.BoxBlur(hradius=4, vradius=4)
+    with_sclip = src.vszip.EEDI3(field=1, vcheck=3, sclip=sclip)
+    no_sclip = src.vszip.EEDI3(field=1, vcheck=3)
     assert max_abs_diff(with_sclip, no_sclip) > 0.0
 
 
-def test_mclip_gray_accepted_and_masks(grays):
+@pytest.mark.parametrize("fmt,thr", [(vs.GRAYS, 0.1), (vs.GRAY8, 26)])
+def test_mclip_gray_accepted_and_masks(make_clip, fmt, thr):
     # a gray mask restricts edge-directed interpolation to nonzero pixels; an
     # empty mask (all zero) forces plain cubic everywhere -> differs from the
-    # full edge-directed result.
-    edge = grays.std.Prewitt().std.Binarize(0.1).std.Maximum()
-    empty = grays.std.BlankClip(color=[0.0])
-    masked = grays.vszip.EEDI3(field=1, mclip=edge)
-    cubic = grays.vszip.EEDI3(field=1, mclip=empty)
+    # full edge-directed result. Runs on float and int clips (the mask itself
+    # is always converted to Gray8 internally).
+    src = make_clip(fmt)
+    edge = src.std.Prewitt().std.Binarize(thr).std.Maximum()
+    empty = src.std.BlankClip(color=[0])
+    masked = src.vszip.EEDI3(field=1, mclip=edge)
+    cubic = src.vszip.EEDI3(field=1, mclip=empty)
     assert max_abs_diff(masked, cubic) > 0.0
 
 
@@ -189,9 +234,13 @@ def test_mclip_float_gray_is_converted(grays):
 # --- validation / format rejection ------------------------------------------
 
 
-def test_int_input_rejected(make_clip):
-    with pytest.raises(vs.Error, match="32-bit float"):
-        make_clip(vs.GRAY16).vszip.EEDI3(field=1).get_frame(0)
+@pytest.mark.parametrize("fmt", [vs.GRAYH, vs.GRAY32])
+def test_unsupported_format_rejected(fmt):
+    # f16 and 17+ bit int are not supported (same envelope as eedi3m).
+    # BlankClip: resize can't even produce GRAY32.
+    clip = vs.core.std.BlankClip(format=fmt, width=64, height=64)
+    with pytest.raises(vs.Error, match="8-16 bit integer and 32-bit float"):
+        clip.vszip.EEDI3(field=1).get_frame(0)
 
 
 @pytest.mark.parametrize(
@@ -243,6 +292,10 @@ def test_sclip_mismatch_rejected(grays):
         grays.vszip.EEDI3(field=1, vcheck=2, sclip=wrong).get_frame(0)
 
 
-@pytest.mark.parametrize("fmt", [vs.GRAYS, vs.YUV420PS, vs.YUV422PS, vs.YUV444PS, vs.RGBS])
-def test_all_float_formats_run(make_clip, fmt):
+@pytest.mark.parametrize(
+    "fmt",
+    [vs.GRAYS, vs.YUV420PS, vs.YUV422PS, vs.YUV444PS, vs.RGBS,
+     vs.GRAY8, vs.GRAY10, vs.GRAY16, vs.YUV420P8, vs.YUV422P10, vs.YUV444P16, vs.RGB24],
+)
+def test_all_supported_formats_run(make_clip, fmt):
     make_clip(fmt).vszip.EEDI3(field=1).get_frame(0)

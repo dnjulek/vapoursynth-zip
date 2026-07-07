@@ -359,6 +359,55 @@ def test_int_parity_planeminmax_diff(make_clip, name, family, planes):
             assert abs(a - b) <= tol, f"{name} Diff plane {pi}: {bits}b={b} {hi_bits}b={a} |delta|={abs(a-b)} > {tol}"
 
 
+# --- EEDI3 -------------------------------------------------------------------
+# The int path runs the identical f32 cost/DP pipeline at native pixel scale:
+# beta/gamma/vthresh0/vthresh1 are user-facing 8-bit-scale values scaled by
+# 1 << (bits-8) internally (eedi3m semantics), so the same args give the same
+# normalized result at every depth. Content is built once at 8 bit and
+# Point-upscaled (identical normalized pixels) to isolate depth handling from
+# input quantization. Caveat: the full-range 8->N upscale multiplies pixels by
+# (2^N-1)/255 (e.g. 257), which is not a power of two, so the f32 cost sums
+# round differently per depth; at a near-exact cost tie the DP can pick a
+# different (equally good) direction, giving a large pixel diff at isolated
+# spots. That is inherent to the algorithm, not a scaling bug, so parity is
+# asserted on a mean bound (measured ~0.55 LSB, pure quantization) plus a max
+# bound with headroom for tie flips (measured max ~3 LSB on the fixed test
+# image); a wrong peak/scale would blow past both by orders of magnitude.
+_EEDI3_ARGS = {
+    "default": dict(field=1),
+    "hp_vcheck3": dict(field=1, hp=True, vcheck=3),
+    "vcheck0": dict(field=1, vcheck=0),
+}
+
+
+def _eedi3_results(make_clip, family, args):
+    _, base_fmt = min(family, key=lambda bf: bf[0])
+    base = make_clip(base_fmt)
+    results = []
+    for bits, fmt in family:
+        src = base if fmt == base_fmt else base.resize.Point(format=fmt)
+        results.append((bits, src.vszip.EEDI3(**args)))
+    return results
+
+
+@pytest.mark.parametrize("family", [GRAY, YUV420], ids=["gray", "yuv420"])
+@pytest.mark.parametrize("path", list(_EEDI3_ARGS), ids=list(_EEDI3_ARGS))
+def test_int_parity_eedi3(make_clip, family, path):
+    from helpers import diff
+
+    results = _eedi3_results(make_clip, family, _EEDI3_ARGS[path])
+    results = sorted(results, key=lambda r: -r[0])
+    hi_bits, hi_clip = results[0]
+    refn = normalize(hi_clip, hi_bits)
+    for bits, clip in results[1:]:
+        cn = normalize(clip, bits)
+        for p in range(refn.format.num_planes):
+            mean = diff(refn, cn, plane=p)  # mean |Δ| on normalized float clips
+            mx = max_abs_diff(refn, cn, plane=p)
+            assert mean <= 1.0 / peak(bits), f"{bits}-bit vs {hi_bits}-bit plane {p}: mean|Δnorm| = {mean}"
+            assert mx <= 16.0 / peak(bits), f"{bits}-bit vs {hi_bits}-bit plane {p}: max|Δnorm| = {mx} (DP tie flips exceed bound)"
+
+
 # --- SSIMULACRA2 -------------------------------------------------------------
 # No scalar args; both inputs are funneled through toRGBS + linearize internally,
 # the resize plugin normalizing each integer depth by its own peak, so the score

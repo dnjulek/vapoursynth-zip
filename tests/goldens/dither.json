@@ -1,0 +1,418 @@
+{
+ "GRAY10|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.48871294806985294,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY14|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.48868478094362744,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=10": {
+  "p0": {
+   "avg": 0.487250184239064,
+   "min": 127,
+   "max": 888
+  }
+ },
+ "GRAY16|full|bitdepth=12": {
+  "p0": {
+   "avg": 0.4868932422828907,
+   "min": 508,
+   "max": 3550
+  }
+ },
+ "GRAY16|full|bitdepth=14": {
+  "p0": {
+   "avg": 0.48680408402574316,
+   "min": 2035,
+   "max": 14201
+  }
+ },
+ "GRAY16|full|bitdepth=16,sample_type=1": {
+  "p0": {
+   "avg": 0.49594611942768096,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  }
+ },
+ "GRAY16|full|bitdepth=32": {
+  "p0": {
+   "avg": 0.4959553995344686,
+   "min": 0.07218535989522934,
+   "max": 0.9401219487190247
+  }
+ },
+ "GRAY16|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.4886832682291667,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=0": {
+  "p0": {
+   "avg": 0.4885439644607843,
+   "min": 32,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=1": {
+  "p0": {
+   "avg": 0.4886849915747549,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=10": {
+  "p0": {
+   "avg": 0.4886816023284314,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=11": {
+  "p0": {
+   "avg": 0.4886922870710784,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=2": {
+  "p0": {
+   "avg": 0.4886865617340686,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=3": {
+  "p0": {
+   "avg": 0.4886830575980392,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=4": {
+  "p0": {
+   "avg": 0.4886849532781863,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=5": {
+  "p0": {
+   "avg": 0.4886832682291667,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=6": {
+  "p0": {
+   "avg": 0.4886906211703431,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=7": {
+  "p0": {
+   "avg": 0.48868744255514707,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=8": {
+  "p0": {
+   "avg": 0.4886831724877451,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=9": {
+  "p0": {
+   "avg": 0.4886832107843137,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|full|bitdepth=8,dither_type=9,fulld=0,fulls=1": {
+  "p0": {
+   "avg": 0.4808046683517157,
+   "min": 43,
+   "max": 206
+  }
+ },
+ "GRAY16|full|bitdepth=8,fulld=0,fulls=1": {
+  "p0": {
+   "avg": 0.48080470664828434,
+   "min": 43,
+   "max": 206
+  }
+ },
+ "GRAY16|full|bitdepth=8,fulld=1,fulls=0": {
+  "p0": {
+   "avg": 0.49595542279411764,
+   "min": 18,
+   "max": 240
+  }
+ },
+ "GRAY16|full|bitdepth=8,fulld=1,fulls=1": {
+  "p0": {
+   "avg": 0.48678186274509805,
+   "min": 31,
+   "max": 221
+  }
+ },
+ "GRAY16|full|bitdepth=9": {
+  "p0": {
+   "avg": 0.4877269791157045,
+   "min": 63,
+   "max": 444
+  }
+ },
+ "GRAY16|odd|bitdepth=8": {
+  "p0": {
+   "avg": 0.4887878104916644,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|odd|bitdepth=8,dither_type=11": {
+  "p0": {
+   "avg": 0.4887966986187139,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|odd|bitdepth=8,dither_type=3": {
+  "p0": {
+   "avg": 0.48878777201492396,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAY16|tiny|bitdepth=8": {
+  "p0": {
+   "avg": 0.4057315233785822,
+   "min": 55,
+   "max": 192
+  }
+ },
+ "GRAY16|tiny|bitdepth=8,dither_type=3": {
+  "p0": {
+   "avg": 0.4057315233785822,
+   "min": 55,
+   "max": 192
+  }
+ },
+ "GRAY16|tiny|bitdepth=8,dither_type=4": {
+  "p0": {
+   "avg": 0.405688429217841,
+   "min": 55,
+   "max": 192
+  }
+ },
+ "GRAY8|full|bitdepth=16": {
+  "p0": {
+   "avg": 0.48663673990997175,
+   "min": 8192,
+   "max": 56832
+  }
+ },
+ "GRAY8|full|bitdepth=16,dither_type=9,fulld=1,fulls=1": {
+  "p0": {
+   "avg": 0.4885376646752451,
+   "min": 8224,
+   "max": 57054
+  }
+ },
+ "GRAY8|full|bitdepth=16,fulld=1,fulls=1": {
+  "p0": {
+   "avg": 0.4885376646752451,
+   "min": 8224,
+   "max": 57054
+  }
+ },
+ "GRAY8|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.4885376646752451,
+   "min": 32,
+   "max": 222
+  }
+ },
+ "GRAYH|full|bitdepth=32": {
+  "p0": {
+   "avg": 0.4959466546773911,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  }
+ },
+ "GRAYH|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.4886756472120098,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "GRAYS|full|bitdepth=16,sample_type=1": {
+  "p0": {
+   "avg": 0.4959466546773911,
+   "min": 0.07220458984375,
+   "max": 0.93994140625
+  }
+ },
+ "GRAYS|full|bitdepth=32": {
+  "p0": {
+   "avg": 0.4959553527653043,
+   "min": 0.07218431681394577,
+   "max": 0.9401216506958008
+  }
+ },
+ "GRAYS|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.48868324908088234,
+   "min": 31,
+   "max": 222
+  }
+ },
+ "RGB24|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.3913331227022059,
+   "min": 0,
+   "max": 205
+  },
+  "p1": {
+   "avg": 0.4771695006127451,
+   "min": 0,
+   "max": 250
+  },
+  "p2": {
+   "avg": 0.9901145450367647,
+   "min": 252,
+   "max": 255
+  }
+ },
+ "RGB48|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.3913331227022059,
+   "min": 0,
+   "max": 205
+  },
+  "p1": {
+   "avg": 0.4771695006127451,
+   "min": 0,
+   "max": 250
+  },
+  "p2": {
+   "avg": 0.9901145450367647,
+   "min": 252,
+   "max": 255
+  }
+ },
+ "YUV420P10|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.48871294806985294,
+   "min": 31,
+   "max": 222
+  },
+  "p1": {
+   "avg": 0.7358896292892156,
+   "min": 137,
+   "max": 239
+  },
+  "p2": {
+   "avg": 0.44363319546568625,
+   "min": 23,
+   "max": 204
+  }
+ },
+ "YUV420P10|odd|bitdepth=8,dither_type=11": {
+  "p0": {
+   "avg": 0.4888800554822982,
+   "min": 31,
+   "max": 222
+  },
+  "p1": {
+   "avg": 0.7358015842917676,
+   "min": 137,
+   "max": 239
+  },
+  "p2": {
+   "avg": 0.4436487806612955,
+   "min": 23,
+   "max": 204
+  }
+ },
+ "YUV420P10|tiny|bitdepth=8,dither_type=6": {
+  "p0": {
+   "avg": 0.3821895424836601,
+   "min": 55,
+   "max": 192
+  },
+  "p1": {
+   "avg": 0.796078431372549,
+   "min": 157,
+   "max": 225
+  },
+  "p2": {
+   "avg": 0.5775599128540305,
+   "min": 45,
+   "max": 196
+  }
+ },
+ "YUV420P16|full|bitdepth=10,dither_type=10": {
+  "p0": {
+   "avg": 0.487250938378238,
+   "min": 127,
+   "max": 888
+  },
+  "p1": {
+   "avg": 0.7337279104044477,
+   "min": 548,
+   "max": 955
+  },
+  "p2": {
+   "avg": 0.44234332997311826,
+   "min": 92,
+   "max": 815
+  }
+ },
+ "YUV444P16|full|bitdepth=8": {
+  "p0": {
+   "avg": 0.4886832682291667,
+   "min": 31,
+   "max": 222
+  },
+  "p1": {
+   "avg": 0.7358931908700981,
+   "min": 135,
+   "max": 239
+  },
+  "p2": {
+   "avg": 0.4436019646139706,
+   "min": 20,
+   "max": 205
+  }
+ },
+ "YUV444PS|full|bitdepth=10": {
+  "p0": {
+   "avg": 0.4872501030975073,
+   "min": 127,
+   "max": 888
+  },
+  "p1": {
+   "avg": 0.7337351749602884,
+   "min": 541,
+   "max": 955
+  },
+  "p2": {
+   "avg": 0.4423011363636364,
+   "min": 83,
+   "max": 820
+  }
+ }
+}
