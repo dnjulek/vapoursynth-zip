@@ -28,4 +28,5 @@
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [RFS](https://github.com/dnjulek/vapoursynth-zip/wiki/RFS): Replace frames plugin.
 - [SSIMULACRA2](https://github.com/dnjulek/vapoursynth-zip/wiki/SSIMULACRA2): Image metric [SSIMULACRA2](https://github.com/cloudinary/ssimulacra2).
+- [WNNM](https://github.com/dnjulek/vapoursynth-zip/wiki/WNNM): Weighted Nuclear Norm Minimization denoiser, a dependency-free port of [VapourSynth-WNNM](https://github.com/WolframRhodium/VapourSynth-WNNM).
 - [XPSNR](https://github.com/dnjulek/vapoursynth-zip/wiki/XPSNR): Image metric [XPSNR](https://github.com/fraunhoferhhi/xpsnr).
