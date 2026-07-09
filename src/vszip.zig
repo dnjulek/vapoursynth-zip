@@ -28,6 +28,7 @@ const pavg = @import("vapoursynth/planeaverage.zig");
 const pmm = @import("vapoursynth/planeminmax.zig");
 const rfs = @import("vapoursynth/rfs.zig");
 const ssimulacra2 = @import("vapoursynth/ssimulacra2.zig");
+const wnnm = @import("vapoursynth/wnnm.zig");
 const xpsnr = @import("vapoursynth/xpsnr.zig");
 
 pub const vec_len = std.simd.suggestVectorLength(u8) orelse 32;
@@ -228,6 +229,16 @@ export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI
         "reference:vnode;distorted:vnode;",
         "clip:vnode;",
         ssimulacra2.ssimulacraCreate,
+        plugin,
+        vspapi,
+    );
+    ZAPI.Plugin.function(
+        wnnm.filter_name,
+        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;" ++
+            "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;" ++
+            "residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;",
+        "clip:vnode;",
+        wnnm.wnnmCreate,
         plugin,
         vspapi,
     );
