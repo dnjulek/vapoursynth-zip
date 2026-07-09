@@ -439,9 +439,9 @@ pub fn Workspace(comptime F: type) type {
         v: []F,
         eig: []F,
         r: []f32,
-        scratch: []f32,
+        scratch: []align(64) f32,
 
-        wide: []F,
+        wide: []align(64) F,
     };
 }
 

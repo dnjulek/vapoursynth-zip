@@ -44,15 +44,15 @@ const Data = struct {
 
 const Bufs = struct {
     arena: std.heap.ArenaAllocator,
-    cur: []f32,
-    amat: [filter.batch_n][]f32,
-    aout: [filter.batch_n][]f32,
-    mean: [filter.batch_n][]f32,
+    cur: []align(64) f32,
+    amat: [filter.batch_n][]align(64) f32,
+    aout: [filter.batch_n][]align(64) f32,
+    mean: [filter.batch_n][]align(64) f32,
     sel: []filter.Match,
     selidx: []filter.IdxErr,
     gbatch: []f64,
     vbatch: []f64,
-    intermediate: []f32,
+    intermediate: []align(64) f32,
     est: filter.Workspace(f64),
     errsf: std.ArrayList(f32),
     errors: std.ArrayList(filter.Match),
@@ -426,15 +426,15 @@ const VagData = struct {
     max_w: u32 = 0,
 
     pool_lock: std.Io.Mutex = .init,
-    pool: std.AutoHashMap(std.Thread.Id, []f32) = undefined,
+    pool: std.AutoHashMap(std.Thread.Id, []align(64) f32) = undefined,
 };
 
-fn vagAcquireBuffer(d: *VagData) []f32 {
+fn vagAcquireBuffer(d: *VagData) []align(64) f32 {
     const tid = std.Thread.getCurrentId();
     d.pool_lock.lockUncancelable(vszip.io);
     defer d.pool_lock.unlock(vszip.io);
     if (d.pool.get(tid)) |b| return b;
-    const b = allocator.alignedAlloc(f32, comptime std.mem.Alignment.fromByteUnits(64), 2 * d.max_w) catch unreachable;
+    const b: []align(64) f32 = allocator.alignedAlloc(f32, comptime std.mem.Alignment.fromByteUnits(64), 2 * d.max_w) catch unreachable;
     d.pool.put(tid, b) catch unreachable;
     return b;
 }
@@ -699,7 +699,7 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         .max_w = d.max_iw,
     };
     vag.pool_lock = .init;
-    vag.pool = std.AutoHashMap(std.Thread.Id, []f32).init(allocator);
+    vag.pool = std.AutoHashMap(std.Thread.Id, []align(64) f32).init(allocator);
 
     const vag_deps = [_]vs.FilterDependency{
         .{ .source = raw_node, .requestPattern = .General },
