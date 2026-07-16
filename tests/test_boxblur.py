@@ -59,8 +59,8 @@ def test_golden_cases(golden, make_clip, case):
 GOLDENS = [
     (vs.GRAYS, dict(hradius=30, vradius=60, hpasses=6, vpasses=8), 0.49595518544825606),
     (vs.GRAYS, dict(hradius=3, vradius=3), 0.49599070191539796),
-    (vs.GRAY16, dict(hradius=30, vradius=33, hpasses=1, vpasses=3), 0.4867611337214847),
-    (vs.GRAY16, dict(hradius=10, vradius=10), 0.48676619296642537),
+    (vs.GRAY16, dict(hradius=30, vradius=33, hpasses=1, vpasses=3), 0.48678179151646067),
+    (vs.GRAY16, dict(hradius=10, vradius=10), 0.48678176871733614),
 ]
 
 
@@ -79,8 +79,40 @@ def test_matches_std_boxblur(to_gray, fmt, radius):
     interior = dict(left=margin, right=margin, top=margin, bottom=margin)
     ours = src.vszip.BoxBlur(hradius=radius, vradius=radius).std.Crop(**interior)
     ref = src.std.BoxBlur(hradius=radius, hpasses=1, vradius=radius, vpasses=1).std.Crop(**interior)
-    tol = {vs.GRAY8: 2, vs.GRAY16: 16, vs.GRAYS: 1e-5}[fmt]  # fixed-point reciprocal rounding
+    # Both divide the window sum exactly; all that is left is the rounding
+    # convention (std ceils, we round to nearest), worth <=1 LSB per direction.
+    tol = {vs.GRAY8: 2, vs.GRAY16: 2, vs.GRAYS: 1e-5}[fmt]
     assert max_abs_diff(ours, ref) <= tol
+
+
+@pytest.mark.parametrize("radius", [1, 2, 3, 5, 8, 22, 30, 50, 100, 500])
+@pytest.mark.parametrize(("fmt", "maxval"), [(vs.GRAY8, 255), (vs.GRAY16, 65535)])
+def test_no_drift_from_distant_content(fmt, maxval, radius):
+    """An interior pixel must depend only on the pixels in its own window.
+
+    The integer kernel used to seed its running sum with the full-precision
+    reciprocal but slide it with a 16-bit-truncated one, which left the sum
+    holding `W(x)*inv2 + W(0)*frac` — anchoring a DC error on the *first*
+    window of the line. A black leading window then dragged the entire row down
+    by up to `2**16 % ksize` LSB (-88 at radius 50, -1504 at radius 1000), for
+    pixels a thousand columns away. Flat-field clips alone will not catch this:
+    the error vanishes when W(0) == W(x).
+    """
+    w, h = 2048, 8
+    black = vs.core.std.BlankClip(format=fmt, color=0, width=radius + 1, height=h, length=1)
+    white = vs.core.std.BlankClip(format=fmt, color=maxval, width=w - radius - 1, height=h, length=1)
+    src = vs.core.std.StackHorizontal([black, white])
+
+    blurred = src.vszip.BoxBlur(hradius=radius, hpasses=1, vradius=0, vpasses=0)
+    interior = blurred.get_frame(0)[0][h // 2, w - 2 - radius]
+    assert interior == maxval
+
+
+def test_border_does_not_shift_the_plane():
+    """Regression: 1px black border on a white GRAY16 clip used to print 65531."""
+    clip = vs.core.std.BlankClip(format=vs.GRAY16, color=65535).std.AddBorders(1, 1, 1, 1)
+    blur = clip.vszip.BoxBlur(hpasses=2, vpasses=2)
+    assert blur.get_frame(0)[0][clip.height // 2, clip.width // 2] == 65535
 
 
 @pytest.mark.parametrize("fmt", [vs.GRAY8, vs.GRAY16, vs.GRAYS])

@@ -178,6 +178,27 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         }
     }
 
+    // The integer kernels divide the raw window sum by ksize with an exact
+    // multiply-and-shift; past radius 23331 (u16) no exact magic exists. The
+    // plane-size checks above already rule this out at any sane resolution, but
+    // reject it here rather than let getFrame silently lose precision.
+    {
+        const magic_ok = switch (dt) {
+            inline .U8, .U16 => |t| blk: {
+                const T = if (t == .U8) u8 else u16;
+                const h_ok = !hblur or (boxblur_ct.magicFor(T, d.hradius) != null);
+                const v_ok = !vblur or (boxblur_ct.magicFor(T, d.vradius) != null);
+                break :blk h_ok and v_ok;
+            },
+            else => true,
+        };
+        if (!magic_ok) {
+            map_out.setError(filter_name ++ ": radius too large to divide exactly at this bit depth.");
+            zapi.freeNode(d.node);
+            return;
+        }
+    }
+
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 

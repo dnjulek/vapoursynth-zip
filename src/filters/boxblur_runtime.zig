@@ -9,43 +9,52 @@ const allocator = std.heap.c_allocator;
 
 const vec_len = std.simd.suggestVectorLength(u32) orelse 8;
 
-inline fn blurInt(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, dst_step: u32, len: u32, radius: u32) void {
-    const ksize: u32 = (radius << 1) + 1;
-    const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
-    var sum: u64 = srcp[radius * src_step];
-    const inv2 = inv >> 16;
+// The narrow/wide divide is picked per plane and threaded on as a *type*, so
+// the choice costs one branch per plane rather than one per pixel, and the
+// kernels below take it as `mg: anytype`. Float planes are handed `{}` -- their
+// kernels never look at it. boxBlurCreate has already rejected any radius with
+// no exact magic, hence the unreachables.
+
+/// The running sum is the *raw* window sum, seeded with +radius. ksize is odd,
+/// so W/ksize can never land on a tie and `round(W/ksize) == floor((W+radius)/
+/// ksize)` exactly; the slide only ever adds and subtracts pixels, so that seed
+/// rides along untouched and the rounding costs nothing per pixel.
+///
+/// Keeping the reciprocal out of the slide is the whole point: scaling inside
+/// it (init at one precision, slide at another) let the first window's value
+/// leak a DC error into every pixel of the line.
+inline fn blurInt(comptime T: type, srcp: []const T, src_step: u32, dstp: []T, dst_step: u32, len: u32, radius: u32, mg: anytype) void {
+    var sum: u32 = @as(u32, srcp[radius * src_step]) + radius;
 
     var x: u32 = 0;
     while (x < radius) : (x += 1) {
         sum += @as(u32, srcp[x * src_step]) << 1;
     }
 
-    sum = (sum * inv + (1 << 31)) >> 16;
-
     x = 0;
     while (x <= radius) : (x += 1) {
-        sum += srcp[(radius + x) * src_step] * inv2;
-        sum -= srcp[(radius - x) * src_step] * inv2;
-        dstp[x * dst_step] = @intCast(sum >> 16);
+        sum += srcp[(radius + x) * src_step];
+        sum -= srcp[(radius - x) * src_step];
+        dstp[x * dst_step] = mg.apply(T, sum);
     }
 
     if (src_step == 1 and dst_step == 1) {
         // contiguous rows take the vectorized prefix-sum center segment
         // (bit-exact mod-2^32; see boxblur_comptime.slideSumInt)
-        sum = ct.slideSumInt(T, srcp, dstp, x, len - radius, radius, @intCast(inv2), sum);
+        sum = ct.slideSumInt(T, srcp, dstp, x, len - radius, radius, mg, sum);
         x = len - radius;
     } else {
         while (x < len - radius) : (x += 1) {
-            sum += srcp[(radius + x) * src_step] * inv2;
-            sum -= srcp[(x - radius - 1) * src_step] * inv2;
-            dstp[x * dst_step] = @intCast(sum >> 16);
+            sum += srcp[(radius + x) * src_step];
+            sum -= srcp[(x - radius - 1) * src_step];
+            dstp[x * dst_step] = mg.apply(T, sum);
         }
     }
 
     while (x < len) : (x += 1) {
-        sum += srcp[(2 * len - radius - x - 1) * src_step] * inv2;
-        sum -= srcp[(x - radius - 1) * src_step] * inv2;
-        dstp[x * dst_step] = @intCast(sum >> 16);
+        sum += srcp[(2 * len - radius - x - 1) * src_step];
+        sum -= srcp[(x - radius - 1) * src_step];
+        dstp[x * dst_step] = mg.apply(T, sum);
     }
 }
 
@@ -87,7 +96,7 @@ inline fn blurFloat(comptime T: type, srcp: []const T, src_step: u32, dstp: []T,
     }
 }
 
-inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, len: u32, radius: u32, passes: i32, _tmp1: []T, _tmp2: []T) void {
+inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, len: u32, radius: u32, passes: i32, _tmp1: []T, _tmp2: []T, mg: anytype) void {
     var tmp1 = _tmp1;
     var tmp2 = _tmp2;
     var p: i32 = passes;
@@ -96,19 +105,19 @@ inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, l
         if (p == 1) {
             // single pass: blur straight into the destination, skipping the
             // tmp copy (identical per-element math)
-            blurInt(T, srcp, step, dstp, step, len, radius);
+            blurInt(T, srcp, step, dstp, step, len, radius, mg);
             return;
         }
 
-        blurInt(T, srcp, step, tmp1, 1, len, radius);
+        blurInt(T, srcp, step, tmp1, 1, len, radius, mg);
         while (p > 2) : (p -= 1) {
-            blurInt(T, tmp1, 1, tmp2, 1, len, radius);
+            blurInt(T, tmp1, 1, tmp2, 1, len, radius, mg);
             const tmp3 = tmp1;
             tmp1 = tmp2;
             tmp2 = tmp3;
         }
 
-        blurInt(T, tmp1, 1, dstp, step, len, radius);
+        blurInt(T, tmp1, 1, dstp, step, len, radius, mg);
     } else {
         if (p == 1) {
             blurFloat(T, srcp, step, dstp, step, len, radius);
@@ -128,28 +137,38 @@ inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, l
 }
 
 pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
-    if ((passes > 0) and (radius > 0)) {
-        var y: u32 = 0;
-        while (y < h) : (y += 1) {
-            blur_passes(
-                T,
-                srcp[y * stride ..],
-                dstp[y * stride ..],
-                1,
-                w,
-                radius,
-                passes,
-                temp1,
-                temp2,
-            );
-        }
-    } else {
+    if (!((passes > 0) and (radius > 0))) {
         var y: u32 = 0;
         while (y < h) : (y += 1) {
             const srcp2 = srcp[(y * stride)..];
             const dstp2 = dstp[(y * stride)..];
             @memcpy(dstp2[0..w], srcp2[0..w]);
         }
+        return;
+    }
+
+    if (@typeInfo(T) == .int) {
+        if (ct.narrowMagicFor(T, radius)) |mg| return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, mg);
+        return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, ct.magicFor(T, radius) orelse unreachable);
+    }
+    return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, {});
+}
+
+fn hblurGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T, mg: anytype) void {
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        blur_passes(
+            T,
+            srcp[y * stride ..],
+            dstp[y * stride ..],
+            1,
+            w,
+            radius,
+            passes,
+            temp1,
+            temp2,
+            mg,
+        );
     }
 }
 
@@ -160,6 +179,22 @@ pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, 
 /// one vblur sweep. Requires h > 2*vradius + 1 so every mirrored row is still
 /// in the ring.
 pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, temp1: []T, temp2: []T) void {
+    if (@typeInfo(T) == .int) {
+        // hradius may be 0 when there is no h-blur; that magic is never used.
+        const hr = if ((hpasses > 0) and (hradius > 0)) hradius else 1;
+        if (ct.narrowMagicFor(T, hr)) |hmg| {
+            if (ct.narrowMagicFor(T, vradius)) |vmg| {
+                return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, hmg, vmg);
+            }
+        }
+        // Asymmetric radii can leave one direction without a narrow magic; take
+        // the wide kernel for both rather than instantiate a mixed variant.
+        return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, ct.magicFor(T, hr) orelse unreachable, ct.magicFor(T, vradius) orelse unreachable);
+    }
+    return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, {}, {});
+}
+
+fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, temp1: []T, temp2: []T, hmg: anytype, vmg: anytype) void {
     const ring_rows: u32 = 2 * vradius + 2;
     const ring_alloc = allocator.alloc(T, ring_rows * w) catch unreachable;
     defer allocator.free(ring_alloc);
@@ -185,10 +220,10 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 
     // h-blur source row j into the ring
     const produce = struct {
-        inline fn go(r: @TypeOf(ring), src_row: []const T, j: u32, _w: u32, _hradius: u32, _hpasses: i32, t1: []T, t2: []T, _hb: bool) void {
+        inline fn go(r: @TypeOf(ring), src_row: []const T, j: u32, _w: u32, _hradius: u32, _hpasses: i32, t1: []T, t2: []T, _hb: bool, _mg: anytype) void {
             const dst_row = r.row(j);
             if (_hb) {
-                blur_passes(T, src_row, dst_row, 1, _w, _hradius, _hpasses, t1, t2);
+                blur_passes(T, src_row, dst_row, 1, _w, _hradius, _hpasses, t1, t2, _mg);
             } else {
                 @memcpy(dst_row, src_row[0.._w]);
             }
@@ -197,20 +232,17 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 
     var j: u32 = 0;
     while (j <= vradius) : (j += 1) {
-        produce(ring, srcp[j * stride ..], j, w, hradius, hpasses, temp1, temp2, hb);
+        produce(ring, srcp[j * stride ..], j, w, hradius, hpasses, temp1, temp2, hb, hmg);
     }
 
     // init running sums: ring[vradius] + 2 * (ring[0] + .. + ring[vradius-1])
     if (@typeInfo(T) == .int) {
-        const ksize: u32 = (vradius << 1) + 1;
-        const inv: u64 = @divTrunc(((1 << 32) + @as(u64, vradius)), ksize);
-        const inv2: u32 = @intCast(inv >> 16);
-
         {
+            // raw column sums, +vradius seed (see blurInt)
             const r_row = ring.row(vradius);
             var c: u32 = 0;
             while (c < w) : (c += 1) {
-                sums[c] = r_row[c];
+                sums[c] = @as(u32, r_row[c]) + vradius;
             }
 
             var x: u32 = 0;
@@ -221,26 +253,21 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
                     sums[c] += @as(u32, row[c]) << 1;
                 }
             }
-
-            c = 0;
-            while (c < w) : (c += 1) {
-                sums[c] = @intCast((@as(u64, sums[c]) * inv + (1 << 31)) >> 16);
-            }
         }
 
         var x: u32 = 0;
         while (x <= vradius) : (x += 1) {
-            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb);
-            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(vradius - x), dstp[x * stride ..], w, inv2);
+            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
+            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(vradius - x), dstp[x * stride ..], w, vmg);
         }
 
         while (x < h - vradius) : (x += 1) {
-            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb);
-            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(x - vradius - 1), dstp[x * stride ..], w, inv2);
+            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
+            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
         }
 
         while (x < h) : (x += 1) {
-            rowAddSubInt(T, sums, ring.row(2 * h - vradius - x - 1), ring.row(x - vradius - 1), dstp[x * stride ..], w, inv2);
+            rowAddSubInt(T, sums, ring.row(2 * h - vradius - x - 1), ring.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
         }
     } else {
         const fsums = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(sums))[0..w];
@@ -272,12 +299,12 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 
         var x: u32 = 0;
         while (x <= vradius) : (x += 1) {
-            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb);
+            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
             rowAddSubFloat(T, fsums, ring.row(vradius + x), ring.row(vradius - x), dstp[x * stride ..], w, div);
         }
 
         while (x < h - vradius) : (x += 1) {
-            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb);
+            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
             rowAddSubFloat(T, fsums, ring.row(vradius + x), ring.row(x - vradius - 1), dstp[x * stride ..], w, div);
         }
 
@@ -297,6 +324,14 @@ pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
 pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32) void {
     if ((passes <= 0) or (radius <= 0)) return;
 
+    if (@typeInfo(T) == .int) {
+        if (ct.narrowMagicFor(T, radius)) |mg| return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, mg);
+        return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, ct.magicFor(T, radius) orelse unreachable);
+    }
+    return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, {});
+}
+
+fn vblurGo(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, mg: anytype) void {
     const sums = allocator.alloc(u32, w) catch unreachable;
     defer allocator.free(sums);
 
@@ -305,7 +340,7 @@ pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride
     while (s <= passes) : (s += 1) {
         const dst_cur: []T = if (@mod(passes - s, 2) == 0) dstp else tmp;
         if (@typeInfo(T) == .int) {
-            vSweepInt(T, src_cur, dst_cur, sums, stride, w, h, radius);
+            vSweepInt(T, src_cur, dst_cur, sums, stride, w, h, radius, mg);
         } else {
             vSweepFloat(T, src_cur, dst_cur, std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(sums))[0..w], stride, w, h, radius);
         }
@@ -313,18 +348,16 @@ pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride
     }
 }
 
-fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u32, stride: u32, w: u32, h: u32, radius: u32) void {
+fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u32, stride: u32, w: u32, h: u32, radius: u32, mg: anytype) void {
     const len = h;
-    const ksize: u32 = (radius << 1) + 1;
-    const inv: u64 = @divTrunc(((1 << 32) + @as(u64, radius)), ksize);
-    const inv2: u32 = @intCast(inv >> 16);
 
-    // init running sums: sum = src[radius] + 2 * (src[0] + .. + src[radius-1])
+    // init raw running sums, +radius seed (see blurInt):
+    //   sum = src[radius] + 2 * (src[0] + .. + src[radius-1]) + radius
     {
         const r_row = src[radius * stride ..];
         var c: u32 = 0;
         while (c < w) : (c += 1) {
-            sums[c] = r_row[c];
+            sums[c] = @as(u32, r_row[c]) + radius;
         }
 
         var x: u32 = 0;
@@ -335,58 +368,42 @@ fn vSweepInt(comptime T: type, src: []const T, dst: []T, sums: []u32, stride: u3
                 sums[c] += @as(u32, row[c]) << 1;
             }
         }
-
-        c = 0;
-        while (c < w) : (c += 1) {
-            sums[c] = @intCast((@as(u64, sums[c]) * inv + (1 << 31)) >> 16);
-        }
     }
 
     var x: u32 = 0;
     while (x <= radius) : (x += 1) {
-        rowAddSubInt(T, sums, src[(radius + x) * stride ..], src[(radius - x) * stride ..], dst[x * stride ..], w, inv2);
+        rowAddSubInt(T, sums, src[(radius + x) * stride ..], src[(radius - x) * stride ..], dst[x * stride ..], w, mg);
     }
 
     while (x < len - radius) : (x += 1) {
-        rowAddSubInt(T, sums, src[(radius + x) * stride ..], src[(x - radius - 1) * stride ..], dst[x * stride ..], w, inv2);
+        rowAddSubInt(T, sums, src[(radius + x) * stride ..], src[(x - radius - 1) * stride ..], dst[x * stride ..], w, mg);
     }
 
     while (x < len) : (x += 1) {
-        rowAddSubInt(T, sums, src[(2 * len - radius - x - 1) * stride ..], src[(x - radius - 1) * stride ..], dst[x * stride ..], w, inv2);
+        rowAddSubInt(T, sums, src[(2 * len - radius - x - 1) * stride ..], src[(x - radius - 1) * stride ..], dst[x * stride ..], w, mg);
     }
 }
 
-inline fn rowAddSubInt(comptime T: type, sums: []u32, add_row: []const T, sub_row: []const T, dst_row: []T, w: u32, inv2: u32) void {
+inline fn rowAddSubInt(comptime T: type, sums: []u32, add_row: []const T, sub_row: []const T, dst_row: []T, w: u32, mg: anytype) void {
     const U32V = @Vector(vec_len, u32);
-    const inv2v: U32V = @splat(inv2);
-    const shift: @Vector(vec_len, u5) = @splat(16);
 
     var c: u32 = 0;
     const w_vec = w - (w % vec_len);
     while (c < w_vec) : (c += vec_len) {
         const at: @Vector(vec_len, T) = add_row[c..][0..vec_len].*;
         const st: @Vector(vec_len, T) = sub_row[c..][0..vec_len].*;
-        const a32: U32V = @intCast(at);
-        const s32: U32V = @intCast(st);
-        // pixel * inv2 < 2^31 (inv2 < 2^15, pixel < 2^16), u32 multiply is exact
-        const pa = a32 * inv2v;
-        const pb = s32 * inv2v;
-        // Sums live in u32 (previously u64): the true window value stays
-        // < 2^32 (window_sum*inv2 + init rounding residue <= 65535*2^16 +
-        // 2^15), so wrapping updates keep every stored value exact — only
-        // the transient s+pa may wrap. Halves the sums traffic and drops the
-        // widen/narrow dance (measured 25 -> ~12 instr per 8 px).
+        // Sums are raw window sums (+radius seed) in u32: the true value stays
+        // < 2^32, so wrapping updates keep every stored value exact.
         var s: U32V = sums[c..][0..vec_len].*;
-        s = s +% pa;
-        s = s -% pb;
+        s = s +% @as(U32V, @intCast(at));
+        s = s -% @as(U32V, @intCast(st));
         sums[c..][0..vec_len].* = s;
-        const out: @Vector(vec_len, T) = @intCast(s >> shift);
-        dst_row[c..][0..vec_len].* = out;
+        dst_row[c..][0..vec_len].* = ct.scaleVec(T, vec_len, s, mg);
     }
 
     while (c < w) : (c += 1) {
-        sums[c] = sums[c] +% @as(u32, add_row[c]) * inv2 -% @as(u32, sub_row[c]) * inv2;
-        dst_row[c] = @intCast(sums[c] >> 16);
+        sums[c] = sums[c] +% @as(u32, add_row[c]) -% @as(u32, sub_row[c]);
+        dst_row[c] = mg.apply(T, sums[c]);
     }
 }
 
