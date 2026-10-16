@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 const math = std.math;
 
 const vec_len = std.simd.suggestVectorLength(i32) orelse 1;
@@ -62,7 +63,7 @@ pub fn process(
                 );
             };
 
-            d[x..][0..vec_len].* = @as(vec_u8, @intCast(sel));
+            d[x..][0..vec_len].* = simd.intCastSignedToUnsigned(vec_u8, sel);
         }
 
         su = su[stride..];

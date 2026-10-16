@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) !void {
     lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
     lib.root_module.link_libc = true;
 
-    if (lib.root_module.optimize == .ReleaseFast) {
+    if (lib.root_module.optimize == .fast) {
         lib.root_module.strip = true;
     }
 

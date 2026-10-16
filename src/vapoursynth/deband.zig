@@ -84,7 +84,7 @@ pub const Data = struct {
         const thr1_in: [3]f64 = try m.getArray("thr1", 3, thr_in, 0, 255);
         const thr2_in: [3]f64 = try m.getArray("thr2", 3, thr_in, 0, 255);
         const grain_in: [3]f64 = try m.getArray("grain", 2, .{ 0, 0, 0 }, 0, 127);
-        const sample_mode = try m.getValue(i32, "sample_mode", @intFromEnum(d.sample_mode), 1, 7);
+        const sample_mode = try m.getValue(i32, "sample_mode", @backingInt(d.sample_mode), 1, 7);
 
         d.range = try m.getValue(i32, "range", d.range, 0, 255);
         d.seed = try m.getValue(i32, "seed", d.seed, math.minInt(i32), math.maxInt(i32));
@@ -95,18 +95,18 @@ pub const Data = struct {
         d.max_angle = try m.getValue(f32, "max_angle", d.max_angle, 0, 1);
         d.random_param_ref = try m.getValue(f64, "random_param_ref", d.random_param_ref, 0, 255);
         d.random_param_grain = try m.getValue(f64, "random_param_grain", d.random_param_grain, 0, 255);
-        const random_algo_ref = try m.getValue(i32, "random_algo_ref", @intFromEnum(d.random_algo_ref), 0, 2);
-        const random_algo_grain = try m.getValue(i32, "random_algo_grain", @intFromEnum(d.random_algo_grain), 0, 2);
+        const random_algo_ref = try m.getValue(i32, "random_algo_ref", @backingInt(d.random_algo_ref), 0, 2);
+        const random_algo_grain = try m.getValue(i32, "random_algo_grain", @backingInt(d.random_algo_grain), 0, 2);
 
         d.thr = d.scaleValue(&thr_in);
         d.thr1 = d.scaleValue(&thr1_in);
         d.thr2 = d.scaleValue(&thr2_in);
         d.grain = d.scaleValue(&grain_in);
 
-        d.sample_mode = @enumFromInt(sample_mode);
+        d.sample_mode = @fromBackingInt(@intCast(sample_mode));
         d.dynamic_grain = d.dynamic_grain and (grain_in[0] > 0 or grain_in[1] > 0);
-        d.random_algo_ref = @enumFromInt(random_algo_ref);
-        d.random_algo_grain = @enumFromInt(random_algo_grain);
+        d.random_algo_ref = @fromBackingInt(@intCast(random_algo_ref));
+        d.random_algo_grain = @fromBackingInt(@intCast(random_algo_grain));
 
         for (0..3) |i| {
             d.deband[i] = thr_in[i] > 0;

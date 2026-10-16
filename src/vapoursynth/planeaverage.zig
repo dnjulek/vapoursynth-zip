@@ -113,8 +113,8 @@ pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, cor
 
     const prop_in = map_in.getData("prop", 0) orelse "psm";
     d.prop = .{
-        .d = std.fmt.allocPrintSentinel(allocator, "{s}Diff", .{prop_in}, 0) catch unreachable,
-        .a = std.fmt.allocPrintSentinel(allocator, "{s}Avg", .{prop_in}, 0) catch unreachable,
+        .d = allocator.printSentinel("{s}Diff", .{prop_in}, 0) catch unreachable,
+        .a = allocator.printSentinel("{s}Avg", .{prop_in}, 0) catch unreachable,
     };
 
     const exclude_in = map_in.getIntArray("exclude");

@@ -343,11 +343,11 @@ pub const MosquitoNRFloat = struct {
 
         const w = width;
         const h = height;
-        const na_h = (h + 1) / 2;
+        const na_h = @divCeil(h, 2);
         const nd_h = h / 2;
-        const na_w = (w + 1) / 2;
+        const na_w = @divCeil(w, 2);
         const nd_w = w / 2;
-        const wv = ((w + VL - 1) / VL) * VL;
+        const wv = @divCeil(w, VL) * VL;
         // alloc is the caller's per-frame arena, reused across frames; every
         // buffer below is fully written before it is read, so the reuse is
         // deterministic.

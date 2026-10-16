@@ -609,7 +609,7 @@ pub fn Zimg(comptime T: type, comptime U: type) type {
 
                 inline for (0..8) |r| {
                     const qi: @Vector(8, i32) = @bitCast(v[r]);
-                    const out: @Vector(8, U) = @intCast(qi);
+                    const out = simd.intCastSignedToUnsigned(@Vector(8, U), qi);
                     dst_rows[r][j + 14 - 2 * r ..][0..8].* = out;
                 }
             }
@@ -645,7 +645,7 @@ pub fn Zimg(comptime T: type, comptime U: type) type {
             while (y + 8 <= h and w >= 14) : (y += 8) {
                 var src_rows: [8][]const T = undefined;
                 var dst_rows: [8][]U = undefined;
-                var error_tmp: [7][24]f32 = .{.{0} ** 24} ** 7;
+                var error_tmp: [7][24]f32 = @splat(@splat(0));
 
                 inline for (0..8) |i| {
                     src_rows[i] = src_rest[i * src_stride ..];

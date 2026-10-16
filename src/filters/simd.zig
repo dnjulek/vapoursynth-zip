@@ -13,16 +13,32 @@ const builtin = @import("builtin");
 // Instruction-set gates
 // ---------------------------------------------------------------------------
 
-pub const use_avx = builtin.cpu.arch == .x86_64 and
-    std.Target.x86.featureSetHas(builtin.cpu.features, .avx);
+pub const use_avx = builtin.target.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx);
 
-pub const use_avx2 = builtin.cpu.arch == .x86_64 and
-    std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
+pub const use_avx2 = builtin.target.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx2);
 
 /// 512-bit f32/i32 regime (vunpck/vshuff32x4/vpermt2ps/vmaxps at zmm width are
 /// all AVX-512F). znver4/znver5 builds land here.
-pub const use_avx512f = builtin.cpu.arch == .x86_64 and
-    std.Target.x86.featureSetHas(builtin.cpu.features, .avx512f);
+pub const use_avx512f = builtin.target.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512f);
+
+// ---------------------------------------------------------------------------
+// Compiler workarounds
+// ---------------------------------------------------------------------------
+
+/// Vector `@intCast` from signed lanes to narrower unsigned lanes (i32->u8,
+/// i32->u16, i16->u8, ...), routed through a same-width unsigned `@bitCast`.
+/// Works around a Zig 0.17.0 miscompile where a plain `@intCast` clamps at
+/// the *signed* max of the destination width (255 -> 127, 65535 -> 32767),
+/// in every optimize mode. Negative lanes still trip the range check in safe
+/// builds, since they bitcast to out-of-range unsigned values.
+pub inline fn intCastSignedToUnsigned(comptime D: type, v: anytype) D {
+    const info = @typeInfo(@TypeOf(v)).vector;
+    const U = @Vector(info.len, @Int(.unsigned, @bitSizeOf(info.child)));
+    return @intCast(@as(U, @bitCast(v)));
+}
 
 /// True when the f32 lane helpers below (evenLanesF32/oddLanesF32/
 /// interleaveF32/transposeF32Reg) have a pinned-asm path at width `n` —
@@ -126,7 +142,7 @@ pub inline fn loaduOpaque(comptime T: type, comptime n: comptime_int, p: *const 
 /// vector block). Zero instructions; the empty asm is just an optimization
 /// barrier on the pointer value.
 pub inline fn opaquePtr(comptime T: type, p: [*]T) [*]T {
-    if (comptime builtin.cpu.arch == .x86_64) {
+    if (comptime builtin.target.cpu.arch == .x86_64) {
         return asm (""
             : [out] "=r" (-> [*]T),
             : [in] "0" (p),
@@ -349,7 +365,7 @@ inline fn transposeF32x4(r: [4]@Vector(4, f32)) [4]@Vector(4, f32) {
 inline fn transposeButterfly(comptime T: type, comptime n: comptime_int, rows_in: [n]@Vector(n, T)) [n]@Vector(n, T) {
     const bits = comptime std.math.log2_int(u32, n);
     var v: [n]@Vector(n, T) = undefined;
-    inline for (0..n) |i| v[i] = rows_in[comptime @bitReverse(@as(std.meta.Int(.unsigned, bits), i))];
+    inline for (0..n) |i| v[i] = rows_in[comptime @bitReverse(@as(@Int(.unsigned, bits), i))];
     comptime var dist: u32 = n / 2;
     comptime var g: u32 = 1;
     inline while (dist >= 1) : ({
@@ -551,7 +567,7 @@ pub inline fn packClampU8x4(r0: I32x8, r1: I32x8, r2: I32x8, r3: I32x8) @Vector(
     inline for ([4]I32x8{ r0, r1, r2, r3 }, 0..) |r, i| {
         const zero: I32x8 = @splat(0);
         const max: I32x8 = @splat(255);
-        const cl: @Vector(8, u8) = @intCast(std.math.clamp(r, zero, max));
+        const cl = intCastSignedToUnsigned(@Vector(8, u8), std.math.clamp(r, zero, max));
         out[i * 8 ..][0..8].* = cl;
     }
     return out;
@@ -653,8 +669,8 @@ pub inline fn interleaveI16x16(e: I16x16, o: I16x16) [2]I16x16 {
 // IEEE round-to-nearest-even f32 -> i32 (fmtconv-compatible rounding)
 // ---------------------------------------------------------------------------
 
-const use_sse41 = builtin.cpu.arch == .x86_64 and
-    std.Target.x86.featureSetHas(builtin.cpu.features, .sse4_1);
+const use_sse41 = builtin.target.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .sse4_1);
 
 /// 1.5 * 2^23: (x + magic) - magic rounds x to the nearest even integer for
 /// |x| < 2^22 (both ops exactly representable; the add forces the fraction out
@@ -675,7 +691,7 @@ pub inline fn cvtRoundI32(comptime n: comptime_int, v: @Vector(n, f32)) @Vector(
             : [v] "x" (v),
         );
     }
-    if (comptime (n == 4 and builtin.cpu.arch == .x86_64)) {
+    if (comptime (n == 4 and builtin.target.cpu.arch == .x86_64)) {
         // Baseline (non-AVX) wheel: SSE2 cvtps2dq, non-VEX 2-operand form.
         return asm ("cvtps2dq %[v], %[out]"
             : [out] "=x" (-> V),
@@ -743,8 +759,8 @@ pub inline fn packUsI32ToU16(lo: I32x8, hi: I32x8) @Vector(16, u16) {
     }
     const zero: I32x8 = @splat(0);
     const maxv: I32x8 = @splat(65535);
-    const lo_t: @Vector(8, u16) = @intCast(@min(@max(lo, zero), maxv));
-    const hi_t: @Vector(8, u16) = @intCast(@min(@max(hi, zero), maxv));
+    const lo_t = intCastSignedToUnsigned(@Vector(8, u16), @min(@max(lo, zero), maxv));
+    const hi_t = intCastSignedToUnsigned(@Vector(8, u16), @min(@max(hi, zero), maxv));
     return std.simd.join(lo_t, hi_t);
 }
 

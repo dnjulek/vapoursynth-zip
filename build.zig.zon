@@ -3,7 +3,7 @@
     .version = "22.1.0",
     .paths = .{""},
     .fingerprint = 0x7466a154dbe09310,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .vapoursynth = .{
             // zig fetch --save git+https://github.com/dnjulek/vapoursynth-zig.git
@@ -13,8 +13,8 @@
 
         .zigimg = .{
             // zig fetch --save git+https://github.com/zigimg/zigimg.git
-            .url = "git+https://github.com/zigimg/zigimg.git#0bbe201a5591219177f2444371c2897746b47774",
-            .hash = "zigimg-0.1.0-8_eo2sGbFwCrsBjkTTP-kinCH62m5vmYDHQnQcngFuwh",
+            .url = "git+https://github.com/zigimg/zigimg.git#c8ab20d57487768ee121d4d05e69b10968f10115",
+            .hash = "zigimg-0.1.0-8_eo2j5lGAD6CsSJLnfXJikIjFDPG7V8blUGOPDiEZ4-",
         },
     },
 }

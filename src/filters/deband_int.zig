@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 const math = std.math;
 const allocator = std.heap.c_allocator;
 
@@ -334,7 +335,7 @@ fn processPlane(
             }
 
             const clamped = @max(minv, @min(center, maxv));
-            dst[row + x ..][0..vec_len].* = @as(u16v, @intCast(clamped));
+            dst[row + x ..][0..vec_len].* = simd.intCastSignedToUnsigned(u16v, clamped);
         }
     }
 }

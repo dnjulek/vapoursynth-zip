@@ -80,7 +80,7 @@ pub fn compressCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
         zapi.freeNode(d.node);
         return;
     }
-    const codec: Codec = @enumFromInt(codec_i);
+    const codec: Codec = @fromBackingInt(@intCast(codec_i));
 
     switch (codec) {
         .mpeg2 => {

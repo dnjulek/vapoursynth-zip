@@ -368,13 +368,13 @@ pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*v
         return;
     }
 
-    const imode = map_in.getInt(i32, "dither_type") orelse @intFromEnum(Mode.zimg_random);
-    if (imode < 0 or imode > @intFromEnum(Mode.fmtc_quasirnd)) {
+    const imode = map_in.getInt(i32, "dither_type") orelse @backingInt(Mode.zimg_random);
+    if (imode < 0 or imode > @backingInt(Mode.fmtc_quasirnd)) {
         map_out.setError(filter_name ++ ": dither_type must be 0-11.");
         zapi.freeNode(d.node);
         return;
     }
-    const mode: Mode = @enumFromInt(imode);
+    const mode: Mode = @fromBackingInt(@intCast(imode));
 
     const src_float = vi.format.sampleType == .Float;
     d.bits_in = @intCast(vi.format.bitsPerSample);

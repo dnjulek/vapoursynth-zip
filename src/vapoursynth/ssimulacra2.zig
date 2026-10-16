@@ -145,7 +145,7 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
 
     _ = args.consumeNode("clip", in, .Replace);
     args.setData("prop", "_Transfer", .Utf8, .Replace);
-    args.setInt("intval", @intFromEnum(vsc.TransferCharacteristics.IEC_61966_2_1), .Replace);
+    args.setInt("intval", @backingInt(vsc.TransferCharacteristics.IEC_61966_2_1), .Replace);
     const stdplugin = zapi.getPluginByID2(.Std);
     var ret = args.invoke(stdplugin, "SetFrameProp");
     in = ret.getNode("clip");
@@ -153,7 +153,7 @@ pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     args.clear();
 
     _ = args.consumeNode("clip", in, .Replace);
-    args.setInt("transfer", @intFromEnum(vsc.TransferCharacteristics.LINEAR), .Replace);
+    args.setInt("transfer", @backingInt(vsc.TransferCharacteristics.LINEAR), .Replace);
     ret = args.invoke(reszplugin, "Bicubic");
     const out = ret.getNode("clip");
     ret.free();

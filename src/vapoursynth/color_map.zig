@@ -86,7 +86,7 @@ pub fn colorMapCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
         return;
     }
 
-    const color: Colors = @enumFromInt(icolor);
+    const color: Colors = @fromBackingInt(@intCast(icolor));
     const color_arr = color.getColor();
 
     const len: usize = color_arr[0].len;

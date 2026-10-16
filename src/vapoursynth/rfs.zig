@@ -80,7 +80,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
             _ = args.setNode("clips", nodes[1], .Append);
             _ = args.setNode("clips", nodes[2], .Append);
             args.setIntArray("planes", &pl);
-            args.setInt("colorfamily", @intFromEnum(vi.format.colorFamily), .Replace);
+            args.setInt("colorfamily", @backingInt(vi.format.colorFamily), .Replace);
 
             const stdplugin = zapi.getPluginByID2(.Std);
             const ret = args.invoke(stdplugin, "ShufflePlanes");
@@ -98,8 +98,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
     while (i < ne) : (i += 1) {
         const f_raw: i64 = map_in.getValue2(i64, "frames", i).?;
         if (f_raw < 0) {
-            const msg = std.fmt.allocPrintSentinel(
-                allocator,
+            const msg = allocator.printSentinel(
                 "{s}: frame index ({}) must be non-negative.",
                 .{ filter_name, f_raw },
                 0,
@@ -113,8 +112,7 @@ pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.C
         }
         const in_frame: u32 = @intCast(f_raw);
         if (in_frame >= vi.numFrames) {
-            const msg = std.fmt.allocPrintSentinel(
-                allocator,
+            const msg = allocator.printSentinel(
                 "{s}: frame index ({}) > last frame index ({}).",
                 .{ filter_name, in_frame, vi.numFrames - 1 },
                 0,

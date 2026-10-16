@@ -72,7 +72,7 @@ fn highds(comptime T: type, pic: []const T, o: usize, x0: usize, x1: usize, y0: 
     const L = LaneInt(T);
     const vl = laneCount(T);
     const LV = @Vector(vl, L);
-    const U = std.meta.Int(.unsigned, @bitSizeOf(L));
+    const U = @Int(.unsigned, @bitSizeOf(L));
     const even_mask = comptime evenMask(U, vl);
     const twelve: LV = @splat(12);
     const three: LV = @splat(3);
@@ -164,7 +164,7 @@ inline fn vrow(comptime T: type, comptime vl: comptime_int, row: []const T, i: u
 inline fn diff1st(comptime T: type, comptime has_prev: bool, w_act: usize, h_act: usize, o_m0: []const T, o_p1: anytype, o: usize) u64 {
     const L = LaneInt(T);
     const vl = laneCount(T);
-    const U = std.meta.Int(.unsigned, @bitSizeOf(L));
+    const U = @Int(.unsigned, @bitSizeOf(L));
     const even_mask = comptime evenMask(U, vl);
 
     var taAct: u64 = 0;
@@ -205,7 +205,7 @@ inline fn diff2nd(comptime T: type, comptime has_p1: bool, comptime has_p2: bool
     const L = LaneInt(T);
     const vl = laneCount(T);
     const LV = @Vector(vl, L);
-    const U = std.meta.Int(.unsigned, @bitSizeOf(L));
+    const U = @Int(.unsigned, @bitSizeOf(L));
     const even_mask = comptime evenMask(U, vl);
     const two: LV = @splat(2);
 
@@ -552,8 +552,8 @@ pub fn getWSSE(
 
     const r: f64 = @as(f64, @floatFromInt(wh)) / @as(f64, 3840.0 * 2160.0);
     const b: u32 = math.lossyCast(u32, (32.0 * @sqrt(r) + 0.5)) * 4;
-    const w_blk: u32 = if (b >= 4) (w + b - 1) / b else 0;
-    const h_blk: u32 = if (b >= 4) (h + b - 1) / b else 0;
+    const w_blk: u32 = if (b >= 4) @divCeil(w, b) else 0;
+    const h_blk: u32 = if (b >= 4) @divCeil(h, b) else 0;
     const sft: u32 = math.shl(u32, 1, (2 * depth - 9));
     const avg_act: f64 = @sqrt(16.0 * @as(f64, @floatFromInt(sft)) / @sqrt(@max(0.00001, r)));
 

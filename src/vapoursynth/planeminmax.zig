@@ -121,9 +121,9 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
 
     const prop_in = map_in.getData("prop", 0) orelse "psm";
     d.prop = .{
-        .d = std.fmt.allocPrintSentinel(allocator, "{s}Diff", .{prop_in}, 0) catch unreachable,
-        .ma = std.fmt.allocPrintSentinel(allocator, "{s}Max", .{prop_in}, 0) catch unreachable,
-        .mi = std.fmt.allocPrintSentinel(allocator, "{s}Min", .{prop_in}, 0) catch unreachable,
+        .d = allocator.printSentinel("{s}Diff", .{prop_in}, 0) catch unreachable,
+        .ma = allocator.printSentinel("{s}Max", .{prop_in}, 0) catch unreachable,
+        .mi = allocator.printSentinel("{s}Min", .{prop_in}, 0) catch unreachable,
     };
 
     const no_thr = d.maxthr == 0 and d.minthr == 0;

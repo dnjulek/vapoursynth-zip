@@ -232,7 +232,7 @@ pub fn toRGBS(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     const args = zapi.createZMap();
     _ = args.consumeNode("clip", node, .Replace);
     args.setInt("matrix_in", matrix, .Replace);
-    args.setInt("format", @intFromEnum(vs.PresetVideoFormat.RGBS), .Replace);
+    args.setInt("format", @backingInt(vs.PresetVideoFormat.RGBS), .Replace);
 
     const vsplugin = zapi.getPluginByID2(.Resize);
     const ret = args.invoke(vsplugin, "Bicubic");
@@ -361,8 +361,7 @@ pub fn getArray(
     var array: [3]T = undefined;
     const len = in.numElements(key) orelse 0;
     if (len > 3) {
-        err_msg = std.fmt.allocPrintSentinel(
-            allocator,
+        err_msg = allocator.printSentinel(
             "{s}: {s} has too many elements (got {d}, max 3).",
             .{ filter_name, key, len },
             0,
@@ -380,8 +379,7 @@ pub fn getArray(
         }
 
         if (array[i] < min) {
-            err_msg = std.fmt.allocPrintSentinel(
-                allocator,
+            err_msg = allocator.printSentinel(
                 "{s}: {s} value {d} is below minimum {d}.",
                 .{ filter_name, key, array[i], min },
                 0,
@@ -390,8 +388,7 @@ pub fn getArray(
         }
 
         if (array[i] > max) {
-            err_msg = std.fmt.allocPrintSentinel(
-                allocator,
+            err_msg = allocator.printSentinel(
                 "{s}: {s} value {d} is above maximum {d}.",
                 .{ filter_name, key, array[i], max },
                 0,
@@ -511,7 +508,7 @@ pub fn vsFrameAlignmentT(div: u32) u32 {
 /// which it picks once at startup from the *running* CPU: 64 bytes when AVX-512F
 /// is available, otherwise 32 (and 32 on non-x86) — see `alignmentHelper()` in vscore.cpp.
 pub fn vsFrameAlignment() u32 {
-    if (comptime (builtin.cpu.arch == .x86_64 or builtin.cpu.arch == .x86)) {
+    if (comptime (builtin.target.cpu.arch == .x86_64 or builtin.target.cpu.arch == .x86)) {
         // Replicates cpufeatures.cpp's `avx512_f` derivation exactly.
         // 1. CPUID.1:ECX must report OSXSAVE(27) + AVX(28).
         const leaf1 = cpuid(1, 0);

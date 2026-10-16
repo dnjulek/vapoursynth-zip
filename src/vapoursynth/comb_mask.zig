@@ -93,8 +93,7 @@ pub fn combMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
     const cth_max: i32 = if (metric_1) 65025 else 255;
 
     if ((cthresh > cth_max) or (cthresh < 0)) {
-        const msg = std.fmt.allocPrintSentinel(
-            allocator,
+        const msg = allocator.printSentinel(
             filter_name ++
                 ": cthresh must be between 0 and {} when metric = {any}.",
             .{ cth_max, metric_1 },

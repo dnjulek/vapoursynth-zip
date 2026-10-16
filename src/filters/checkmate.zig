@@ -157,7 +157,7 @@ inline fn processVec(
         const fast = (p1 + c + c + n1) >> @as(@Vector(vec_len, u4), @splat(2));
         outv = @select(i16, m, fast, res);
     }
-    dstp[x..][0..vec_len].* = @as(VU8, @intCast(outv));
+    dstp[x..][0..vec_len].* = simd.intCastSignedToUnsigned(VU8, outv);
 }
 
 pub fn process(

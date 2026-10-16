@@ -232,7 +232,7 @@ pub fn Ordered(comptime T: type, comptime U: type, comptime mode: OrderedMode) t
                 pi - @as(I32W, @splat(128)),
             );
             const d = (folded >> @splat(@as(u5, sh))) + @as(I32W, @splat(rcst));
-            return @intCast(d);
+            return simd.intCastSignedToUnsigned(@Vector(n_u16, u16), d);
         }
 
         inline fn computeVal(ptr: *const [n_vec]T, dsrc: DitherSource(mode), x: u32, scale_v: F32V, offset_v: F32V) F32V {
@@ -316,7 +316,7 @@ pub fn Ordered(comptime T: type, comptime U: type, comptime mode: OrderedMode) t
                 while (x < w) : (x += n_vec) {
                     const val = simd.clampV(n_vec, computeVal(src_row[x..][0..n_vec], dsrc, x, scale_v, offset_v), zero_v, peak_v);
                     const out: @Vector(n_vec, U) = if (comptime zimg_style)
-                        @intCast(simd.cvtRoundI32(n_vec, val))
+                        simd.intCastSignedToUnsigned(@Vector(n_vec, U), simd.cvtRoundI32(n_vec, val))
                     else
                         fmtcIntFromFloat(U, val);
                     dst_row[x..][0..n_vec].* = out;
