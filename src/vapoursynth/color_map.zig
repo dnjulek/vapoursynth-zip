@@ -49,7 +49,7 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
         props.setMatrix(.RGB);
         props.setTransfer(.IEC_61966_2_1);
         props.setPrimaries(.BT709);
-        props.setColorRange(.FULL);
+        props.setRange(.FULL);
 
         return dst.frame;
     }

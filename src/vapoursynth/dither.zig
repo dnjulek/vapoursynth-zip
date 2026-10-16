@@ -7,6 +7,7 @@ const errdiff = @import("../filters/dither_errdiff.zig");
 
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
+const vsc = vapoursynth.vsconstants;
 const vsh = vapoursynth.vshelper;
 const ZAPI = vapoursynth.ZAPI;
 
@@ -63,7 +64,7 @@ const Data = struct {
     gain_up: u16,
     add_up: [3]u16,
     err_buf_len: u32,
-    stamp_range: ?i64,
+    stamp_range: ?vsc.Range,
 };
 
 const PlaneFmt = struct {
@@ -95,9 +96,9 @@ fn gainAdd(src: PlaneFmt, dst: PlaneFmt) GainAdd {
 }
 
 fn stampRange(dst: anytype, d: *const Data) void {
-    if (d.stamp_range) |cr| {
+    if (d.stamp_range) |r| {
         const props = dst.getPropertiesRW();
-        props.setInt("_ColorRange", cr, .Replace);
+        props.setRange(r);
     }
 }
 
@@ -404,7 +405,7 @@ pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*v
     const fulls = fulls_opt orelse range_default;
     const fulld = fulld_opt orelse fulls;
     d.stamp_range = if (fulls_opt != null or fulld_opt != null)
-        @as(i64, if (fulld) 0 else 1)
+        @as(vsc.Range, if (fulld) .FULL else .LIMITED)
     else
         null;
 

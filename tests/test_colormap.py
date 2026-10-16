@@ -68,7 +68,7 @@ def test_output_format(to_gray):
     out = src.vszip.ColorMap()
     assert out.format.id == vs.RGB24
     assert (out.width, out.height) == (src.width, src.height)
-    assert props(out)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(out)["_Range"] == vs.Range.RANGE_FULL
 
 
 def rgb_at(clip: vs.VideoNode, x: int = 0, y: int = 0) -> tuple[int, int, int]:

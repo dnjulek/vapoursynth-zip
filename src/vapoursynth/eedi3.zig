@@ -432,7 +432,7 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
             defer args.free();
             _ = args.consumeNode("clip", d.mclip, .Replace);
             d.mclip = null; // ownership of the node ref transferred to `args`
-            args.setInt("_Range", 1, .Replace);
+            args.setRange(.FULL);
             var ret = args.invoke(zapi.getPluginByID2(.Std), "SetFrameProps");
 
             args.clear();

@@ -168,19 +168,17 @@ def test_round_trip_f32(make_clip):
 
 
 def test_color_range_prop(make_clip):
-    """fmtc semantics: _ColorRange is stamped only when fulls/fulld was given
-    explicitly, otherwise the source prop passes through. Values are compared
-    relative to the (limited) source so the test is agnostic to the VS
-    _ColorRange/_Range encoding shim."""
+    """fmtc semantics: _Range is stamped only when fulls/fulld was given
+    explicitly, otherwise the source prop passes through."""
     src = make_clip(vs.GRAY16)
-    src_cr = props(src)["_ColorRange"]
-    assert props(src.vszip.Dither(bitdepth=8))["_ColorRange"] == src_cr
-    limited = props(src.vszip.Dither(bitdepth=8, fulld=0))["_ColorRange"]
-    full = props(src.vszip.Dither(bitdepth=8, fulld=1))["_ColorRange"]
-    assert limited == src_cr
-    assert full != limited
+    src_r = props(src)["_Range"]
+    assert src_r == vs.Range.RANGE_LIMITED
+    assert props(src.vszip.Dither(bitdepth=8))["_Range"] == src_r
+    assert props(src.vszip.Dither(bitdepth=8, fulld=0))["_Range"] == vs.Range.RANGE_LIMITED
+    assert props(src.vszip.Dither(bitdepth=8, fulld=1))["_Range"] == vs.Range.RANGE_FULL
     # fulls alone also stamps (fulld defaults to fulls)
-    assert props(src.vszip.Dither(bitdepth=8, fulls=0))["_ColorRange"] == limited
+    assert props(src.vszip.Dither(bitdepth=8, fulls=0))["_Range"] == vs.Range.RANGE_LIMITED
+    assert props(src.vszip.Dither(bitdepth=8, fulls=1))["_Range"] == vs.Range.RANGE_FULL
 
 
 def test_validation_errors(make_clip):

@@ -258,15 +258,15 @@ pub fn getVal2(comptime T: type, ptr: anytype, x: u32, y: u32) T {
     return ptr2[0];
 }
 
-pub fn getColorRange(node: *vs.Node, zapi: *const ZAPI) vsc.ColorRange {
+pub fn getRange(node: *vs.Node, zapi: *const ZAPI) vsc.Range {
     const frame = zapi.getFrame(0, node, null);
     defer zapi.freeFrame(frame);
 
     if (frame) |f| {
         const props = zapi.getFramePropertiesRO(f);
         if (props) |p| {
-            const color_range = zapi.initZMap(p).getColorRange();
-            if (color_range) |cr| return cr;
+            const range = zapi.initZMap(p).getRange();
+            if (range) |r| return r;
         }
     }
 
@@ -278,7 +278,7 @@ pub fn getColorRange(node: *vs.Node, zapi: *const ZAPI) vsc.ColorRange {
     }
 }
 
-pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.ColorRange) f32 {
+pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range) f32 {
     if (fmt.sampleType == .Float) {
         return if (chroma) -0.5 else 0.0;
     }
@@ -290,7 +290,7 @@ pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Color
     return 0;
 }
 
-pub fn getPeakValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.ColorRange) f32 {
+pub fn getPeakValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range) f32 {
     if (fmt.sampleType == .Float) {
         return if (chroma) 0.5 else 1.0;
     }
@@ -323,7 +323,7 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
         return out_value;
     }
 
-    const range = getColorRange(target, zapi);
+    const range = getRange(target, zapi);
     const input_peak = getPeakValue(&fmt_in, chroma, range);
     const input_lowest = getLowestValue(&fmt_in, chroma, range);
     const output_peak = getPeakValue(&fmt_out, chroma, range);

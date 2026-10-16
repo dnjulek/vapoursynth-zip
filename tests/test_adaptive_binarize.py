@@ -67,7 +67,7 @@ def test_output_is_binary_and_full_range(to_gray):
     src = to_gray(vs.GRAY8)
     out = src.vszip.AdaptiveBinarize(src.std.BoxBlur(hradius=5, vradius=5))
     assert_binary(out)
-    assert props(out)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(out)["_Range"] == vs.Range.RANGE_FULL
 
 
 @pytest.mark.parametrize("c", [0, 3, 10])

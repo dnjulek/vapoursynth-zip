@@ -357,7 +357,7 @@ fn Read(comptime alpha: bool) type {
                 }
 
                 if (alpha) {
-                    adst.getPropertiesRW().setColorRange(.FULL);
+                    adst.getPropertiesRW().setRange(.FULL);
                     props.consumeAlpha(adst.frame);
                 }
 

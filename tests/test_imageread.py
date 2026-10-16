@@ -119,7 +119,7 @@ def test_rgba_alpha(core, tmp_path):
     assert (pix(clip, 1, 0, 0), pix(clip, 1, 0, 1), pix(clip, 1, 0, 2)) == (40, 50, 60)
     alpha = clip.std.PropToClip(prop="_Alpha")
     assert [[pix(alpha, x, y) for x in range(2)] for y in range(2)] == [[0, 128], [255, 4]]
-    assert props(alpha)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(alpha)["_Range"] == vs.Range.RANGE_FULL
 
 
 def test_gray_alpha(core, tmp_path):
@@ -141,7 +141,7 @@ def test_gray16_alpha(core, tmp_path):
     alpha = clip.std.PropToClip(prop="_Alpha")
     assert alpha.format.id == vs.GRAY16
     assert (pix(alpha, 0, 0), pix(alpha, 1, 0)) == (60000, 25)
-    assert props(alpha)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(alpha)["_Range"] == vs.Range.RANGE_FULL
 
 
 def test_rgba64_alpha(core, tmp_path):
@@ -154,14 +154,14 @@ def test_rgba64_alpha(core, tmp_path):
     alpha = clip.std.PropToClip(prop="_Alpha")
     assert alpha.format.id == vs.GRAY16
     assert (pix(alpha, 0, 0), pix(alpha, 1, 0)) == (40000, 4)
-    assert props(alpha)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(alpha)["_Range"] == vs.Range.RANGE_FULL
 
 
 def test_gray_alpha_color_range_full(core, tmp_path):
     """8-bit grayscale+alpha carries the FULL range marker on its alpha clip."""
     clip = read(core, write_png(tmp_path / "ga.png", [[(100, 200), (50, 25)]], color="graya"))
     alpha = clip.std.PropToClip(prop="_Alpha")
-    assert props(alpha)["_ColorRange"] == vs.Range.RANGE_FULL
+    assert props(alpha)["_Range"] == vs.Range.RANGE_FULL
 
 
 @pytest.mark.parametrize(

@@ -66,7 +66,7 @@ fn adaptiveBinarizeGetFrame(n: c_int, activation_reason: vs.ActivationReason, in
         }
 
         const dst_prop = dst.getPropertiesRW();
-        dst_prop.setColorRange(.FULL);
+        dst_prop.setRange(.FULL);
         return dst.frame;
     }
 
