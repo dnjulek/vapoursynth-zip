@@ -8,7 +8,7 @@ AI generated pytest tests.
 
 ```sh
 # from the repo root
-zig build                           # build the Debug plugin
+zig build                           # build the debug plugin
 pytest -v                           # run the whole suite
 pytest tests/test_boxblur.py        # one file
 ```
@@ -21,7 +21,7 @@ are wide enough that both stay green:
 
 ```sh
 zig build                          && pytest -v
-zig build -Doptimize=ReleaseFast   && pytest -v
+zig build -Doptimize=fast          && pytest -v
 ```
 
 ---
@@ -43,10 +43,10 @@ git diff tests/goldens/      # ALWAYS review the result
 
 - **Build before testing.** The suite tests `zig-out/`, not the source — rebuild
   after any Zig change.
-- **Debug vs ReleaseFast.** Both must stay green. If a filter ever needs a wider
+- **debug vs fast.** Both must stay green. If a filter ever needs a wider
   tolerance, widen only that filter and note why.
 - **Tolerance** is `rel=1e-6` for every format (f16 included — its output is
-  deterministic enough across Debug/Release that no looser bound is needed). A
+  deterministic enough across debug/fast that no looser bound is needed). A
   filter that genuinely needs a wider bound can pass `rel=` to `golden.check`.
 - **Sensitivity check** when adding goldens: tweak one stored value by ~1% and
   confirm the matching test fails, then revert.

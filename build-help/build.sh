@@ -24,7 +24,7 @@ fi
 cd ..
 
 echo "Building..."
-"build-help/${ZNAME}/zig" build -Doptimize=ReleaseFast
+"build-help/${ZNAME}/zig" build -Doptimize=fast
 
 echo "Installing libvszip.so to /usr/lib/vapoursynth"
 if [ -e /usr/lib/vapoursynth ]

@@ -24,7 +24,7 @@ jobs:
         use-cache: false
 
     - name: build plugin
-      run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
+      run: zig build -Doptimize=debug -Dcpu=x86_64_v3
 
     - name: Run test
       run: pytest -v
@@ -45,7 +45,7 @@ jobs:
         use-cache: false
 
     - name: build plugin
-      run: zig build -Doptimize=Debug -Dcpu=x86_64_v3
+      run: zig build -Doptimize=debug -Dcpu=x86_64_v3
 
     - name: Run test
       run: pytest -v

@@ -99,7 +99,7 @@ class CustomHook(BuildHookInterface[Any]):
             if 'cpus' in target: 
                 # Build all optimization levels of the library
                 for cpu_spec in target['cpus']:
-                    subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=ReleaseFast", f"-Dtarget={zig_target}", f"-Dcpu={cpu_spec['cpu']}"], check=True)
+                    subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=fast", f"-Dtarget={zig_target}", f"-Dcpu={cpu_spec['cpu']}"], check=True)
 
                     for file_path in self.source_dir.rglob("*"):
                         if file_path.is_file() and file_path.suffix in library_suffixes:
@@ -109,7 +109,7 @@ class CustomHook(BuildHookInterface[Any]):
                             else:
                                 shutil.copy2(file_path, self.target_dir)
             else:
-                subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=ReleaseFast", f"-Dtarget={zig_target}"], check=True)
+                subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=fast", f"-Dtarget={zig_target}"], check=True)
 
                 for file_path in self.source_dir.rglob("*"):
                     if file_path.is_file() and file_path.suffix in library_suffixes:
@@ -128,7 +128,7 @@ class CustomHook(BuildHookInterface[Any]):
         else:
             build_data["tag"] = f"py3-none-{next(tags.platform_tags())}"
 
-            subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=ReleaseFast"], check=True)
+            subprocess.run([sys.executable, "-m", "ziglang", "build", "-Doptimize=fast"], check=True)
         
             # Copy the compiled binaries
             for file_path in self.source_dir.rglob("*"):
