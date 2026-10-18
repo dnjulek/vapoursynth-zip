@@ -297,12 +297,8 @@ def test_stride_independent(core, make_clip):
     assert_same_clip(wide, tight)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known bug: hz.scaleValue takes the range of a float clip from _Range "
-    "(missing -> LIMITED), so float thresholds scale by 1/219 instead of 1/255; "
-    "float clips are always full range",
-)
+# Regression: float clips are always full range. hz.scaleValue used to take
+# the range from _Range (missing -> LIMITED), scaling thresholds by 1/219.
 @pytest.mark.parametrize("props", [{}, {"_Range": 0}], ids=["no-range-prop", "range-limited-prop"])
 def test_float_threshold_scale_ignores_range_prop(core, props):
     # flt - src = 0.042 lies between 10/255 (0.0392) and 10/219 (0.0457)

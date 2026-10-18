@@ -296,3 +296,14 @@ def test_max_radius_boundary(make_temporal_clip):
     for n in range(out.num_frames):
         with out.get_frame(n) as f:
             assert np.isfinite(np.asarray(f[0])).all()
+
+
+def test_sigma_bounded_to_f32(core):
+    """sigma is stored as f32: 1e300 is finite as f64 but would narrow to an
+    internal inf, so it is rejected; the largest f32 is still accepted."""
+    src = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=1)
+    with pytest.raises(vs.Error, match=r"sigma value 1e300 is above maximum"):
+        src.vszip.WNNM(sigma=1e300)
+    src.vszip.WNNM(sigma=3.4e38, block_size=4).get_frame(0)
+    with pytest.raises(vs.Error, match=r"sigma has too many elements \(got 4, max 3\)"):
+        src.vszip.WNNM(sigma=[3, 3, 3, float("nan")])

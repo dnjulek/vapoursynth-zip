@@ -558,10 +558,11 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         return;
     }
 
-    var raw_sigma: [3]f32 = undefined;
+    // Shared parser: <= 3 values (last repeats, default 3.0), finite and
+    // bounded to f32 before narrowing. The sign keeps its own message.
+    const fmax = math.floatMax(f32);
+    const raw_sigma = hz.getArray(f32, 3.0, -fmax, fmax, "sigma", filter_name, map_in, map_out, &.{d.node}, &zapi) catch return;
     for (0..3) |i| {
-        raw_sigma[i] = map_in.getFloat2(f32, "sigma", i) orelse
-            (if (i == 0) 3.0 else raw_sigma[i - 1]);
         if (raw_sigma[i] < 0.0) {
             map_out.setError(filter_name ++ ": \"sigma\" must be non-negative.");
             zapi.freeNode(d.node);

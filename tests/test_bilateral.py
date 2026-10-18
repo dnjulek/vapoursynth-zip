@@ -162,3 +162,15 @@ def test_small_frame_algorithm1_ok(core, w, h):
     )
     assert (out.width, out.height) == (w, h)
     out.get_frame(0)
+
+
+def test_sigma_s_upper_bound(core):
+    """sigmaS is capped at 8192 (a ~16k px window): the spatial radius
+    derivation runs in i32/u32 and overflowed for larger values (Debug panic,
+    ReleaseFast UB). The cap itself is accepted, just above it is rejected."""
+    src = core.std.BlankClip(None, 64, 64, vs.GRAY16, length=1)
+    src.vszip.Bilateral(sigmaS=8192, algorithm=1).get_frame(0)
+    with pytest.raises(vs.Error, match="must be at most 8192"):
+        src.vszip.Bilateral(sigmaS=8192.5)
+    with pytest.raises(vs.Error, match="has too many elements"):
+        src.vszip.Bilateral(sigmaS=[3, 3, 3, 3])

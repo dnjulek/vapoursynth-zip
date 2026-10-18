@@ -1,5 +1,7 @@
 const std = @import("std");
 const vapoursynth = @import("vapoursynth");
+const hz = @import("../helper.zig");
+const math = std.math;
 
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
@@ -340,15 +342,18 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
     const mdis = map_in.getValue(i32, "mdis") orelse 20;
     const nrad = map_in.getValue(i32, "nrad") orelse 2;
 
-    d.alpha = map_in.getValue(f32, "alpha") orelse 0.2;
-    d.beta = map_in.getValue(f32, "beta") orelse 0.25;
-    d.gamma = map_in.getValue(f32, "gamma") orelse 20.0;
+    // Finite only here (nodes are freed by the defer above); the specific
+    // ranges below keep their own messages.
+    const fmax = math.floatMax(f32);
+    d.alpha = hz.getFloat(f32, 0.2, -fmax, fmax, "alpha", filter_name, map_in, map_out, &.{}, &zapi) catch return;
+    d.beta = hz.getFloat(f32, 0.25, -fmax, fmax, "beta", filter_name, map_in, map_out, &.{}, &zapi) catch return;
+    d.gamma = hz.getFloat(f32, 20.0, -fmax, fmax, "gamma", filter_name, map_in, map_out, &.{}, &zapi) catch return;
 
     d.dh = map_in.getBool("dh") orelse false;
     d.hp = map_in.getBool("hp") orelse false;
-    d.vthresh0 = map_in.getValue(f32, "vthresh0") orelse 32.0;
-    d.vthresh1 = map_in.getValue(f32, "vthresh1") orelse 64.0;
-    d.vthresh2 = map_in.getValue(f32, "vthresh2") orelse 4.0;
+    d.vthresh0 = hz.getFloat(f32, 32.0, -fmax, fmax, "vthresh0", filter_name, map_in, map_out, &.{}, &zapi) catch return;
+    d.vthresh1 = hz.getFloat(f32, 64.0, -fmax, fmax, "vthresh1", filter_name, map_in, map_out, &.{}, &zapi) catch return;
+    d.vthresh2 = hz.getFloat(f32, 4.0, -fmax, fmax, "vthresh2", filter_name, map_in, map_out, &.{}, &zapi) catch return;
 
     // The interpolated axis is the height for EEDI3, the width for EEDI3H.
     const interp_axis: i32 = if (horizontal) d.vi.width else d.vi.height;

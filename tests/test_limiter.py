@@ -163,8 +163,7 @@ def test_u32_comptime_paths(core, family, tv_max, _unused):
     comptime range tables and a distinct Limiter(u32) instantiation. zimg has no
     32-bit-int pixel type, so make_clip/golden_stats (both resize/PlaneStats
     based) can't reach it; build the clip directly and read raw pixels. The
-    explicit-min/max RT path is unreachable here because getPeakValue overflows
-    for 32-bit int, so only the comptime default + tv_range paths are tested."""
+    explicit-min/max runtime path has its own test below."""
     fmt = core.query_video_format(family, vs.INTEGER, 32, 0, 0).id
     base = core.std.BlankClip(None, 64, 32, fmt, length=1)
     n = base.format.num_planes
@@ -184,6 +183,34 @@ def test_u32_comptime_paths(core, family, tv_max, _unused):
     lo, hi = mm(src.vszip.Limiter(tv_range=True))
     assert lo == [268435456] * n
     assert hi == tv_max
+
+
+def _u32_minmax(clip: vs.VideoNode) -> tuple[list, list]:
+    # std.PlaneStats has no 32-bit-int support: read raw uint32 planes
+    with clip.get_frame(0) as f:
+        cols = [memoryview(f[p]).cast("B").cast("I") for p in range(clip.format.num_planes)]
+        return [min(c) for c in cols], [max(c) for c in cols]
+
+
+@pytest.mark.parametrize(("family"), [vs.GRAY, vs.YUV, vs.RGB])
+def test_u32_runtime_bounds(core, family):
+    """Explicit min/max on 32-bit integer clips (LimiterRT(u32)). The bound
+    parser used to take the peak from getPeakValue, whose i32 shift overflowed
+    to -1 for 32 bits, so every explicit range was rejected as "above peak"."""
+    fmt = core.query_video_format(family, vs.INTEGER, 32, 0, 0).id
+    base = core.std.BlankClip(None, 64, 32, fmt, length=1)
+    n = base.format.num_planes
+    peak = (1 << 32) - 1
+    src = core.std.StackVertical([base.std.BlankClip(color=[peak] * n), base.std.BlankClip(color=[0] * n)])
+
+    # the full valid range is accepted and is the identity
+    assert _u32_minmax(src.vszip.Limiter(min=[0] * n, max=[peak] * n)) == ([0] * n, [peak] * n)
+    # an inner range clamps both ends exactly, including values above 2^24
+    lo, hi = 3_000_000_001, 4_000_000_003
+    assert _u32_minmax(src.vszip.Limiter(min=[lo] * n, max=[hi] * n)) == ([lo] * n, [hi] * n)
+    # one past the peak is rejected
+    with pytest.raises(vs.Error, match="max value must be less than or equal to peak value"):
+        src.vszip.Limiter(min=[0] * n, max=[peak + 1] * n)
 
 
 @pytest.mark.parametrize(

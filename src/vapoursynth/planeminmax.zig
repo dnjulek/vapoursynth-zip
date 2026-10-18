@@ -172,21 +172,16 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
 }
 
 pub fn getThr(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, comptime key: [:0]const u8, zapi: *const ZAPI) !f32 {
-    var err_msg: ?[:0]const u8 = null;
-    errdefer {
-        out.setError(err_msg.?);
-        for (nodes) |node| {
-            if (node) |n| {
-                zapi.freeNode(n);
-            }
-        }
-    }
+    errdefer for (nodes) |node| {
+        if (node) |n| zapi.freeNode(n);
+    };
 
-    const thr = in.getValue(f32, key) orelse 0;
+    const thr: f64 = in.getValue(f64, key) orelse 0;
+    try hz.checkFinite(thr, filter_name, key, null, out);
     if (thr < 0 or thr > 1) {
-        err_msg = filter_name ++ ": " ++ key ++ " should be a float between 0.0 and 1.0";
+        out.setError(filter_name ++ ": " ++ key ++ " should be a float between 0.0 and 1.0");
         return error.ValidationError;
     }
 
-    return thr;
+    return @floatCast(thr);
 }

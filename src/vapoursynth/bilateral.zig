@@ -11,6 +11,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Bilateral";
+const max_sigma_s: f64 = 8192;
 
 pub const Data = struct {
     node1: ?*vs.Node = null,
@@ -102,12 +103,22 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     d.peak = @floatFromInt(hist_len - 1);
 
     var i: u32 = 0;
+    // Hand-parsed for the derived chroma default, so the shared length check
+    // has to be explicit: indices >= 3 would otherwise be ignored unvalidated.
+    hz.checkArrayLen(map_in, "sigmaS", 3, filter_name, map_out) catch {
+        zapi.freeNode(d.node1);
+        return;
+    };
     const m = map_in.numElements("sigmaS") orelse 0;
     while (i < 3) : (i += 1) {
         const ssw: i32 = d.vi.format.subSamplingW;
         const ssh: i32 = d.vi.format.subSamplingH;
         if (i < m) {
             d.sigmaS[i] = map_in.getFloat2(f64, "sigmaS", i).?;
+            hz.checkFinite(d.sigmaS[i], filter_name, "sigmaS", i, map_out) catch {
+                zapi.freeNode(d.node1);
+                return;
+            };
         } else if (i == 0) {
             d.sigmaS[0] = 3;
         } else if ((i == 1) and yuv and (ssh != 0) and (ssw != 0)) {
@@ -119,6 +130,15 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
 
         if (d.sigmaS[i] < 0) {
             map_out.setError("Bilateral: Invalid \"sigmaS\" assigned, must be non-negative float number");
+            zapi.freeNode(d.node1);
+            return;
+        }
+
+        // The spatial radius derivation below runs in i32/u32 (orad = 2*sigma,
+        // samples^2 * 4); bound sigma so none of it can overflow. 8192 means a
+        // ~16k px window: far past any plane the truncated kernel accepts.
+        if (d.sigmaS[i] > max_sigma_s) {
+            hz.setArgError(map_out, "Bilateral: Invalid \"sigmaS\" assigned, must be at most {d}", .{max_sigma_s});
             zapi.freeNode(d.node1);
             return;
         }
@@ -150,9 +170,12 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
             if (d.sigmaR[i] >= 0.08) {
                 d.PBFICnum[i] = 4;
             } else if (d.sigmaR[i] >= 0.015) {
-                d.PBFICnum[i] = @min(16, @as(u32, @trunc(4 * 0.08 / d.sigmaR[i] + 0.5)));
+                d.PBFICnum[i] = @intFromFloat(@min(16.0, @trunc(4 * 0.08 / d.sigmaR[i] + 0.5)));
             } else {
-                d.PBFICnum[i] = @min(32, @as(u32, @trunc(16 * 0.015 / d.sigmaR[i] + 0.5)));
+                // clamp in float: a tiny positive sigmaR makes the quotient
+                // exceed u32 (same result as min-after-trunc for every value
+                // that fits)
+                d.PBFICnum[i] = @intFromFloat(@min(32.0, @trunc(16 * 0.015 / d.sigmaR[i] + 0.5)));
             }
 
             if ((i > 0) and yuv and (d.PBFICnum[i] % 2 == 0) and (d.PBFICnum[i] < 256)) {

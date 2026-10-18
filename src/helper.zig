@@ -284,7 +284,7 @@ pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range
     }
 
     if (range == .LIMITED) {
-        return @floatFromInt(math.shl(i32, 16, fmt.bitsPerSample - 8));
+        return @floatFromInt(math.shl(i64, 16, fmt.bitsPerSample - 8));
     }
 
     return 0;
@@ -295,12 +295,15 @@ pub fn getPeakValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range) 
         return if (chroma) 0.5 else 1.0;
     }
 
+    // i64: a 32-bit integer peak overflows i32 (it used to come out as -1).
+    // The f32 result is approximate for 32-bit (2^32 - 1 rounds to 2^32);
+    // callers validating 32-bit values must use an exact peak instead.
     if (range == .LIMITED) {
-        const a: i32 = if (chroma) 240 else 235;
-        return @floatFromInt(math.shl(i32, a, fmt.bitsPerSample - 8));
+        const a: i64 = if (chroma) 240 else 235;
+        return @floatFromInt(math.shl(i64, a, fmt.bitsPerSample - 8));
     }
 
-    return @floatFromInt(math.shl(i32, 1, fmt.bitsPerSample) - 1);
+    return @floatFromInt(math.shl(i64, 1, fmt.bitsPerSample) - 1);
 }
 
 const ScaleValue = struct {
@@ -323,7 +326,9 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
         return out_value;
     }
 
-    const range = getRange(target, zapi);
+    // Float clips are always full range, whatever their _Range prop says (a
+    // missing prop reads as LIMITED for non-RGB): scale float targets as full.
+    const range: vsc.Range = if (fmt_out.sampleType == .Float) .FULL else getRange(target, zapi);
     const input_peak = getPeakValue(&fmt_in, chroma, range);
     const input_lowest = getLowestValue(&fmt_in, chroma, range);
     const output_peak = getPeakValue(&fmt_out, chroma, range);
@@ -337,6 +342,93 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
     return out_value;
 }
 
+// ---------------------------------------------------------------------------
+// Argument validation
+//
+// Every public float argument must be finite before it is range-checked or
+// used: NaN compares false against both bounds of a `v < min or v > max`
+// check, so plain range checks accept it, and +-inf / huge values later
+// overflow float->int conversions (Debug panic, ReleaseFast UB). Float values
+// are therefore read and validated as f64 and only narrowed afterwards.
+//
+// Narrowing: getArray/getFloat return T only after checking [min, max], so
+// with bounds inside T's range the narrowed value is finite. checkFinite alone
+// only guarantees a finite f64: a caller that stores into f32/f16 itself must
+// also bound the value to that type (e.g. checkArg with +-floatMax(f32)).
+//
+// Node ownership: getArray, getFloat and mapGetPlanes free `nodes` on error
+// (pass `&.{}` when a defer already owns them); checkFinite, checkArg,
+// checkArrayLen and Maps only set the error, the caller frees.
+// ---------------------------------------------------------------------------
+
+/// Set a formatted error on any out map (no print_buf needed: VapourSynth
+/// copies the message, so a stack buffer is fine).
+pub fn setArgError(out: anytype, comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.mem.printSentinel(&buf, fmt, args, 0) catch "invalid argument";
+    out.setError(msg);
+}
+
+/// Number for an error message: `{d}` for ordinary magnitudes (the format the
+/// existing messages and tests use), scientific notation for extreme floats
+/// (`{d}` would spell 1e300 out as 300 digits).
+fn numStr(buf: []u8, v: anytype) []const u8 {
+    if (@typeInfo(@TypeOf(v)) == .float) {
+        const a = @abs(v);
+        if (math.isFinite(v) and a != 0 and (a >= 1e15 or a < 1e-6)) {
+            return std.fmt.bufPrint(buf, "{e}", .{v}) catch "?";
+        }
+    }
+    return std.fmt.bufPrint(buf, "{d}", .{v}) catch "?";
+}
+
+/// Reject NaN and +-inf: "<filter>: <key>[<i>] value nan is not a finite
+/// number." Integers always pass. Call before any other use of the value.
+pub fn checkFinite(value: anytype, filter_name: []const u8, comptime key: []const u8, index: ?usize, out: anytype) error{invalidArgument}!void {
+    if (@typeInfo(@TypeOf(value)) != .float) return;
+    if (math.isFinite(value)) return;
+    if (index) |i| {
+        setArgError(out, "{s}: {s}[{d}] value {d} is not a finite number.", .{ filter_name, key, i, value });
+    } else {
+        setArgError(out, "{s}: {s} value {d} is not a finite number.", .{ filter_name, key, value });
+    }
+    return error.invalidArgument;
+}
+
+/// checkFinite, then `min <= value <= max`, with the messages getArray has
+/// always used ("<key> value 3 is above maximum 2.").
+pub fn checkArg(comptime T: type, value: T, min: T, max: T, filter_name: []const u8, comptime key: []const u8, out: anytype) error{invalidArgument}!void {
+    try checkFinite(value, filter_name, key, null, out);
+    var vb: [64]u8 = undefined;
+    var bb: [64]u8 = undefined;
+    if (value < min) {
+        setArgError(out, "{s}: {s} value {s} is below minimum {s}.", .{ filter_name, key, numStr(&vb, value), numStr(&bb, min) });
+        return error.invalidArgument;
+    }
+    if (value > max) {
+        setArgError(out, "{s}: {s} value {s} is above maximum {s}.", .{ filter_name, key, numStr(&vb, value), numStr(&bb, max) });
+        return error.invalidArgument;
+    }
+}
+
+/// Reject arrays longer than `max_len`: "<key> has too many elements (got 4,
+/// max 3)." Without it, parsers that read indices 0..2 silently ignore a
+/// fourth value — non-finite or not.
+pub fn checkArrayLen(in: anytype, comptime key: [:0]const u8, max_len: usize, filter_name: []const u8, out: anytype) error{invalidArgument}!void {
+    const len: usize = @intCast(in.numElements(key) orelse 0);
+    if (len > max_len) {
+        setArgError(out, "{s}: {s} has too many elements (got {d}, max {d}).", .{ filter_name, key, len, max_len });
+        return error.invalidArgument;
+    }
+}
+
+/// f64 for float T (validate before narrowing), T otherwise.
+fn ReadT(comptime T: type) type {
+    return if (@typeInfo(T) == .float) f64 else T;
+}
+
+/// Optional array argument (up to 3 values, the last one repeats; `default`
+/// when absent), each value checked with checkArg. Frees `nodes` on error.
 pub fn getArray(
     comptime T: type,
     default: T,
@@ -349,55 +441,52 @@ pub fn getArray(
     nodes: []const ?*vs.Node,
     zapi: *const ZAPI,
 ) ![3]T {
-    var err_msg: ?[:0]const u8 = null;
-    errdefer {
-        out.setError(err_msg.?);
-        for (nodes) |node| {
-            if (node) |n| zapi.freeNode(n);
-        }
-        allocator.free(err_msg.?);
-    }
+    errdefer for (nodes) |node| {
+        if (node) |n| zapi.freeNode(n);
+    };
 
+    const R = ReadT(T);
     var array: [3]T = undefined;
+    try checkArrayLen(in, key, 3, filter_name, out);
     const len = in.numElements(key) orelse 0;
-    if (len > 3) {
-        err_msg = allocator.printSentinel(
-            "{s}: {s} has too many elements (got {d}, max 3).",
-            .{ filter_name, key, len },
-            0,
-        ) catch return error.outOfMemory;
-        return error.invalidArgument;
-    }
     var i: u8 = 0;
     while (i < 3) : (i += 1) {
         if (i < len) {
-            array[i] = in.getValue2(T, key, i).?;
+            const v: R = in.getValue2(R, key, i).?;
+            try checkArg(R, v, min, max, filter_name, key, out);
+            array[i] = if (R == T) v else @floatCast(v);
         } else if (i == 0) {
+            try checkArg(T, default, min, max, filter_name, key, out);
             array[i] = default;
         } else {
             array[i] = array[i - 1];
         }
-
-        if (array[i] < min) {
-            err_msg = allocator.printSentinel(
-                "{s}: {s} value {d} is below minimum {d}.",
-                .{ filter_name, key, array[i], min },
-                0,
-            ) catch return error.outOfMemory;
-            return error.invalidArgument;
-        }
-
-        if (array[i] > max) {
-            err_msg = allocator.printSentinel(
-                "{s}: {s} value {d} is above maximum {d}.",
-                .{ filter_name, key, array[i], max },
-                0,
-            ) catch return error.outOfMemory;
-            return error.invalidArgument;
-        }
     }
 
     return array;
+}
+
+/// Optional scalar float argument (`default` when absent) checked with
+/// checkArg. Frees `nodes` on error.
+pub fn getFloat(
+    comptime T: type,
+    default: T,
+    min: T,
+    max: T,
+    comptime key: [:0]const u8,
+    comptime filter_name: [:0]const u8,
+    in: ZAPI.ZMap(?*const vs.Map),
+    out: ZAPI.ZMap(?*vs.Map),
+    nodes: []const ?*vs.Node,
+    zapi: *const ZAPI,
+) !T {
+    comptime std.debug.assert(@typeInfo(T) == .float);
+    errdefer for (nodes) |node| {
+        if (node) |n| zapi.freeNode(n);
+    };
+    const v: f64 = in.getValue(f64, key) orelse default;
+    try checkArg(f64, v, min, max, filter_name, key, out);
+    return @floatCast(v);
 }
 
 pub const Maps = struct {
@@ -417,6 +506,7 @@ pub const Maps = struct {
         const is_int = @typeInfo(T) == .int;
         const T2 = if (is_int) i64 else f64;
         const val: T2 = self.in.getValue(T2, key) orelse default;
+        try checkFinite(val, self.name, key, null, self.out);
         if (val < min or val > max) {
             self.out.setError2("{s}: parameter \"{s}={d}\" out of range [{d}..{d}].", .{ self.name, key, val, min, max });
             return error.ParameterOutOfRange;
@@ -434,6 +524,7 @@ pub const Maps = struct {
             var out: [3]f64 = undefined;
             for (0..3) |i| {
                 const val = a[@min(i, a.len - 1)];
+                try checkFinite(val, self.name, key, @min(i, a.len - 1), self.out);
                 if (val < min or val > max) {
                     self.out.setError2("{s}: parameter \"{s}[{d}]={d}\" out of range [{d}..{d}].", .{ self.name, key, i, val, min, max });
                     return error.ParameterOutOfRange;

@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const hz = @import("../helper.zig");
+const math = std.math;
 const vszip = @import("../vszip.zig");
 const filter = @import("../filters/adaptive_grain_mask.zig");
 
@@ -98,7 +99,7 @@ pub fn adaptiveGrainMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque
         d.shift = @intCast(if (bits > 8) bits - 8 else 0);
     }
 
-    d.luma_scaling = @floatCast(map_in.getValue(f64, "luma_scaling") orelse 10.0);
+    d.luma_scaling = hz.getFloat(f32, 10.0, -math.floatMax(f32), math.floatMax(f32), "luma_scaling", filter_name, map_in, map_out, &.{d.node}, &zapi) catch return;
 
     d.vi = in_vi.*;
     _ = zapi.queryVideoFormat(&d.vi.format, .Gray, in_vi.format.sampleType, @intCast(bits), 0, 0);

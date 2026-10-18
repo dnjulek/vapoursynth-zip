@@ -89,6 +89,45 @@ fn limiterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.AP
     allocator.destroy(d);
 }
 
+/// One bound array (`min` or `max`): one value per plane, every value finite.
+/// Integer clips truncate toward zero and must land in [0, peak]; float clips
+/// must lie in [-peak, peak] (peak = largest finite sample value) so narrowing
+/// cannot produce +-inf. Every check runs in f64 *before* any conversion.
+fn parseBounds(
+    comptime which: []const u8,
+    arr: []const f64,
+    num_planes: c_int,
+    int_clip: bool,
+    peak: f64,
+    out_int: *[3]u32,
+    out_float: *[3]f32,
+    map_out: anytype,
+) error{invalidArgument}!void {
+    if (arr.len != num_planes) {
+        map_out.setError(filter_name ++ ": " ++ which ++ " array must have the same number of elements as planes.");
+        return error.invalidArgument;
+    }
+
+    for (arr, 0..) |v, i| {
+        try hz.checkFinite(v, filter_name, which, i, map_out);
+        if (int_clip) {
+            const t = @trunc(v);
+            if (t < 0) {
+                map_out.setError(filter_name ++ ": " ++ which ++ " value must be greater than or equal to 0.");
+                return error.invalidArgument;
+            }
+            if (v > peak) {
+                map_out.setError(filter_name ++ ": " ++ which ++ " value must be less than or equal to peak value.");
+                return error.invalidArgument;
+            }
+            out_int[i] = @intFromFloat(t);
+        } else {
+            try hz.checkArg(f64, v, -peak, peak, filter_name, which, map_out);
+            out_float[i] = @floatCast(v);
+        }
+    }
+}
+
 pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
@@ -101,86 +140,36 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const max_in = map_in.getFloatArray("max");
 
     const num_planes = d.vi.format.numPlanes;
-    const peak = hz.getPeakValue(&d.vi.format, false, .FULL);
+    // Exact integer peak (2^32 - 1 is not representable in getPeakValue's f32);
+    // float clips use the largest finite value of their sample type as the
+    // bound limit, so the narrowed bound (f32, or f16 in LimiterRT) stays finite.
+    const bits: u6 = @intCast(d.vi.format.bitsPerSample);
+    const peak: f64 = if (d.vi.format.sampleType == .Integer)
+        @floatFromInt((@as(u64, 1) << bits) - 1)
+    else if (bits == 16)
+        math.floatMax(f16)
+    else
+        math.floatMax(f32);
 
     var planes: [3]bool = .{ true, true, true };
     const nodes = [_]?*vs.Node{d.node};
     hz.mapGetPlanes(map_in, map_out, &nodes, &planes, num_planes, filter_name, &zapi) catch return;
 
-    var has_min = false;
+    const int_clip = d.vi.format.sampleType == .Integer;
+    const has_min = min_in != null;
     if (min_in) |arr| {
-        has_min = true;
-        if (arr.len != num_planes) {
-            map_out.setError(filter_name ++ ": min array must have the same number of elements as planes.");
+        parseBounds("min", arr, num_planes, int_clip, peak, &d.min, &d.minf, map_out) catch {
             zapi.freeNode(d.node);
             return;
-        }
-
-        for (0..arr.len) |i| {
-            if (d.vi.format.sampleType == .Integer) {
-                const val: i64 = @trunc(arr[i]);
-
-                if (val < 0) {
-                    map_out.setError(filter_name ++ ": min value must be greater than or equal to 0.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                if (arr[i] > peak) {
-                    map_out.setError(filter_name ++ ": min value must be less than or equal to peak value.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                d.min[i] = @intCast(val);
-            } else {
-                if (math.isNan(arr[i])) {
-                    map_out.setError(filter_name ++ ": min value must not be NaN.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                d.minf[i] = @floatCast(arr[i]);
-            }
-        }
+        };
     }
 
-    var has_max = false;
+    const has_max = max_in != null;
     if (max_in) |arr| {
-        has_max = true;
-        if (arr.len != num_planes) {
-            map_out.setError(filter_name ++ ": max array must have the same number of elements as planes.");
+        parseBounds("max", arr, num_planes, int_clip, peak, &d.max, &d.maxf, map_out) catch {
             zapi.freeNode(d.node);
             return;
-        }
-
-        for (0..arr.len) |i| {
-            if (d.vi.format.sampleType == .Integer) {
-                const val: i64 = @trunc(arr[i]);
-
-                if (arr[i] > peak) {
-                    map_out.setError(filter_name ++ ": max value must be less than or equal to peak value.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                if (val < 0) {
-                    map_out.setError(filter_name ++ ": max value must be greater than or equal to 0.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                d.max[i] = @intCast(val);
-            } else {
-                if (math.isNan(arr[i])) {
-                    map_out.setError(filter_name ++ ": max value must not be NaN.");
-                    zapi.freeNode(d.node);
-                    return;
-                }
-
-                d.maxf[i] = @floatCast(arr[i]);
-            }
-        }
+        };
     }
 
     if (has_min and !has_max) {
