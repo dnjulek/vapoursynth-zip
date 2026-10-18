@@ -3,7 +3,7 @@
 This is the project standard for adding or substantially changing a filter.
 The goal is not merely high line coverage: tests must let us optimize hot code
 aggressively while detecting wrong pixels, unsafe inputs, SIMD tail bugs,
-scheduling errors, and Debug/ReleaseFast differences.
+scheduling errors, and debug/fast build differences.
 
 ## Definition of done
 
@@ -18,7 +18,7 @@ A new filter is test-ready when its tests cover:
 - important algorithm branches and exact boundary values;
 - multiple frames and non-sequential/concurrent requests when state or frame
   scheduling is involved;
-- Debug and ReleaseFast builds;
+- `debug` and `fast` builds;
 - sanitizer, subprocess, or equivalent isolation for any call that could panic,
   abort, hang, or access invalid memory;
 - a benchmark outside pytest when performance is part of the filter's purpose.
@@ -74,7 +74,7 @@ new branch or risk.
 | Frames | first, middle, last; more than one frame for temporal filters |
 | Values | min, max, neutral, threshold just below/equal/above |
 | Arguments | omitted default, each branch value, valid extremes |
-| Build | Debug and ReleaseFast; baseline CPU where supported |
+| Build | `debug` and `fast`; baseline CPU where supported |
 
 Use `make_clip` for representative image data. Use `std.BlankClip`, tiny files,
 or generated patterns for exact edge values. Random input is useful only with a
@@ -203,7 +203,7 @@ an unstripped CI build.
 
 ### Cross-build differential tests
 
-Run the same deterministic cases against Debug, ReleaseFast, and relevant CPU
+Run the same deterministic cases against `debug`, `fast`, and relevant CPU
 targets. Exact integer output should normally hash identically. Float output
 must use a filter-specific tolerance justified by numerical analysis, not a
 suite-wide guess.
@@ -341,13 +341,13 @@ explain why the case exists and what regression it catches.
 Run focused tests while developing, then both complete build modes:
 
 ```sh
-zig build -Doptimize=Debug -Dcpu=x86_64_v3
+zig build -Doptimize=debug -Dcpu=x86_64_v3
 pytest -q tests/test_new_filter.py
 
-zig build -Doptimize=Debug -Dcpu=x86_64_v3
+zig build -Doptimize=debug -Dcpu=x86_64_v3
 pytest -q
 
-zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3
+zig build -Doptimize=fast -Dcpu=x86_64_v3
 pytest -q
 ```
 

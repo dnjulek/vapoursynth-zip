@@ -7,8 +7,13 @@ on:
   pull_request:
 
 jobs:
-  Linux-Test:
-    runs-on: ubuntu-latest
+  Test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        optimize: [debug, fast]
+    runs-on: ${{ matrix.os }}
 
     steps:
     - name: Checkout code
@@ -23,29 +28,11 @@ jobs:
         version: 0.17.0
         use-cache: false
 
-    - name: build plugin
-      run: zig build -Doptimize=debug -Dcpu=x86_64_v3
+    - name: Build plugin (${{ matrix.optimize }})
+      run: zig build -Doptimize=${{ matrix.optimize }} -Dcpu=x86_64_v3
 
-    - name: Run test
-      run: pytest -v
-
-  Windows-Test:
-    runs-on: windows-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install VapourSynth
-      run: pip install VapourSynth pytest numpy
-
-    - uses: mlugg/setup-zig@v2
-      with:
-        version: 0.17.0
-        use-cache: false
-
-    - name: build plugin
-      run: zig build -Doptimize=debug -Dcpu=x86_64_v3
-
-    - name: Run test
+    - name: Run tests
+      # the hostile-input matrix recovers from hangs with 60 s child timeouts;
+      # bound the whole step well below GitHub's 6 h job default
+      timeout-minutes: 30
       run: pytest -v

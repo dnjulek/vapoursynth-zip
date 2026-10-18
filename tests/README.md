@@ -22,8 +22,8 @@ Run the suite against **both** build modes before trusting a change; tolerances
 are wide enough that both stay green:
 
 ```sh
-zig build -Doptimize=Debug         && pytest -v
-zig build -Doptimize=ReleaseFast   && pytest -v
+zig build -Doptimize=debug   && pytest -v
+zig build -Doptimize=fast    && pytest -v
 ```
 
 ---
@@ -50,7 +50,7 @@ used by a module that had skipped tests in the run are exempt.
 
 - **Build before testing.** The suite tests `zig-out/`, not the source — rebuild
   after any Zig change.
-- **Debug vs ReleaseFast.** Both must stay green. If a filter ever needs a wider
+- **debug vs fast.** Both must stay green. If a filter ever needs a wider
   tolerance, widen only that filter and note why.
 - **Golden tolerance** defaults to `rel=1e-6`. Direct oracle tests should be
   bit-exact where the algorithm permits it; otherwise use the narrowest

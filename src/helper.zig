@@ -348,7 +348,7 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
 // Every public float argument must be finite before it is range-checked or
 // used: NaN compares false against both bounds of a `v < min or v > max`
 // check, so plain range checks accept it, and +-inf / huge values later
-// overflow float->int conversions (Debug panic, ReleaseFast UB). Float values
+// overflow float->int conversions (panic in debug builds, UB in fast builds). Float values
 // are therefore read and validated as f64 and only narrowed afterwards.
 //
 // Narrowing: getArray/getFloat return T only after checking [min, max], so

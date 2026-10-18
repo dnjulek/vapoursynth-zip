@@ -17,7 +17,7 @@ and a fresh child continues after it.
 Contract (enforced in Create by src/helper.zig checkFinite / checkArg /
 checkArrayLen / getArray / getFloat / Maps):
 
-- no case may crash or hang, in Debug or ReleaseFast;
+- no case may crash or hang, in debug or fast builds;
 - ``nonfinite`` and ``overlong`` cases are rejected with a catchable vs.Error;
 - an ``extreme`` value is either rejected by a range check, or accepted and
   then the output frame must contain only finite samples (a finite argument
