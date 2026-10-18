@@ -234,3 +234,5 @@ def test_thr_one_no_counter_overflow(core, fmt):
     pmax = props(src.vszip.PlaneMinMax(maxthr=1.0))["psmMax"]
     if fmt == vs.GRAY16:
         assert pmin == 65535 and pmax == 0
+    else:
+        assert pmin == 1.0 and pmax == 0.0

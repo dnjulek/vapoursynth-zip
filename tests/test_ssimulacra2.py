@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 import vapoursynth as vs
 
@@ -97,6 +99,22 @@ def test_output_clip_is_rgbs(src16):
     out = vs.core.vszip.SSIMULACRA2(src16, src16)
     assert out.format.id == vs.RGBS
     assert (out.width, out.height) == (src16.width, src16.height)
+
+
+def test_concurrent_requests_match_sequential(temporal_rgb):
+    """Guard the filter's fmParallel contract with real concurrent requests."""
+    ref = temporal_rgb.resize.Bicubic(format=vs.YUV420P16, matrix=1)
+    distorted = ref.std.BoxBlur(hradius=2, vradius=2)
+    sequential = vs.core.vszip.SSIMULACRA2(ref, distorted)
+    concurrent = vs.core.vszip.SSIMULACRA2(ref, distorted)
+    expected = [props(sequential, n)["SSIMULACRA2"] for n in range(ref.num_frames)]
+
+    def get_score(n):
+        return props(concurrent, n)["SSIMULACRA2"]
+
+    with ThreadPoolExecutor(max_workers=ref.num_frames) as pool:
+        actual = list(pool.map(get_score, reversed(range(ref.num_frames))))
+    assert actual == pytest.approx(list(reversed(expected)), rel=1e-12)
 
 
 def test_dimension_error(core):

@@ -2,7 +2,7 @@ import pytest
 import vapoursynth as vs
 
 from golden import Case, grid, sweep
-from helpers import max_abs_diff, props, write_png
+from helpers import assert_same_clip, max_abs_diff, props, write_png
 
 # Reference implementation: kageru's Rust adaptivegrain plugin (`adg.Mask`),
 # installed in the venv. Integer output must be bit-exact with it; float within
@@ -112,13 +112,20 @@ def test_props_passthrough(make_clip):
     ("fmt", "msg"),
     [
         (vs.GRAYH, "half precision float input is not supported"),
-        (vs.RGB24, "not supported"),  # RGB has no luma; DataType.select still
-        # accepts it (int) — see explicit family check below if this changes
     ],
 )
 def test_validation_errors(make_clip, fmt, msg):
-    if fmt == vs.RGB24:
-        pytest.skip("RGB accepted like the Rust original (plane 0 used as luma)")
     src = make_clip(fmt)
     with pytest.raises(vs.Error, match=msg):
         src.vszip.AdaptiveGrainMask()
+
+
+def test_rgb_uses_plane_zero(make_clip, core):
+    """RGB is intentionally accepted and interpreted like the Rust plugin:
+    plane 0 is the luma-like input and the result is a one-plane mask."""
+    rgb = make_clip(vs.RGB24)
+    plane0 = core.std.ShufflePlanes(rgb, planes=0, colorfamily=vs.GRAY)
+    got = rgb.vszip.AdaptiveGrainMask()
+    expected = plane0.vszip.AdaptiveGrainMask()
+    assert got.format.id == vs.GRAY8
+    assert_same_clip(got, expected)

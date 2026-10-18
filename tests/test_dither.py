@@ -2,7 +2,7 @@ import pytest
 import vapoursynth as vs
 
 from golden import Case, grid, sweep
-from helpers import max_abs_diff, props
+from helpers import assert_same_clip, max_abs_diff, max_abs_diff_all_planes, props
 
 # Reference implementation: fmtconv's fmtc.bitdepth (C++). The fmtc dither modes
 # must be bit-exact with it (the full sweep at port time was 1426/1426 exact).
@@ -79,7 +79,7 @@ def test_identity_noop(make_clip, fmt, mode):
     st = 1 if src.format.sample_type == vs.FLOAT else 0
     out = src.vszip.Dither(bitdepth=bits, sample_type=st, dither_type=mode)
     assert out.format.id == src.format.id
-    assert max_abs_diff(src, out) == 0
+    assert_same_clip(src, out)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ def test_zimg_parity(make_clip, core, fmt, mode, geometry):
     ref = src.resize.Point(format=out_fmt.id, dither_type=ZIMG_DT[mode])
     got = src.vszip.Dither(bitdepth=8, dither_type=mode)
     assert got.format.id == ref.format.id
-    assert max_abs_diff(ref, got) == 0
+    assert max_abs_diff_all_planes(ref, got) == 0
 
 
 @pytest.mark.parametrize(
@@ -117,7 +117,8 @@ def test_zimg_parity(make_clip, core, fmt, mode, geometry):
 )
 def test_zimg_parity_upconv_and_f16(make_clip, core, fmt):
     """Non-dithered zimg paths: limited->limited upconvert is a pure shift, and
-    int->f16 is a pure convert — both bit-exact with resize regardless of mode."""
+    int->f16 is a pure convert. Gray/RGB are bit-exact with resize; YUV chroma
+    range math can differ by one representable half-float step."""
     src = make_clip(fmt)
     # upconvert 16->... no; use an 8-bit source shifted up
     hf = core.query_video_format(src.format.color_family, vs.FLOAT, 16, src.format.subsampling_w, src.format.subsampling_h)
@@ -128,7 +129,9 @@ def test_zimg_parity_upconv_and_f16(make_clip, core, fmt):
         assert got.format.id == ref.format.id
         # PlaneStats has no f16 support; widen both to f32 (lossless, identical
         # for both) before comparing.
-        assert max_abs_diff(ref.resize.Point(format=f32.id), got.resize.Point(format=f32.id)) == 0
+        error = max_abs_diff_all_planes(ref.resize.Point(format=f32.id), got.resize.Point(format=f32.id))
+        tolerance = 2 ** -12 if src.format.color_family == vs.YUV else 0.0
+        assert error <= tolerance
 
 
 def test_output_formats(make_clip):
@@ -216,7 +219,7 @@ def test_fmtc_parity_modes(make_clip, fmt, bits, mode):
     ref = src.fmtc.bitdepth(bits=bits, dmode=FMTC_DMODE[mode])
     got = src.vszip.Dither(bitdepth=bits, dither_type=mode)
     assert got.format.id == ref.format.id
-    assert max_abs_diff(ref, got) == 0
+    assert max_abs_diff_all_planes(ref, got) == 0
 
 
 @pytest.mark.skipif(not HAS_FMTC, reason="fmtconv plugin not available")
@@ -247,7 +250,7 @@ def test_round_mode_picks_fastest(make_clip, core):
     # limited int->int reduction -> fmtc round (fast integer kernel)
     for fmt, bits in ((vs.GRAY16, 8), (vs.YUV420P10, 8), (vs.GRAY16, 10)):
         src = make_clip(fmt)
-        assert max_abs_diff(
+        assert max_abs_diff_all_planes(
             src.vszip.Dither(bitdepth=bits, dither_type=0), src.fmtc.bitdepth(bits=bits, dmode=1)
         ) == 0
     # float source & full-range int -> zimg 'none' (fast FMA float kernel)
@@ -256,7 +259,7 @@ def test_round_mode_picks_fastest(make_clip, core):
         of = core.query_video_format(
             src.format.color_family, vs.INTEGER, 8, src.format.subsampling_w, src.format.subsampling_h
         )
-        assert max_abs_diff(
+        assert max_abs_diff_all_planes(
             src.vszip.Dither(bitdepth=8, dither_type=0), src.resize.Point(format=of.id, dither_type="none")
         ) == 0
 
@@ -269,7 +272,7 @@ def test_fmtc_parity_float_out(make_clip, fmt):
     ref = src.fmtc.bitdepth(bits=32, flt=1)
     got = src.vszip.Dither(bitdepth=32)
     assert got.format.id == ref.format.id
-    assert max_abs_diff(ref, got) == 0
+    assert max_abs_diff_all_planes(ref, got) == 0
 
 
 @pytest.mark.skipif(not HAS_FMTC, reason="fmtconv plugin not available")

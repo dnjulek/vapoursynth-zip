@@ -1,6 +1,8 @@
 # vszip test suite
 
-AI generated pytest tests.
+The suite combines independent oracles, invariants, external references, and
+golden regression snapshots. See [TESTING_GUIDE.md](TESTING_GUIDE.md) before
+adding a filter or changing an optimized kernel.
 
 ---
 
@@ -20,8 +22,8 @@ Run the suite against **both** build modes before trusting a change; tolerances
 are wide enough that both stay green:
 
 ```sh
-zig build                          && pytest -v
-zig build -Doptimize=fast          && pytest -v
+zig build -Doptimize=Debug         && pytest -v
+zig build -Doptimize=ReleaseFast   && pytest -v
 ```
 
 ---
@@ -43,11 +45,11 @@ git diff tests/goldens/      # ALWAYS review the result
 
 - **Build before testing.** The suite tests `zig-out/`, not the source — rebuild
   after any Zig change.
-- **debug vs fast.** Both must stay green. If a filter ever needs a wider
+- **Debug vs ReleaseFast.** Both must stay green. If a filter ever needs a wider
   tolerance, widen only that filter and note why.
-- **Tolerance** is `rel=1e-6` for every format (f16 included — its output is
-  deterministic enough across debug/fast that no looser bound is needed). A
-  filter that genuinely needs a wider bound can pass `rel=` to `golden.check`.
+- **Golden tolerance** defaults to `rel=1e-6`. Direct oracle tests should be
+  bit-exact where the algorithm permits it; otherwise use the narrowest
+  format-specific tolerance and document its numerical reason.
 - **Sensitivity check** when adding goldens: tweak one stored value by ~1% and
   confirm the matching test fails, then revert.
 - The golden harness asserts basic invariants on every check (stats finite,

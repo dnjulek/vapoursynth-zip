@@ -144,7 +144,7 @@ def test_keep_tv_range_no_effect_on_float(core, fmt):
     src = core.std.BlankClip(None, 64, 32, fmt, length=1, color=color)
     on = src.vszip.Deband(thr=48, grain=64, seed=7, keep_tv_range=True)
     off = src.vszip.Deband(thr=48, grain=64, seed=7, keep_tv_range=False)
-    assert diff(on, off) == 0.0
+    assert_same_clip(on, off)
 
 
 def test_float_clamped_to_full_range(core):

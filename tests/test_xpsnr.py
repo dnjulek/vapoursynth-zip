@@ -116,8 +116,8 @@ def test_golden_cases(golden, make_temporal_clip, case):
     # verbose=False keeps the free-time stdout summary out of the test log; it
     # does not affect frame props.
     out = vs.core.vszip.XPSNR(ref, dist, verbose=False, **case.args)
-    # Request frames strictly in order: the temporal path carries inter-frame
-    # state, so out-of-order requests would change the scores.
+    # Stable iteration makes golden diffs readable. A separate scheduling test
+    # below proves that request order does not change temporal scores.
     rel = 1e-6
     for n in range(out.num_frames):
         p = props(out, n)
@@ -165,7 +165,7 @@ def test_golden_extended(golden, label, w, h, fmt, fps, temporal):
     dist = _distort(ref, "box2")
     out = vs.core.vszip.XPSNR(ref, dist, temporal=temporal, verbose=False)
     key = f"ext|{label}|{w}x{h}|{fmt_name(fmt)}|fps{fps}|t{int(temporal)}"
-    # request in order: the temporal path carries inter-frame state
+    # Stable iteration makes golden diffs readable.
     for n in range(out.num_frames):
         p = props(out, n)
         golden.check_value(
@@ -214,9 +214,21 @@ def pair(temporal_rgb):
 
 
 def ordered_props(clip: vs.VideoNode) -> list[dict]:
-    """Request frames strictly in order: the temporal path keeps inter-frame
-    state, so out-of-order requests change the scores."""
+    """Collect frame properties in display order for readable assertions."""
     return [props(clip, n) for n in range(clip.num_frames)]
+
+
+def test_temporal_scores_are_request_order_independent(pair):
+    """Parallel filters must derive temporal data from frame numbers, not from
+    mutable request history: VapourSynth is free to request frames out of order."""
+    yuv, dist = pair
+    sequential = vs.core.vszip.XPSNR(yuv, dist, temporal=True, verbose=False)
+    shuffled = vs.core.vszip.XPSNR(yuv, dist, temporal=True, verbose=False)
+    keys = ("XPSNR_Y", "XPSNR_U", "XPSNR_V")
+    expected = {n: tuple(props(sequential, n)[key] for key in keys) for n in range(sequential.num_frames)}
+    for n in (2, 0, 1):
+        actual = tuple(props(shuffled, n)[key] for key in keys)
+        assert actual == pytest.approx(expected[n], rel=1e-12), f"frame {n} changed with request order"
 
 
 def test_identical_clips_are_inf(pair):

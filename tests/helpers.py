@@ -13,8 +13,12 @@ import vapoursynth as vs
 
 
 def props(clip: vs.VideoNode, n: int = 0) -> dict:
+    # VapourSynth R77 exposes the deprecated _ColorRange as an alias of
+    # _Range: it shows up in keys() and reading it raises a
+    # DeprecationWarning. It can't be removed separately (RemoveFrameProps on
+    # either name deletes both), so skip the alias while reading.
     with clip.get_frame(n) as f:
-        return dict(f.props)
+        return {k: f.props[k] for k in f.props.keys() if k != "_ColorRange"}
 
 
 def pix(clip: vs.VideoNode, x: int, y: int, plane: int = 0, n: int = 0):
@@ -39,6 +43,18 @@ def max_abs_diff(a: vs.VideoNode, b: vs.VideoNode, plane: int = 0, n: int = 0) -
     std.Expr has no half-float support, so don't call this on F16 clips."""
     d = vs.core.std.Expr([a, b], "x y - abs")
     return plane_stats(d, plane=plane, n=n)["PlaneStatsMax"]
+
+
+def max_abs_diff_all_planes(a: vs.VideoNode, b: vs.VideoNode, n: int = 0) -> float:
+    """Largest absolute pixel difference across every plane of one frame.
+
+    This is deliberately separate from :func:`max_abs_diff`: callers that are
+    testing one plane should have to say so, while whole-clip parity tests must
+    not accidentally validate luma/red only.
+    """
+    assert a.format.id == b.format.id, f"format mismatch: {a.format.name} != {b.format.name}"
+    assert (a.width, a.height) == (b.width, b.height), "dimension mismatch"
+    return max(max_abs_diff(a, b, plane=plane, n=n) for plane in range(a.format.num_planes))
 
 
 # --- clip assertions --------------------------------------------------------
