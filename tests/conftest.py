@@ -30,10 +30,61 @@ def pytest_configure(config):
     config._golden_store = GoldenStore(config.getoption("--update-goldens"))
 
 
+def pytest_runtest_logreport(report):
+    # module file names that had at least one skipped test (stale-golden
+    # detection must not blame keys those tests would have checked)
+    if report.skipped:
+        mod = Path(report.nodeid.split("::", 1)[0]).name
+        _SKIPPED_MODULES.add(mod)
+
+
+_SKIPPED_MODULES: set[str] = set()
+_DESELECTED = [False]
+
+
+def pytest_deselected(items):
+    if items:
+        _DESELECTED[0] = True
+
+
+def _is_full_run(config) -> bool:
+    """No -k/-m/--lf deselection and no narrower path or node-id arguments."""
+    if config.option.keyword or config.option.markexpr or _DESELECTED[0]:
+        return False
+    tests_dir = Path(__file__).resolve().parent
+    for arg in config.args:
+        if "::" in arg:
+            return False
+        p = Path(arg)
+        p = (p if p.is_absolute() else Path(config.invocation_params.dir) / p).resolve()
+        if p not in (tests_dir, tests_dir.parent):
+            return False
+    return True
+
+
 def pytest_sessionfinish(session, exitstatus):
     store = getattr(session.config, "_golden_store", None)
-    if store is not None:
-        store.save()
+    if store is None:
+        return
+    if exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED) and _is_full_run(session.config):
+        stale = store.stale(_SKIPPED_MODULES)
+        if stale and store.update:
+            store.prune(stale)
+        elif stale:
+            tr = session.config.pluginmanager.get_plugin("terminalreporter")
+            lines = ["stale golden data (run a full `pytest --update-goldens` to prune):"]
+            for name, keys in stale.items():
+                if keys is None:
+                    lines.append(f"  goldens/{name}.json: no test module refers to it")
+                else:
+                    shown = ", ".join(keys[:5]) + (f", ... (+{len(keys) - 5})" if len(keys) > 5 else "")
+                    lines.append(f"  goldens/{name}.json: {len(keys)} unchecked key(s): {shown}")
+            if tr is not None:
+                tr.write_line("")
+                for line in lines:
+                    tr.write_line(line, red=True)
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    store.save()
 
 
 @pytest.fixture(scope="session")

@@ -165,3 +165,33 @@ def test_clip_limit_too_big_errors(core):
     big = core.std.BlankClip(None, 1920, 1088, vs.GRAY16, length=1, color=30000)
     with pytest.raises(vs.Error, match="limit too large"):
         big.vszip.CLAHE(limit=4_000_000_000, tiles=[3])
+
+
+NONDIV_GRIDS = [
+    (vs.GRAY8, 100, 70, [3, 3]),
+    (vs.GRAY8, 101, 67, [7, 9]),
+    (vs.GRAY8, 65, 33, [64, 32]),  # 1-pixel tiles plus a 1-pixel remainder
+    (vs.GRAY16, 99, 61, [8, 8]),
+    (vs.GRAY16, 127, 63, [11, 13]),
+    (vs.YUV420P8, 102, 70, [5, 7]),
+    (vs.YUV444P16, 77, 41, [6, 4]),
+]
+
+
+@pytest.mark.parametrize(("fmt", "w", "h", "tiles"), NONDIV_GRIDS, ids=lambda v: str(v))
+def test_tiles_not_dividing_frame(core, src_rgb, fmt, w, h, tiles):
+    """Tile grids that leave right/bottom remainder strips (formerly an
+    out-of-bounds read). Constant input must map to one constant everywhere,
+    remainder strips included, and real content must run and be deterministic."""
+    fobj = core.get_video_format(fmt)
+    peak = (1 << fobj.bits_per_sample) - 1
+    flat = core.std.BlankClip(None, w, h, fmt, length=1, color=[peak // 3] * fobj.num_planes)
+    out = flat.vszip.CLAHE(limit=5, tiles=tiles)
+    for p in range(fobj.num_planes):
+        s = plane_stats(out, plane=p)
+        assert s["PlaneStatsMin"] == s["PlaneStatsMax"], f"plane {p} not constant: {s}"
+
+    real = src_rgb.std.CropAbs(width=w, height=h, left=300, top=200).resize.Bilinear(format=fmt, matrix=1)
+    a = real.vszip.CLAHE(limit=5, tiles=tiles)
+    b = real.vszip.CLAHE(limit=5, tiles=tiles)
+    assert_same_clip(a, b)

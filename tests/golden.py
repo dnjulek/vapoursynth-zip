@@ -6,13 +6,17 @@ id. `pytest --update-goldens` regenerates the JSON from the current build;
 normal runs compare against it. Review `git diff tests/goldens/` after every
 regeneration: goldens lock in *current* behavior, they don't prove it correct.
 
-Partial runs with -k merge into the existing JSON; removing cases leaves stale
-keys behind, so delete the file and do a full `pytest --update-goldens` when
-renaming or dropping cases.
+Partial runs (-k, -m, node ids, --lf) merge into the existing JSON. A *full*
+run additionally checks for stale data: a stored key that no test checked, or
+a golden file no test module refers to, fails the session; a full
+`pytest --update-goldens` prunes them instead. Golden files used by a module
+that had skipped tests in the run are exempt (their keys may simply not have
+been reached).
 """
 
 import json
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -20,7 +24,8 @@ import vapoursynth as vs
 
 from helpers import plane_stats
 
-GOLDENS_DIR = Path(__file__).resolve().parent / "goldens"
+TESTS_DIR = Path(__file__).resolve().parent
+GOLDENS_DIR = TESTS_DIR / "goldens"
 
 
 def fmt_name(fmt: int) -> str:
@@ -160,6 +165,7 @@ class GoldenStore:
         self.update = update
         self._data: dict[str, dict] = {}
         self._dirty: set[str] = set()
+        self._seen: dict[str, set[str]] = {}
 
     def _file(self, name: str) -> Path:
         return GOLDENS_DIR / f"{name}.json"
@@ -174,6 +180,7 @@ class GoldenStore:
         """Compare (or record, with --update-goldens) an arbitrary
         JSON-serializable value: number, list, or dict of numbers."""
         key = str(key)
+        self._seen.setdefault(filter_name, set()).add(key)
         value = _jsonable(value)
         data = self._get(filter_name)
         if self.update:
@@ -189,6 +196,44 @@ class GoldenStore:
         if rel is None:
             rel = 1e-6
         self.check_value(filter_name, case, golden_stats(clip, n), rel=rel)
+
+    def stale(self, skipped_modules: set[str]) -> dict[str, list[str] | None]:
+        """Golden data a full run did not use: {file name: stale keys}, or
+        {file name: None} for a file no test module refers to at all.
+
+        Which modules use a file is found statically (a quoted
+        `"<name>"` literal in a tests/test_*.py file), so a module that was
+        skipped entirely still protects its goldens."""
+        users: dict[str, set[str]] = {}
+        sources = {f.name: f.read_text(encoding="utf-8") for f in TESTS_DIR.glob("test_*.py")}
+        out: dict[str, list[str] | None] = {}
+        for f in sorted(GOLDENS_DIR.glob("*.json")):
+            name = f.stem
+            pat = re.compile(r"[\"']" + re.escape(name) + r"[\"']")
+            users[name] = {mod for mod, text in sources.items() if pat.search(text)}
+            if not users[name]:
+                out[name] = None
+                continue
+            if users[name] & skipped_modules:
+                continue
+            keys = set(self._get(name))
+            unseen = sorted(keys - self._seen.get(name, set()))
+            if unseen:
+                out[name] = unseen
+        return out
+
+    def prune(self, stale: dict[str, list[str] | None]) -> None:
+        """--update-goldens on a full run: drop stale keys / orphan files."""
+        for name, keys in stale.items():
+            if keys is None:
+                self._file(name).unlink()
+                self._data.pop(name, None)
+                self._dirty.discard(name)
+                continue
+            data = self._get(name)
+            for k in keys:
+                data.pop(k, None)
+            self._dirty.add(name)
 
     def save(self) -> None:
         if not self._dirty:

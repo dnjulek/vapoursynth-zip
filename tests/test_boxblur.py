@@ -4,23 +4,24 @@ import vapoursynth as vs
 from golden import Case, grid, sweep
 from helpers import assert_same_clip, avg, diff, max_abs_diff, repack
 
-# Snapshot-golden cases. Axis-sweep around a small symmetric base radius that
-# stays on the comptime path (hradius == vradius, 1..22, single pass) and is
-# safe on the tiny 12x6 geometry. The args axis (run on the full-size base
-# clip) crosses into the runtime path: large radii (>22), hradius != vradius,
-# and multi-pass blurs. The geometry axis only re-runs the base radius, so it
-# never hits the runtime out-of-bounds that radius >= dimension would trigger.
+# Snapshot-golden cases. Kernel selection (boxBlurCreate): only FLOAT clips with
+# hradius == vradius in 1..8, a single pass each way and both directions active
+# take the comptime-radius kernels; every integer clip, larger or asymmetric
+# radii, multi-pass and h-only/v-only blurs take the runtime running-sum
+# kernels. The base radius 2 is safe on the tiny 12x6 geometry; the args axis
+# (full-size base clip) crosses every selection boundary, and the geometry axis
+# only re-runs the base radius.
 CASES = (
     sweep(
         base_fmt=vs.GRAY16,
         base_args=dict(hradius=2, vradius=2),
         formats=[vs.GRAY8, vs.GRAY16, vs.GRAYH, vs.GRAYS, vs.YUV420P8, vs.YUV420P16, vs.RGBS],
         args=[
-            # comptime path: radii straddling the 1..22 split point
+            # float: comptime for r <= 8, runtime above (int: runtime always)
             dict(hradius=1, vradius=1),
             dict(hradius=8, vradius=8),
             dict(hradius=22, vradius=22),
-            # runtime path: radius > 22 forces it even when symmetric
+            # runtime path for every format
             dict(hradius=23, vradius=23),
             dict(hradius=40, vradius=40),
             # runtime path via asymmetric radii (hradius != vradius)
@@ -70,7 +71,8 @@ def test_golden(to_gray, fmt, args, expected):
 
 
 @pytest.mark.parametrize("fmt", [vs.GRAY8, vs.GRAY16, vs.GRAYS])
-@pytest.mark.parametrize("radius", [1, 8, 22, 23, 40])  # 1..22 comptime path, 23+ runtime path
+# float: r1/r8 comptime kernels, r9+ runtime; integer: runtime at every radius
+@pytest.mark.parametrize("radius", [1, 8, 9, 22, 23, 40])
 def test_matches_std_boxblur(to_gray, fmt, radius):
     """Interior pixels match std.BoxBlur; borders are excluded because the two
     plugins use different edge-mirroring policies."""
@@ -152,7 +154,7 @@ def test_planes(to_yuv):
 
 
 @pytest.mark.parametrize("fmt", [vs.GRAY8, vs.GRAY16, vs.GRAYS])
-@pytest.mark.parametrize("radius", [10, 30])  # comptime and runtime paths
+@pytest.mark.parametrize("radius", [4, 30])  # float: comptime (4) and runtime (30); int: runtime
 def test_stride_handling(to_gray, fmt, radius):
     cropped = to_gray(fmt).std.Crop(left=27)  # odd width + offset plane pointer
     a = cropped.vszip.BoxBlur(hradius=radius, vradius=radius)

@@ -227,6 +227,12 @@ For every public parameter, test:
 check written only as two comparisons therefore accepts it. Validate finiteness
 explicitly in production code.
 
+`test_nonfinite.py` already drives every float parameter with NaN/+-inf in
+child processes. Its `MANIFEST` is checked against the plugin's live
+signatures, so a new float parameter fails the suite until it is added there.
+Known violations sit in its strict known-bug sets; fixing one fails the run
+until the entry is removed.
+
 If a case may crash, abort, hang, or corrupt the pytest process, isolate it:
 
 ```python
@@ -353,7 +359,7 @@ Before committing:
 
 - inspect `pytest --collect-only -q` for unexpected missing tests;
 - check skip and xfail reasons;
-- make sure every golden file has a caller and every filter has a test module;
+- make sure every filter has a test module (a full run fails on orphaned golden files and unchecked golden keys);
 - review golden diffs rather than accepting them mechanically;
 - run the new test once against a deliberately broken implementation or
   perturbed oracle/golden to prove it can fail;

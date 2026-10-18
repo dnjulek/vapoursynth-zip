@@ -20,8 +20,9 @@ Role mapping (XPSNR's perceptual weight is asymmetric): vszip node1
 ("distorted") == FFmpeg input #1. So `vszip.XPSNR(ref, dist)` corresponds to
 `ffmpeg -i ref -i dist -lavfi xpsnr`.
 
-These tests are skipped automatically where ffmpeg (with the xpsnr filter) or
-the test image is unavailable. The non-ffmpeg regression tests at the bottom
+The whole module is opt-in (VSZIP_FFMPEG_ORACLE=1, see `pytestmark` below)
+and is additionally skipped where ffmpeg (with the xpsnr filter) or the test
+image is unavailable. Non-FFmpeg XPSNR regressions live in test_xpsnr.py and
 always run.
 """
 import math

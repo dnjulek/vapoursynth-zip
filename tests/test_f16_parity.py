@@ -117,7 +117,7 @@ def test_f16_parity_bilateral_ref(make_clip, f16_fmt):
 
 @pytest.mark.parametrize("f16_fmt", [vs.GRAYH, vs.YUV420PH, vs.RGBH])
 def test_f16_parity_boxblur_comptime(make_clip, f16_fmt):
-    # Symmetric radius 3, single pass, hradius==vradius<=22 -> BoxBlurCT path.
+    # Symmetric radius 3, single pass, float, hradius==vradius<=8 -> BoxBlurCT path.
     # Both f16 and f32 share byte-identical input, so any divergence is the
     # filter's f16 accumulation, not input quantization.
     f16, f32 = pair(make_clip, f16_fmt)
@@ -130,7 +130,7 @@ def test_f16_parity_boxblur_comptime(make_clip, f16_fmt):
 @pytest.mark.parametrize("f16_fmt", [vs.GRAYH, vs.YUV420PH, vs.RGBH])
 def test_f16_parity_boxblur_runtime(make_clip, f16_fmt):
     # hradius != vradius and multi-pass forces the BoxBlurRT path
-    # (use_rt = hradius!=vradius or hradius>22 or hpasses>1 or vpasses>1).
+    # (float: use_rt = hradius!=vradius or hradius>8 or hpasses>1 or vpasses>1).
     # Multi-pass re-blurs an already-blurred plane, so the f16 rounding error
     # compounds; this is the case most likely to expose divergence.
     f16, f32 = pair(make_clip, f16_fmt)
@@ -144,8 +144,9 @@ def test_f16_parity_boxblur_runtime(make_clip, f16_fmt):
 
 @pytest.mark.parametrize("f16_fmt", [vs.GRAYH, vs.YUV420PH, vs.RGBH])
 def test_f16_parity_boxblur_large_radius(make_clip, f16_fmt):
-    # Large symmetric radius (>22) also takes the runtime path and sums many
-    # samples into one f16 accumulator -- the widest exposure of f16 rounding.
+    # Large symmetric radius (>8) also takes the runtime path. The running sum
+    # accumulates in f32 and is rounded to f16 per output sample, so a long
+    # window is where f16 storage rounding is most exposed.
     f16, f32 = pair(make_clip, f16_fmt)
     out16 = f16.vszip.BoxBlur(hradius=30, vradius=30)
     out32 = f32.vszip.BoxBlur(hradius=30, vradius=30)

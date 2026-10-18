@@ -39,6 +39,11 @@ the current output that the suite compares against on every run.
 pytest --update-goldens      # rewrite tests/goldens/*.json from the CURRENT build
 git diff tests/goldens/      # ALWAYS review the result
 ```
+
+A **full** run (no `-k`, `-m`, `--lf` or node-id arguments) also fails on stale
+golden data: stored keys no test checked, or a JSON file no test module refers
+to. A full `pytest --update-goldens` prunes them; partial runs never do. Files
+used by a module that had skipped tests in the run are exempt.
 ---
 
 ## Notes & gotchas

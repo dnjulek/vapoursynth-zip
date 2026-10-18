@@ -239,7 +239,8 @@ def test_int_parity_deband(make_clip, family_name, sample_mode, blur_first):
 # 0.02..0.22 normalized depending on limit/tiles, so a meaningful parity bound
 # does not exist. vszip's 8-bit CLAHE matches OpenCV to < 0.01, so there is no
 # bit-depth bug to surface here. (CLAHE's own behaviour is locked by its golden
-# tests; a separate non-divisible-dims OOB lives in test_known_bugs.py.)
+# tests; non-dividing tile grids are covered by
+# test_clahe.py::test_tiles_not_dividing_frame.)
 
 
 # --- PlaneAverage ------------------------------------------------------------
