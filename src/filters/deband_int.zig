@@ -135,10 +135,11 @@ fn processPlane(
     defer if (mode == .m7) allocator.free(angle_buf);
     if (mode == .m7) fillAnglePlane(src, stride, width, height, angle_buf, ang_stride, ANGLE_PAD);
 
+    const grain_stride: u32 = hz.ceilN(width, 32 / @sizeOf(u16));
     var y: u32 = 0;
     while (y < height) : (y += 1) {
         const row: u32 = y * stride;
-        const grain_row = if (add_grain) grain[row..];
+        const grain_row = if (add_grain) grain[y * grain_stride ..];
         const ref1_row = ref1[row..];
         const ref2_row = ref2[row..];
 

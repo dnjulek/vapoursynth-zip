@@ -188,6 +188,22 @@ cropped = src.std.Crop(left=2, right=6, top=2, bottom=4)
 assert_same_clip(cropped.vszip.NewFilter(), repack(cropped).vszip.NewFilter())
 ```
 
+The frame stride itself cannot be varied inside one process: VapourSynth picks
+the row alignment once from the running CPU (64 bytes with AVX-512, else 32).
+A result that depends on the stride (e.g. indexing a filter-owned table with
+`y * stride + x`, the old Deband grain bug) only fails on AVX-512 machines, and
+only for widths whose rows are not already a multiple of 64 bytes (the `tiny`
+and `odd` geometries). To emulate an AVX-512 host on any x86 box, run the
+normal build's suite under Intel SDE; the goldens must not change:
+
+```sh
+VSZIP_LIB=$PWD/zig-out/lib/libvszip.so sde64 -spr -- python -m pytest -q -p no:cacheprovider tests \
+    --ignore=tests/test_nonfinite.py -k "not test_no_teardown_corruption and not test_algorithm1_does_not_crash"
+```
+
+The excluded tests run their checks in a child process, which SDE cannot follow
+(`PreparePindForFollowExecve`); they fail under SDE only, with any build.
+
 ### Plane routing
 
 Use deliberately different values in each plane. A YUV/RGB test that compares
