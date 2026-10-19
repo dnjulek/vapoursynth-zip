@@ -24,6 +24,14 @@ pub const use_avx2 = builtin.target.cpu.arch == .x86_64 and
 pub const use_avx512f = builtin.target.cpu.arch == .x86_64 and
     std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512f);
 
+/// 512-bit byte/word ops (vpmaddwd/vpunpck*wd/vpackssdw at zmm). znver4+, Skylake-X+.
+pub const use_avx512bw = use_avx512f and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512bw);
+
+/// vpermi2b/vpermb (byte permutes). znver4+, Ice Lake+ (not Skylake-X).
+pub const use_avx512vbmi = use_avx512bw and
+    std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512vbmi);
+
 // ---------------------------------------------------------------------------
 // Compiler workarounds
 // ---------------------------------------------------------------------------
@@ -463,38 +471,74 @@ fn unpackMasks(comptime n: comptime_int, comptime g: u32) struct { lo: [n]i32, h
 const I32x8 = @Vector(8, i32);
 const I16x16 = @Vector(16, i16);
 
-/// vpsadbw: per 8-byte group, sum of |a - b| into one u64 lane (4 lanes per
-/// ymm). LLVM never forms vpsadbw from the portable widen+abs-diff+add form
-/// (measured in xpsnr.tempDiff1: vpminub/vpmaxub/vpsubb + 2x vpmovzxbd + 2x
-/// vpaddd per 16 px). Exact unconditionally: pure u8 integer math, group sum
-/// <= 8*255. The portable twin below is the semantic reference.
-pub inline fn sadU8x32(a: @Vector(32, u8), b: @Vector(32, u8)) @Vector(4, u64) {
-    if (comptime use_avx2) {
-        return xop2("vpsadbw", @Vector(4, u64), a, b);
-    }
-    const ad: @Vector(32, u16) = @max(a, b) - @min(a, b);
-    var r: @Vector(4, u64) = undefined;
-    inline for (0..4) |i| {
+/// vpsadbw: per 8-byte group, sum of |a - b| into one u64 lane (n/8 lanes:
+/// 4 per ymm, 8 per zmm on AVX512BW). LLVM never forms vpsadbw from the
+/// portable widen+abs-diff+add form (measured in xpsnr.tempDiff1:
+/// vpminub/vpmaxub/vpsubb + 2x vpmovzxbd + 2x vpaddd per 16 px). Exact
+/// unconditionally: pure u8 integer math, group sum <= 8*255. The portable
+/// twin below is the semantic reference.
+pub inline fn sadU8(comptime n: comptime_int, a: @Vector(n, u8), b: @Vector(n, u8)) @Vector(n / 8, u64) {
+    if (comptime n == 32 and use_avx2) return xop2("vpsadbw", @Vector(4, u64), a, b);
+    if (comptime n == 64 and use_avx512bw) return zop2("vpsadbw", @Vector(8, u64), a, b);
+    const ad: @Vector(n, u16) = @max(a, b) - @min(a, b);
+    var r: @Vector(n / 8, u64) = undefined;
+    inline for (0..n / 8) |i| {
         r[i] = @reduce(.Add, @as(@Vector(8, u64), @intCast(std.simd.extract(ad, i * 8, 8))));
     }
     return r;
 }
+
+/// Widest accelerated sadU8 shape (0: none, callers keep their portable form).
+pub const sad_u8_lanes = if (use_avx512bw) 64 else if (use_avx2) 32 else 0;
 
 /// vpmaddwd: adjacent-pair dot product of i16 lanes into i32 lanes. LLVM
 /// never forms vpmaddwd from the portable widen-multiply-pairwise-add form
 /// (measured in xpsnr.calcSquaredError u8: vpmullw + vextracti128 + 2x
 /// vpmovzxwd instead). Exact iff both products of a pair cannot be -2^30
 /// simultaneously (the hardware saturates only for -32768 * -32768 twice);
-/// callers must guarantee that, e.g. |lanes| <= 255. The portable twin below
-/// is the semantic reference.
-pub inline fn maddwdI16x16(a: I16x16, b: I16x16) @Vector(8, i32) {
-    if (comptime use_avx2) {
-        return xop2("vpmaddwd", @Vector(8, i32), a, b);
+/// callers must guarantee that, e.g. |lanes| <= 255. n = 16 (ymm) or 32 (zmm,
+/// AVX512BW). The portable twin below is the semantic reference.
+pub inline fn maddwdI16(comptime n: comptime_int, a: @Vector(n, i16), b: @Vector(n, i16)) @Vector(n / 2, i32) {
+    if (comptime n == 16 and use_avx2) return xop2("vpmaddwd", @Vector(8, i32), a, b);
+    if (comptime n == 32 and use_avx512bw) return zop2("vpmaddwd", @Vector(16, i32), a, b);
+    const p = @as(@Vector(n, i32), a) * @as(@Vector(n, i32), b);
+    const ev = comptime blk: {
+        var m: [n / 2]i32 = undefined;
+        for (&m, 0..) |*e, i| e.* = 2 * i;
+        break :blk m;
+    };
+    const od = comptime blk: {
+        var m: [n / 2]i32 = undefined;
+        for (&m, 0..) |*e, i| e.* = 2 * i + 1;
+        break :blk m;
+    };
+    return @shuffle(i32, p, undefined, ev) + @shuffle(i32, p, undefined, od);
+}
+
+/// Per-lane (a*ka + b*kb + rnd) >> sh over n i16 lanes. vpunpck{l,h}wd pair
+/// (a, b) inside each 128-bit lane, vpmaddwd against broadcast (ka, kb) forms
+/// the i32 dot products, and the in-lane vpackssdw narrows back in pixel
+/// order (all four ops work per 128-bit lane, so the trick is width-agnostic:
+/// n = 16 on AVX2, n = 32 on AVX512BW). Exact iff no pair has both products
+/// -2^30 (see maddwdI16) and every result fits i16 (vpackssdw saturates;
+/// the twin's @intCast asserts it in safe builds). The portable twin below is
+/// the semantic reference.
+pub inline fn maddPairShrI16(comptime n: comptime_int, a: @Vector(n, i16), b: @Vector(n, i16), ka: i16, kb: i16, comptime rnd: i32, comptime sh: u5) @Vector(n, i16) {
+    const V = @Vector(n, i16);
+    const W = @Vector(n / 2, i32);
+    // little-endian: ka lands in the even (a) word of each dword
+    const pair: u32 = @as(u32, @as(u16, @bitCast(ka))) | (@as(u32, @as(u16, @bitCast(kb))) << 16);
+    if (comptime (n == 16 and use_avx2) or (n == 32 and use_avx512bw)) {
+        const op = if (n == 32) zop2 else xop2;
+        const kp: V = @bitCast(@as(@Vector(n / 2, u32), @splat(pair)));
+        const r: W = @splat(rnd);
+        const lo = (op("vpmaddwd", W, op("vpunpcklwd", V, a, b), kp) + r) >> @splat(sh);
+        const hi = (op("vpmaddwd", W, op("vpunpckhwd", V, a, b), kp) + r) >> @splat(sh);
+        return op("vpackssdw", V, lo, hi);
     }
-    const p = @as(@Vector(16, i32), a) * @as(@Vector(16, i32), b);
-    const ev = @shuffle(i32, p, undefined, [8]i32{ 0, 2, 4, 6, 8, 10, 12, 14 });
-    const od = @shuffle(i32, p, undefined, [8]i32{ 1, 3, 5, 7, 9, 11, 13, 15 });
-    return ev + od;
+    const X = @Vector(n, i32);
+    const res = (@as(X, a) * @as(X, @splat(ka)) + @as(X, b) * @as(X, @splat(kb)) + @as(X, @splat(rnd))) >> @splat(sh);
+    return @intCast(res);
 }
 
 /// In-register 8x8 i32 transpose: classic 3-stage network (unpck dq / unpck
@@ -611,6 +655,56 @@ pub inline fn lutU8x32(chunks: *const [16]@Vector(32, u8), v: @Vector(32, u8)) @
     }
     return acc;
 }
+
+/// 256-entry byte LUT over 64 bytes (AVX512-VBMI). vpermi2b looks a byte up
+/// in a 128-entry table pair by the index's low 7 bits, so two of them cover
+/// the whole LUT and bit 7 picks the half (vpmovb2m + masked blend): 3 ops per
+/// 64 px against the vpshufb network's 16 chunk passes per 32. Bit-exact by
+/// construction (pure byte selection). The portable twin is the caller's
+/// scalar loop.
+pub inline fn lutU8x64(tables: *const [4]@Vector(64, u8), v: @Vector(64, u8)) @Vector(64, u8) {
+    const V = @Vector(64, u8);
+    const lo = vpermi2b(v, tables[0], tables[1]);
+    const hi = vpermi2b(v, tables[2], tables[3]);
+    return @select(u8, v >= @as(V, @splat(0x80)), hi, lo);
+}
+
+/// dst[i] = (idx[i] & 64 ? b : a)[idx[i] & 63]; idx is the tied destination.
+inline fn vpermi2b(idx: @Vector(64, u8), a: @Vector(64, u8), b: @Vector(64, u8)) @Vector(64, u8) {
+    return asm ("vpermi2b %[b], %[a], %[out]"
+        : [out] "=v" (-> @Vector(64, u8)),
+        : [a] "v" (a),
+          [b] "v" (b),
+          [idx] "0" (idx),
+    );
+}
+
+/// Vector 256-entry byte LUT at the widest accelerated shape: 64 lanes via
+/// vpermi2b on AVX512-VBMI, 32 via the vpshufb network on AVX2; `lanes == 0`
+/// means no vector form (callers keep their scalar loop).
+pub const LutU8 = if (use_avx512vbmi) struct {
+    pub const lanes = 64;
+    t: [4]@Vector(64, u8),
+    pub fn init(lut: *const [256]u8) @This() {
+        var t: [4]@Vector(64, u8) = undefined;
+        inline for (0..4) |c| t[c] = lut[c * 64 ..][0..64].*;
+        return .{ .t = t };
+    }
+    pub inline fn get(self: *const @This(), v: @Vector(64, u8)) @Vector(64, u8) {
+        return lutU8x64(&self.t, v);
+    }
+} else if (use_avx2) struct {
+    pub const lanes = 32;
+    t: [16]@Vector(32, u8),
+    pub fn init(lut: *const [256]u8) @This() {
+        return .{ .t = lutChunksU8(lut) };
+    }
+    pub inline fn get(self: *const @This(), v: @Vector(32, u8)) @Vector(32, u8) {
+        return lutU8x32(&self.t, v);
+    }
+} else struct {
+    pub const lanes = 0;
+};
 
 /// vpshufb control packing the even words of each 128-bit lane into its low
 /// qword and the odd words into its high qword.

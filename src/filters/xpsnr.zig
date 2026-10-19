@@ -249,7 +249,7 @@ inline fn diff2nd(comptime T: type, comptime has_p1: bool, comptime has_p2: bool
 }
 
 // Temporal activity vs the previous frame, per pixel (small frames).
-// u8 goes through vpsadbw (simd.sadU8x32, has_prev=false is SAD against
+// u8 goes through vpsadbw (simd.sadU8, has_prev=false is SAD against
 // zero); the sum-of-|diff| regrouping is exact integer math.
 inline fn tempDiff1(comptime T: type, comptime has_prev: bool, block_width: usize, block_height: usize, o_m0: []const T, o_p1: anytype, o: usize) u64 {
     const L = LaneInt(T);
@@ -263,13 +263,25 @@ inline fn tempDiff1(comptime T: type, comptime has_prev: bool, block_width: usiz
         var x: usize = 0;
 
         if (T == u8) {
+            // 64-byte vpsadbw on AVX512BW, then 32 for the rest of the block
+            // (blocks are as narrow as 32 px at low resolutions)
+            var acc_sum: u64 = 0;
+            if (comptime simd.sad_u8_lanes == 64) {
+                var acc: @Vector(8, u64) = @splat(0);
+                while (x + 64 <= block_width) : (x += 64) {
+                    const c: @Vector(64, u8) = cur[x..][0..64].*;
+                    const p: @Vector(64, u8) = if (has_prev) o_p1[y * o + x ..][0..64].* else @splat(0);
+                    acc += simd.sadU8(64, c, p);
+                }
+                acc_sum = @reduce(.Add, acc);
+            }
             var acc: @Vector(4, u64) = @splat(0);
             while (x + 32 <= block_width) : (x += 32) {
                 const c: @Vector(32, u8) = cur[x..][0..32].*;
                 const p: @Vector(32, u8) = if (has_prev) o_p1[y * o + x ..][0..32].* else @splat(0);
-                acc += simd.sadU8x32(c, p);
+                acc += simd.sadU8(32, c, p);
             }
-            taAct += @reduce(.Add, acc) * XPSNR_GAMMA;
+            taAct += (acc_sum + @reduce(.Add, acc)) * XPSNR_GAMMA;
         } else {
             var row_acc: @Vector(vl, u32) = @splat(0);
             while (x + vl <= block_width) : (x += vl) {
@@ -377,14 +389,26 @@ fn calcSquaredError(comptime T: type, blk_org: []const T, stride: usize, blk_rec
 
         if (T == u8) {
             // vpmaddwd square-accumulate: d0*d0 + d1*d1 per i32 lane is exact
-            // for |d| <= 255 (see simd.maddwdI16x16).
+            // for |d| <= 255 (see simd.maddwdI16); 32 lanes on AVX512BW, then
+            // 16 for the rest of the block.
+            if (comptime simd.use_avx512bw) {
+                const vl = 32;
+                var row_acc: @Vector(vl / 2, u32) = @splat(0);
+                while (x + vl <= block_width) : (x += vl) {
+                    const o: @Vector(vl, u8) = org_row[x..][0..vl].*;
+                    const r: @Vector(vl, u8) = rec_row[x..][0..vl].*;
+                    const ad: @Vector(vl, i16) = @intCast(@max(o, r) - @min(o, r));
+                    row_acc += @as(@Vector(vl / 2, u32), @bitCast(simd.maddwdI16(vl, ad, ad)));
+                }
+                sse += @reduce(.Add, @as(@Vector(vl / 2, u64), @intCast(row_acc)));
+            }
             const vl = 16;
             var row_acc: @Vector(vl / 2, u32) = @splat(0);
             while (x + vl <= block_width) : (x += vl) {
                 const o: @Vector(vl, u8) = org_row[x..][0..vl].*;
                 const r: @Vector(vl, u8) = rec_row[x..][0..vl].*;
                 const ad: @Vector(vl, i16) = @intCast(@max(o, r) - @min(o, r));
-                row_acc += @as(@Vector(vl / 2, u32), @bitCast(simd.maddwdI16x16(ad, ad)));
+                row_acc += @as(@Vector(vl / 2, u32), @bitCast(simd.maddwdI16(vl, ad, ad)));
             }
             sse += @reduce(.Add, @as(@Vector(vl / 2, u64), @intCast(row_acc)));
         } else {

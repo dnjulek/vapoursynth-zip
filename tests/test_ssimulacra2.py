@@ -30,11 +30,11 @@ def distort(clip: vs.VideoNode, kind: str) -> vs.VideoNode:
 
 # SSIMULACRA2 has no scalar args; the swept `dist` kwarg selects how the
 # distorted clip is built (see distort()). The Create callback accepts any
-# resize-convertible format (everything is funneled through toRGBS+linearize),
-# so sweep target formats spanning each accepted color family and the three
-# distortions. toRGBS dispatches on color family: RGB (passthrough for RGBS,
-# convert for RGB24/48), YUV (matrix), and GRAY (matrix gray->RGB) - the GRAY
-# branch is a distinct conversion path, so include GRAY8/GRAY16 below.
+# resize-convertible format: RGB (8-16 bit int via LUT, f32) is read natively,
+# YUV (matrix) and GRAY (matrix gray->RGB) go through toRGBS first, and the
+# sRGB decode always runs in the plugin. Sweep target formats spanning each
+# path and the three distortions; GRAY is a distinct conversion path, so
+# include GRAY8/GRAY16 below.
 CASES = (
     sweep(
         base_fmt=vs.YUV420P16,
@@ -75,7 +75,7 @@ def test_identical_real_image(src16):
 
 def test_golden(src16):
     dist = src16.resize.Bicubic(src16.width * 2, src16.height * 2).resize.Bicubic(src16.width, src16.height)
-    assert score(src16, dist) == pytest.approx(68.62493918303275, rel=1e-3)
+    assert score(src16, dist) == pytest.approx(68.47905812796854, rel=1e-3)
 
 
 def test_more_distortion_scores_lower(src16):
@@ -85,20 +85,60 @@ def test_more_distortion_scores_lower(src16):
     assert s_ident > s1 > s3
 
 
-def test_yuv_matches_prelinearized_rgbs(src16):
-    """Internal YUV->RGBS->linear conversion equals doing it by hand."""
+def _rgb_pair(src_rgb, fmt):
+    ref = src_rgb.resize.Point(format=fmt)
+    return ref, src_rgb.std.BoxBlur(hradius=2, vradius=2).resize.Point(format=fmt)
+
+
+def test_yuv_matches_manual_rgbs(src16):
+    """YUV goes through toRGBS, then the in-plugin sRGB decode: same score as
+    converting to (still sRGB-encoded) RGBS by hand."""
     dist = src16.resize.Bicubic(src16.width * 2, src16.height * 2).resize.Bicubic(src16.width, src16.height)
-    rgbs = src16.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)
-    rgbs2 = dist.resize.Bicubic(format=vs.RGBS).std.SetFrameProps(_Transfer=13)
-    linear = rgbs.resize.Bicubic(transfer=8)
-    linear2 = rgbs2.resize.Bicubic(transfer=8)
-    assert score(src16, dist) == score(linear, linear2)
+    assert score(src16, dist) == score(src16.resize.Bicubic(format=vs.RGBS), dist.resize.Bicubic(format=vs.RGBS))
 
 
-def test_output_clip_is_rgbs(src16):
+@pytest.mark.parametrize("fmt", [vs.RGB24, vs.RGB30, vs.RGB48])
+def test_native_int_rgb_matches_float_path(src_rgb, fmt):
+    """Integer RGB is decoded through a sample -> linear LUT built from the
+    float decode of v * (1 / peak) -- the exact f32 values zimg produces for
+    the int -> RGBS conversion, so both paths give the identical score."""
+    ref, dist = _rgb_pair(src_rgb, fmt)
+    assert score(ref, dist) == score(ref.resize.Point(format=vs.RGBS), dist.resize.Point(format=vs.RGBS))
+
+
+def test_out_of_range_float_is_clamped(src_rgb):
+    """Encoded float values outside [0, 1] (YUV -> RGB overshoot) clamp
+    before the decode, as libjxl's PNG input would, instead of taking its odd
+    extension / out-of-fit polynomial."""
+    ref, dist = _rgb_pair(src_rgb, vs.RGBS)
+    ref, dist = ref.std.Expr("x 2 * 0.4 -"), dist.std.Expr("x 2 * 0.4 -")
+    clamp = "x 0 max 1 min"
+    # the input really leaves [0, 1] at both ends, so equality pins both bounds
+    st = ref.std.PlaneStats().get_frame(0).props
+    assert st["PlaneStatsMin"] < 0 and st["PlaneStatsMax"] > 1
+    assert score(ref, dist) == score(ref.std.Expr(clamp), dist.std.Expr(clamp))
+
+
+def test_linear_tagged_input_skips_decode(src_rgb):
+    """_Transfer=8 (linear) input is used as is: zimg-linearized input lands
+    within the zimg-vs-libjxl decode difference of the internal path, while
+    decoding it a second time would be far off."""
+    ref, dist = _rgb_pair(src_rgb, vs.RGBS)
+    lin = [c.std.SetFrameProps(_Transfer=13).resize.Point(transfer=8) for c in (ref, dist)]
+    internal = score(ref, dist)
+    assert score(*lin) == pytest.approx(internal, abs=0.02)
+    redecoded = [c.std.SetFrameProps(_Transfer=13) for c in lin]
+    assert abs(score(*redecoded) - internal) > 0.5
+
+
+def test_output_passes_input_through(src16, src_rgb):
+    """Only the frame prop matters: the output is the (converted) reference
+    frame -- native RGB as is, other families as the toRGBS clip."""
+    rgb = src_rgb.resize.Point(format=vs.RGB24)
+    assert vs.core.vszip.SSIMULACRA2(rgb, rgb).format.id == vs.RGB24
     out = vs.core.vszip.SSIMULACRA2(src16, src16)
     assert out.format.id == vs.RGBS
-    assert (out.width, out.height) == (src16.width, src16.height)
+    assert (out.width, out.height, out.num_frames) == (src16.width, src16.height, src16.num_frames)
 
 
 def test_concurrent_requests_match_sequential(temporal_rgb):

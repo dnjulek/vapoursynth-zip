@@ -64,7 +64,34 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
 
     zeroHist(accum_buf);
 
-    if (is_int) {
+    if (is_int and T == u8) {
+        // Four sub-histograms, pixel x -> sub[x % 4], merged at the end.
+        // Neighbouring pixels usually share a value, and a single histogram
+        // makes every such increment wait on the previous one's store
+        // (store-to-load forwarding chain, ~5-6 cycles). Counts are exact
+        // integers, so the merged histogram is identical. u8 only: 4x256
+        // bins stay in L1 and the merge is 256 adds; for 65536-bin
+        // histograms the extra zeroing/merge traffic costs more than it saves.
+        var sub: [4][256]u32 align(64) = undefined;
+        for (&sub) |*hh| @memset(hh, 0);
+        var srcp: []const T = src;
+        for (0..h) |_| {
+            const row = srcp[0..w];
+            var x: usize = 0;
+            while (x + 4 <= w) : (x += 4) {
+                sub[0][row[x]] += 1;
+                sub[1][row[x + 1]] += 1;
+                sub[2][row[x + 2]] += 1;
+                sub[3][row[x + 3]] += 1;
+            }
+            while (x < w) : (x += 1) sub[0][row[x]] += 1;
+            srcp = srcp[stride..];
+        }
+        for (0..256) |b| accum_buf[b] = sub[0][b] + sub[1][b] + sub[2][b] + sub[3][b];
+        if (use_ref) {
+            diffacc = @floatFromInt(absDiffSumInt(T, src, ref, stride, w, h));
+        }
+    } else if (is_int) {
         var srcp: []const T = src;
         for (0..h) |_| {
             for (srcp[0..w]) |v| {

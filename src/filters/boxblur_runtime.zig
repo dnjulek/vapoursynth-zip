@@ -136,7 +136,160 @@ inline fn blur_passes(comptime T: type, srcp: []const T, dstp: []T, step: u32, l
     }
 }
 
-pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T) void {
+/// Rows per float h-blur strip = f32 lanes. Each lane carries one row.
+const strip_n = std.simd.suggestVectorLength(f32) orelse 1;
+const StripV = @Vector(strip_n, f32);
+const use_strip = strip_n > 1;
+
+/// Every scratch buffer of the runtime paths, carved from one block that
+/// getFrame allocates once per frame and reuses for all planes (the paths
+/// used to malloc/free two to four buffers per plane). Sized for the widest
+/// plane; each path uses a prefix. Every element is written before it is
+/// read, so the reuse is deterministic.
+pub fn Scratch(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        block: []align(64) u8,
+        temp1: []T, // blur_passes row ping-pong (tmp_size)
+        temp2: []T,
+        sums: []u32, // vertical running column sums (u32 or f32 bits)
+        cols_a: []StripV, // column-major strip, lane l = row l
+        cols_b: []StripV,
+        ring: []T, // hvBlurFused / vChainFused h-blurred rows
+        chain_sums: []u32, // vChainFused: running sums per vertical pass
+        chain_ring: []T, // vChainFused: output rows of every pass but the last
+
+        pub fn init(w: u32, tmp_size: u32, vradius: u32, vpasses: u32) !Self {
+            const chain_rows: usize = 2 * @as(usize, vradius) + 2;
+            const ring_rows: usize = 2 * @as(usize, vradius) + 2 + (if (use_strip) strip_n else 0);
+            const cols_len: usize = if (use_strip) @max(w, 1) else 0;
+            const sizes = [_]usize{
+                tmp_size * @sizeOf(T),
+                tmp_size * @sizeOf(T),
+                @as(usize, w) * @sizeOf(u32),
+                cols_len * @sizeOf(StripV),
+                cols_len * @sizeOf(StripV),
+                ring_rows * w * @sizeOf(T),
+                @as(usize, vpasses) * w * @sizeOf(u32),
+                @as(usize, vpasses -| 1) * chain_rows * w * @sizeOf(T),
+            };
+            var total: usize = 0;
+            for (sizes) |sz| total += std.mem.alignForward(usize, sz, 64);
+            const block = try allocator.alignedAlloc(u8, .@"64", total);
+            var off: usize = 0;
+            var parts: [sizes.len][]align(64) u8 = undefined;
+            for (sizes, &parts) |sz, *part| {
+                part.* = @alignCast(block[off..][0..sz]);
+                off += std.mem.alignForward(usize, sz, 64);
+            }
+            return .{
+                .block = block,
+                .temp1 = std.mem.bytesAsSlice(T, parts[0]),
+                .temp2 = std.mem.bytesAsSlice(T, parts[1]),
+                .sums = std.mem.bytesAsSlice(u32, parts[2]),
+                .cols_a = std.mem.bytesAsSlice(StripV, parts[3]),
+                .cols_b = std.mem.bytesAsSlice(StripV, parts[4]),
+                .ring = std.mem.bytesAsSlice(T, parts[5]),
+                .chain_sums = std.mem.bytesAsSlice(u32, parts[6]),
+                .chain_ring = std.mem.bytesAsSlice(T, parts[7]),
+            };
+        }
+
+        pub fn deinit(self: Self) void {
+            allocator.free(self.block);
+        }
+    };
+}
+
+/// Float h-blur of `strip_n` rows at once, bit-identical to running
+/// blur_passes on each row. blurFloat's running sum is one loop-carried
+/// vaddss chain per row (~3 cycles/px on Zen 3, the whole cost of the float
+/// runtime h-pass). Here the strip is transposed into column-major vectors
+/// (lane l = row l), the *same* recurrence runs on vectors — per lane the
+/// identical f32 op sequence, just strip_n rows advancing together — and the
+/// result is transposed back. Transposes are in-register (simd.transposeF32Reg,
+/// pinned asm at 8/16 lanes). Multi-pass keeps the per-pass rounding to T of
+/// the row path (its tmp rows are []T).
+fn hblurStripFloat(comptime T: type, src_rows: [strip_n][*]const T, dst_rows: [strip_n][*]T, len: u32, radius: u32, passes: i32, cols_a: []StripV, cols_b: []StripV) void {
+    const N = strip_n;
+    const V = StripV;
+    // gather: rows -> columns
+    var c: u32 = 0;
+    while (c + N <= len) : (c += N) {
+        var rows: [N]V = undefined;
+        inline for (0..N) |l| {
+            const raw: @Vector(N, T) = src_rows[l][c..][0..N].*;
+            rows[l] = if (T == f32) raw else @floatCast(raw);
+        }
+        const cols = simd.transposeF32Reg(N, rows);
+        inline for (0..N) |i| cols_a[c + i] = cols[i];
+    }
+    while (c < len) : (c += 1) {
+        var v: V = undefined;
+        inline for (0..N) |l| v[l] = src_rows[l][c];
+        cols_a[c] = v;
+    }
+
+    var in_cols = cols_a;
+    var out_cols = cols_b;
+    var p: i32 = passes;
+    while (p > 0) : (p -= 1) {
+        blurCols(in_cols[0..len], out_cols[0..len], len, radius);
+        if (T != f32 and p > 1) {
+            // row path stores intermediate passes as T
+            for (out_cols[0..len]) |*v| v.* = @floatCast(@as(@Vector(N, T), @floatCast(v.*)));
+        }
+        const t = in_cols;
+        in_cols = out_cols;
+        out_cols = t;
+    }
+    const res = in_cols;
+
+    // scatter: columns -> rows
+    c = 0;
+    while (c + N <= len) : (c += N) {
+        var cols: [N]V = undefined;
+        inline for (0..N) |i| cols[i] = res[c + i];
+        const rows = simd.transposeF32Reg(N, cols);
+        inline for (0..N) |l| {
+            dst_rows[l][c..][0..N].* = if (T == f32) rows[l] else @as(@Vector(N, T), @floatCast(rows[l]));
+        }
+    }
+    while (c < len) : (c += 1) {
+        const v = res[c];
+        inline for (0..N) |l| dst_rows[l][c] = if (T == f32) v[l] else @floatCast(v[l]);
+    }
+}
+
+/// blurFloat's exact op sequence on column vectors (lane = row).
+fn blurCols(src: []const StripV, dst: []StripV, len: u32, radius: u32) void {
+    const ksize: f32 = @floatFromInt(radius * 2 + 1);
+    const div: StripV = @splat(1.0 / ksize);
+    const two: StripV = @splat(2);
+    var sum: StripV = src[radius];
+
+    var x: u32 = 0;
+    while (x < radius) : (x += 1) {
+        sum += src[x] * two;
+    }
+    sum = sum * div;
+
+    x = 0;
+    while (x <= radius) : (x += 1) {
+        sum += (src[radius + x] - src[radius - x]) * div;
+        dst[x] = sum;
+    }
+    while (x < len - radius) : (x += 1) {
+        sum += (src[radius + x] - src[x - radius - 1]) * div;
+        dst[x] = sum;
+    }
+    while (x < len) : (x += 1) {
+        sum += (src[2 * len - radius - x - 1] - src[x - radius - 1]) * div;
+        dst[x] = sum;
+    }
+}
+
+pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, sc: *const Scratch(T)) void {
     if (!((passes > 0) and (radius > 0))) {
         var y: u32 = 0;
         while (y < h) : (y += 1) {
@@ -148,14 +301,29 @@ pub fn hblur(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, 
     }
 
     if (@typeInfo(T) == .int) {
-        if (ct.narrowMagicFor(T, radius)) |mg| return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, mg);
-        return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, ct.magicFor(T, radius) orelse unreachable);
+        if (ct.narrowMagicFor(T, radius)) |mg| return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, sc, mg);
+        return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, sc, ct.magicFor(T, radius) orelse unreachable);
     }
-    return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, temp1, temp2, {});
+    return hblurGo(T, srcp, dstp, stride, w, h, radius, passes, sc, {});
 }
 
-fn hblurGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, temp1: []T, temp2: []T, mg: anytype) void {
+fn hblurGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, sc: *const Scratch(T), mg: anytype) void {
+    const temp1 = sc.temp1;
+    const temp2 = sc.temp2;
     var y: u32 = 0;
+    if (@typeInfo(T) == .float and use_strip) {
+        const ca = sc.cols_a[0..w];
+        const cb = sc.cols_b[0..w];
+        while (y + strip_n <= h) : (y += strip_n) {
+            var sr: [strip_n][*]const T = undefined;
+            var dr: [strip_n][*]T = undefined;
+            inline for (0..strip_n) |l| {
+                sr[l] = srcp[(y + l) * stride ..].ptr;
+                dr[l] = dstp[(y + l) * stride ..].ptr;
+            }
+            hblurStripFloat(T, sr, dr, w, radius, passes, ca, cb);
+        }
+    }
     while (y < h) : (y += 1) {
         blur_passes(
             T,
@@ -172,41 +340,54 @@ fn hblurGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h:
     }
 }
 
-/// Fused horizontal + single-pass vertical blur. Rows are h-blurred on demand
-/// into a ring buffer (2*vradius+2 rows, L2-sized) that feeds the vertical
-/// running column sums, so the plane is read once and written once with no
-/// intermediate plane. Bit-identical to hblur into a temp plane followed by
-/// one vblur sweep. Requires h > 2*vradius + 1 so every mirrored row is still
-/// in the ring.
-pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, temp1: []T, temp2: []T) void {
-    if (@typeInfo(T) == .int) {
-        // hradius may be 0 when there is no h-blur; that magic is never used.
-        const hr = if ((hpasses > 0) and (hradius > 0)) hradius else 1;
-        if (ct.narrowMagicFor(T, hr)) |hmg| {
-            if (ct.narrowMagicFor(T, vradius)) |vmg| {
-                return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, hmg, vmg);
-            }
-        }
-        // Asymmetric radii can leave one direction without a narrow magic; take
-        // the wide kernel for both rather than instantiate a mixed variant.
-        return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, ct.magicFor(T, hr) orelse unreachable, ct.magicFor(T, vradius) orelse unreachable);
-    }
-    return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, temp1, temp2, {}, {});
-}
-
-fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, temp1: []T, temp2: []T, hmg: anytype, vmg: anytype) void {
-    const ring_rows: u32 = 2 * vradius + 2;
-    const ring_alloc = allocator.alloc(T, ring_rows * w) catch unreachable;
-    defer allocator.free(ring_alloc);
-    const sums = allocator.alloc(u32, w) catch unreachable;
-    defer allocator.free(sums);
-
-    const ring = struct {
+/// h-blurred source rows on demand, in a ring of 2*vradius + 2 rows (plus
+/// strip_n look-ahead when float strips produce strip_n rows at a time).
+/// Rows are requested in increasing order and each is produced once. Feeds
+/// the fused vertical passes (hvBlurFused, vChainFused).
+fn HRows(comptime T: type, comptime MG: type) type {
+    return struct {
+        const Self = @This();
         buf: []T,
         rows: u32,
         w: u32,
+        h: u32,
+        src: []const T,
+        stride: u32,
+        hradius: u32,
+        hpasses: i32,
+        hb: bool,
+        strips: bool,
+        t1: []T,
+        t2: []T,
+        ca: []StripV,
+        cb: []StripV,
+        mg: MG,
+        next: u32 = 0,
 
-        inline fn row(self: @This(), j: u32) []T {
+        fn init(sc: *const Scratch(T), src: []const T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, mg: MG) Self {
+            const hb = (hpasses > 0) and (hradius > 0);
+            const strips = @typeInfo(T) == .float and use_strip and hb;
+            const rows: u32 = 2 * vradius + 2 + (if (strips) @as(u32, strip_n) else 0);
+            return .{
+                .buf = sc.ring[0 .. rows * w],
+                .rows = rows,
+                .w = w,
+                .h = h,
+                .src = src,
+                .stride = stride,
+                .hradius = hradius,
+                .hpasses = hpasses,
+                .hb = hb,
+                .strips = strips,
+                .t1 = sc.temp1,
+                .t2 = sc.temp2,
+                .ca = if (strips) sc.cols_a[0..w] else &.{},
+                .cb = if (strips) sc.cols_b[0..w] else &.{},
+                .mg = mg,
+            };
+        }
+
+        inline fn row(self: *const Self, j: u32) []T {
             // opaquePtr pins the `%` here: without it LLVM re-sinks this
             // (loop-invariant) modulo + address math into the callers' inner
             // per-pixel loops after inlining — an unpipelined 32-bit div per
@@ -214,32 +395,74 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
             const s = self.buf[(j % self.rows) * self.w ..][0..self.w];
             return simd.opaquePtr(T, s.ptr)[0..self.w];
         }
-    }{ .buf = ring_alloc, .rows = ring_rows, .w = w };
 
-    const hb = (hpasses > 0) and (hradius > 0);
-
-    // h-blur source row j into the ring
-    const produce = struct {
-        inline fn go(r: @TypeOf(ring), src_row: []const T, j: u32, _w: u32, _hradius: u32, _hpasses: i32, t1: []T, t2: []T, _hb: bool, _mg: anytype) void {
-            const dst_row = r.row(j);
-            if (_hb) {
-                blur_passes(T, src_row, dst_row, 1, _w, _hradius, _hpasses, t1, t2, _mg);
-            } else {
-                @memcpy(dst_row, src_row[0.._w]);
+        /// Produce rows up to j; with float strips the first request of a
+        /// strip produces the whole strip ahead.
+        inline fn produce(self: *Self, j: u32) void {
+            while (self.next <= j) {
+                const k = self.next;
+                if (comptime @typeInfo(T) == .float and use_strip) {
+                    if (self.strips and k + strip_n <= self.h) {
+                        var sr: [strip_n][*]const T = undefined;
+                        var dr: [strip_n][*]T = undefined;
+                        inline for (0..strip_n) |l| {
+                            sr[l] = self.src[(k + l) * self.stride ..].ptr;
+                            dr[l] = self.row(k + @as(u32, l)).ptr;
+                        }
+                        hblurStripFloat(T, sr, dr, self.w, self.hradius, self.hpasses, self.ca, self.cb);
+                        self.next = k + strip_n;
+                        continue;
+                    }
+                }
+                const src_row = self.src[k * self.stride ..];
+                const dst_row = self.row(k);
+                if (self.hb) {
+                    blur_passes(T, src_row, dst_row, 1, self.w, self.hradius, self.hpasses, self.t1, self.t2, self.mg);
+                } else {
+                    @memcpy(dst_row, src_row[0..self.w]);
+                }
+                self.next = k + 1;
             }
         }
-    }.go;
+    };
+}
+
+/// Fused horizontal + single-pass vertical blur. Rows are h-blurred on demand
+/// into a ring buffer (2*vradius+2 rows, L2-sized) that feeds the vertical
+/// running column sums, so the plane is read once and written once with no
+/// intermediate plane. Bit-identical to hblur into a temp plane followed by
+/// one vblur sweep. Requires h > 2*vradius + 1 so every mirrored row is still
+/// in the ring.
+pub fn hvBlurFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, sc: *const Scratch(T)) void {
+    if (@typeInfo(T) == .int) {
+        // hradius may be 0 when there is no h-blur; that magic is never used.
+        const hr = if ((hpasses > 0) and (hradius > 0)) hradius else 1;
+        if (ct.narrowMagicFor(T, hr)) |hmg| {
+            if (ct.narrowMagicFor(T, vradius)) |vmg| {
+                return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, sc, hmg, vmg);
+            }
+        }
+        // Asymmetric radii can leave one direction without a narrow magic; take
+        // the wide kernel for both rather than instantiate a mixed variant.
+        return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, sc, ct.magicFor(T, hr) orelse unreachable, ct.magicFor(T, vradius) orelse unreachable);
+    }
+    return hvBlurFusedGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, sc, {}, {});
+}
+
+fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, sc: *const Scratch(T), hmg: anytype, vmg: anytype) void {
+    var hr = HRows(T, @TypeOf(hmg)).init(sc, srcp, stride, w, h, hradius, hpasses, vradius, hmg);
+    const sums = sc.sums[0..w];
 
     var j: u32 = 0;
     while (j <= vradius) : (j += 1) {
-        produce(ring, srcp[j * stride ..], j, w, hradius, hpasses, temp1, temp2, hb, hmg);
+        hr.produce(j);
     }
 
     // init running sums: ring[vradius] + 2 * (ring[0] + .. + ring[vradius-1])
     if (@typeInfo(T) == .int) {
         {
             // raw column sums, +vradius seed (see blurInt)
-            const r_row = ring.row(vradius);
+            const r_row = hr.row(vradius);
             var c: u32 = 0;
             while (c < w) : (c += 1) {
                 sums[c] = @as(u32, r_row[c]) + vradius;
@@ -247,7 +470,7 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 
             var x: u32 = 0;
             while (x < vradius) : (x += 1) {
-                const row = ring.row(x);
+                const row = hr.row(x);
                 c = 0;
                 while (c < w) : (c += 1) {
                     sums[c] += @as(u32, row[c]) << 1;
@@ -257,17 +480,17 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 
         var x: u32 = 0;
         while (x <= vradius) : (x += 1) {
-            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
-            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(vradius - x), dstp[x * stride ..], w, vmg);
+            if (x >= 1) hr.produce(vradius + x);
+            rowAddSubInt(T, sums, hr.row(vradius + x), hr.row(vradius - x), dstp[x * stride ..], w, vmg);
         }
 
         while (x < h - vradius) : (x += 1) {
-            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
-            rowAddSubInt(T, sums, ring.row(vradius + x), ring.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
+            hr.produce(vradius + x);
+            rowAddSubInt(T, sums, hr.row(vradius + x), hr.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
         }
 
         while (x < h) : (x += 1) {
-            rowAddSubInt(T, sums, ring.row(2 * h - vradius - x - 1), ring.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
+            rowAddSubInt(T, sums, hr.row(2 * h - vradius - x - 1), hr.row(x - vradius - 1), dstp[x * stride ..], w, vmg);
         }
     } else {
         const fsums = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(sums))[0..w];
@@ -275,7 +498,7 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
         const div: f32 = 1.0 / ksize;
 
         {
-            const r_row = ring.row(vradius);
+            const r_row = hr.row(vradius);
             var c: u32 = 0;
             while (c < w) : (c += 1) {
                 fsums[c] = r_row[c];
@@ -283,7 +506,7 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 
             var x: u32 = 0;
             while (x < vradius) : (x += 1) {
-                const row = ring.row(x);
+                const row = hr.row(x);
                 c = 0;
                 while (c < w) : (c += 1) {
                     const rv: f32 = row[c];
@@ -299,19 +522,149 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 
         var x: u32 = 0;
         while (x <= vradius) : (x += 1) {
-            if (x >= 1) produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
-            rowAddSubFloat(T, fsums, ring.row(vradius + x), ring.row(vradius - x), dstp[x * stride ..], w, div);
+            if (x >= 1) hr.produce(vradius + x);
+            rowAddSubFloat(T, fsums, hr.row(vradius + x), hr.row(vradius - x), dstp[x * stride ..], w, div);
         }
 
         while (x < h - vradius) : (x += 1) {
-            produce(ring, srcp[(vradius + x) * stride ..], vradius + x, w, hradius, hpasses, temp1, temp2, hb, hmg);
-            rowAddSubFloat(T, fsums, ring.row(vradius + x), ring.row(x - vradius - 1), dstp[x * stride ..], w, div);
+            hr.produce(vradius + x);
+            rowAddSubFloat(T, fsums, hr.row(vradius + x), hr.row(x - vradius - 1), dstp[x * stride ..], w, div);
         }
 
         while (x < h) : (x += 1) {
-            rowAddSubFloat(T, fsums, ring.row(2 * h - vradius - x - 1), ring.row(x - vradius - 1), dstp[x * stride ..], w, div);
+            rowAddSubFloat(T, fsums, hr.row(2 * h - vradius - x - 1), hr.row(x - vradius - 1), dstp[x * stride ..], w, div);
         }
     }
+}
+
+/// Multi-pass vertical blur (after an optional h-blur) as one row stream: pass
+/// s consumes pass s-1's rows from a ring of 2*vradius + 2 rows (its window at
+/// output row x is input rows [x-vradius-1, x+vradius], edge mirrors
+/// included), the first pass reads h-blurred rows from HRows (or the source
+/// rows directly), and the last writes dst. The plane form ping-ponged full
+/// planes through a scratch frame (passes+1 plane round trips) and went
+/// DRAM-bound with every frame worker active. Each pass runs vSweep's
+/// sequence (same sum seed, same add/sub rows in the same row order, output
+/// rounded to T between passes), so the result is bit-identical. Requires
+/// h >= 2*vradius + 2, like hvBlurFused.
+pub fn vChainFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T)) void {
+    if (@typeInfo(T) == .int) {
+        const hr = if ((hpasses > 0) and (hradius > 0)) hradius else 1;
+        if (ct.narrowMagicFor(T, hr)) |hmg| {
+            if (ct.narrowMagicFor(T, vradius)) |vmg| {
+                return vChainGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, vpasses, sc, hmg, vmg);
+            }
+        }
+        return vChainGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, vpasses, sc, ct.magicFor(T, hr) orelse unreachable, ct.magicFor(T, vradius) orelse unreachable);
+    }
+    return vChainGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, vpasses, sc, {}, {});
+}
+
+fn vChainGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T), hmg: anytype, vmg: anytype) void {
+    std.debug.assert(vpasses >= 1 and h >= 2 * vradius + 2);
+    const HR = HRows(T, @TypeOf(hmg));
+    const Chain = struct {
+        const Self = @This();
+        hr: HR,
+        hb: bool,
+        src: []const T,
+        dst: []T,
+        stride: u32,
+        w: u32,
+        len: u32,
+        r: u32,
+        last: u32,
+        ring_rows: u32,
+        sums: []u32,
+        ring: []T,
+        next: []u32,
+        mg: @TypeOf(vmg),
+
+        fn ringRow(self: *const Self, s: u32, j: u32) []T {
+            const base = self.ring[s * self.ring_rows * self.w ..];
+            const row = base[(j % self.ring_rows) * self.w ..][0..self.w];
+            return simd.opaquePtr(T, row.ptr)[0..self.w];
+        }
+
+        // row j of pass s's input, produced on demand
+        fn input(self: *Self, s: u32, j: u32) []const T {
+            if (s == 0) {
+                if (!self.hb) return self.src[j * self.stride ..][0..self.w];
+                self.hr.produce(j);
+                return self.hr.row(j);
+            }
+            while (self.next[s - 1] <= j) self.step(s - 1);
+            return self.ringRow(s - 1, j);
+        }
+
+        // next output row of pass s (vSweepInt / vSweepFloat, one row)
+        fn step(self: *Self, s: u32) void {
+            const x = self.next[s];
+            const r = self.r;
+            const wd = self.w;
+            const sums = self.sums[s * wd ..][0..wd];
+            if (x == 0) {
+                _ = self.input(s, r);
+                const r_row = self.input(s, r);
+                if (@typeInfo(T) == .int) {
+                    for (0..wd) |c| sums[c] = @as(u32, r_row[c]) + r;
+                    var k: u32 = 0;
+                    while (k < r) : (k += 1) {
+                        const row = self.input(s, k);
+                        for (0..wd) |c| sums[c] += @as(u32, row[c]) << 1;
+                    }
+                } else {
+                    const fs = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(sums));
+                    const div: f32 = 1.0 / @as(f32, @floatFromInt(r * 2 + 1));
+                    for (0..wd) |c| fs[c] = r_row[c];
+                    var k: u32 = 0;
+                    while (k < r) : (k += 1) {
+                        const row = self.input(s, k);
+                        for (0..wd) |c| {
+                            const rv: f32 = row[c];
+                            fs[c] += rv * 2;
+                        }
+                    }
+                    for (0..wd) |c| fs[c] = fs[c] * div;
+                }
+            }
+            const len = self.len;
+            const add = if (x < len - r) r + x else 2 * len - r - x - 1;
+            const sub = if (x <= r) r - x else x - r - 1;
+            const a = self.input(s, add);
+            const b = self.input(s, sub);
+            const out = if (s == self.last) self.dst[x * self.stride ..][0..wd] else self.ringRow(s, x);
+            if (@typeInfo(T) == .int) {
+                rowAddSubInt(T, sums, a, b, out, wd, self.mg);
+            } else {
+                const div: f32 = 1.0 / @as(f32, @floatFromInt(r * 2 + 1));
+                rowAddSubFloat(T, std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(sums)), a, b, out, wd, div);
+            }
+            self.next[s] = x + 1;
+        }
+    };
+
+    var next_buf: [64]u32 = undefined;
+    const next_heap = if (vpasses > next_buf.len) (allocator.alloc(u32, vpasses) catch unreachable) else next_buf[0..vpasses];
+    defer if (vpasses > next_buf.len) allocator.free(next_heap);
+    @memset(next_heap, 0);
+    var ch: Chain = .{
+        .hr = HR.init(sc, srcp, stride, w, h, hradius, hpasses, vradius, hmg),
+        .hb = (hpasses > 0) and (hradius > 0),
+        .src = srcp,
+        .dst = dstp,
+        .stride = stride,
+        .w = w,
+        .len = h,
+        .r = vradius,
+        .last = vpasses - 1,
+        .ring_rows = 2 * vradius + 2,
+        .sums = sc.chain_sums[0 .. vpasses * w],
+        .ring = sc.chain_ring,
+        .next = next_heap,
+        .mg = vmg,
+    };
+    while (ch.next[ch.last] < h) ch.step(ch.last);
 }
 
 /// Vertical blur as `passes` full-plane row-streaming sweeps. Each sweep keeps
@@ -321,20 +674,17 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 ///
 /// Sweeps are always out-of-place, ping-ponging between `tmp` and `dstp` such
 /// that the final sweep lands in `dstp`. `first_src` is only read.
-pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32) void {
+pub fn vblur(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, sc: *const Scratch(T)) void {
     if ((passes <= 0) or (radius <= 0)) return;
 
     if (@typeInfo(T) == .int) {
-        if (ct.narrowMagicFor(T, radius)) |mg| return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, mg);
-        return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, ct.magicFor(T, radius) orelse unreachable);
+        if (ct.narrowMagicFor(T, radius)) |mg| return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, sc.sums[0..w], mg);
+        return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, sc.sums[0..w], ct.magicFor(T, radius) orelse unreachable);
     }
-    return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, {});
+    return vblurGo(T, first_src, tmp, dstp, stride, w, h, radius, passes, sc.sums[0..w], {});
 }
 
-fn vblurGo(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, mg: anytype) void {
-    const sums = allocator.alloc(u32, w) catch unreachable;
-    defer allocator.free(sums);
-
+fn vblurGo(comptime T: type, first_src: []const T, tmp: []T, dstp: []T, stride: u32, w: u32, h: u32, radius: u32, passes: i32, sums: []u32, mg: anytype) void {
     var src_cur: []const T = first_src;
     var s: i32 = 1;
     while (s <= passes) : (s += 1) {
@@ -388,6 +738,26 @@ inline fn rowAddSubInt(comptime T: type, sums: []u32, add_row: []const T, sub_ro
     const U32V = @Vector(vec_len, u32);
 
     var c: u32 = 0;
+    // Pack groups: one saturating pack + full-width store per 4 (u8) / 2
+    // (u16) vectors instead of a per-vector narrow (see ct.packGroup).
+    const g = comptime ct.packGroup(T, vec_len);
+    if (comptime g > 1) {
+        const w_blk = w - (w % (g * vec_len));
+        while (c < w_blk) : (c += g * vec_len) {
+            var q: [g]U32V = undefined;
+            inline for (0..g) |k| {
+                const ck = c + k * vec_len;
+                const at: @Vector(vec_len, T) = add_row[ck..][0..vec_len].*;
+                const st: @Vector(vec_len, T) = sub_row[ck..][0..vec_len].*;
+                var s: U32V = sums[ck..][0..vec_len].*;
+                s = s +% @as(U32V, @intCast(at));
+                s = s -% @as(U32V, @intCast(st));
+                sums[ck..][0..vec_len].* = s;
+                q[k] = ct.scaleVec32(T, vec_len, s, mg);
+            }
+            ct.storePacked(T, vec_len, dst_row[c..], q);
+        }
+    }
     const w_vec = w - (w % vec_len);
     while (c < w_vec) : (c += vec_len) {
         const at: @Vector(vec_len, T) = add_row[c..][0..vec_len].*;

@@ -24,14 +24,15 @@ pub const Data = struct {
     m: [3]f32,
     wmax: [3]f32,
     sum_w_min: [3]f32,
-    point_lists: [3]?[]subspl.Coord,
+    // sub-sampled point lists resolved to linear cache offsets per plane
+    offsets: [3]?[]isize,
     k: [3]usize,
     peak: f32,
 };
 
-fn freePointLists(d: *Data) void {
-    for (d.point_lists) |pl| {
-        if (pl) |p| allocator.free(p);
+fn freeOffsets(d: *Data) void {
+    for (d.offsets) |o| {
+        if (o) |p| allocator.free(p);
     }
 }
 
@@ -97,7 +98,7 @@ fn GetFrame(comptime T: type) type {
                         d.wmax[plane],
                         d.sum_w_min[plane],
                         d.peak,
-                        d.point_lists[plane],
+                        d.offsets[plane],
                         d.k[plane],
                     );
                 }
@@ -113,7 +114,7 @@ fn free(instance: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c)
     const d: *Data = @ptrCast(@alignCast(instance));
     vsapi.?.freeNode.?(d.node);
     if (d.ref) |refn| vsapi.?.freeNode.?(refn);
-    freePointLists(d);
+    freeOffsets(d);
     allocator.destroy(d);
 }
 
@@ -173,7 +174,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
 
     const np: u32 = @intCast(fmt.numPlanes);
     d.num_planes = np;
-    d.point_lists = .{ null, null, null };
+    d.offsets = .{ null, null, null };
 
     d.planes = .{ true, true, true };
     hz.mapGetPlanes(zin, zout, &nodes, &d.planes, fmt.numPlanes, filter_name, &zapi) catch return;
@@ -188,7 +189,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         const ph: i32 = if (p > 0) d.vi.height >> ssh else d.vi.height;
         if (pw < radius[p] or ph < radius[p]) {
             zout.setError(filter_name ++ ": picture size must be greater than \"radius\"");
-            freePointLists(&d);
+            freeOffsets(&d);
             zapi.freeNode(d.node);
             return;
         }
@@ -199,20 +200,30 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         d.wmax[p] = @max(thr[p] * (1.0 - flat[p]) * scale, unit);
         const slot = buildSlot(rp, rp, subspl_arg[p], wmin[p], d.wmax[p], unit) catch {
             zout.setError(filter_name ++ ": out of memory");
-            freePointLists(&d);
+            freeOffsets(&d);
             zapi.freeNode(d.node);
             return;
         };
         d.sum_w_min[p] = slot.sum_w_min;
-        d.point_lists[p] = slot.pl;
         d.k[p] = slot.k;
+        if (slot.pl) |pts| {
+            defer allocator.free(pts);
+            const offs = allocator.alloc(isize, pts.len) catch {
+                zout.setError(filter_name ++ ": out of memory");
+                freeOffsets(&d);
+                zapi.freeNode(d.node);
+                return;
+            };
+            filter.resolveOffsets(pts, @intCast(pw), rp, offs);
+            d.offsets[p] = offs;
+        }
     }
 
     d.ref = zin.getNode("ref");
     if (d.ref) |refn| {
         if (!vsh.isSameVideoInfo(zapi.getVideoInfo(refn), d.vi)) {
             zout.setError(filter_name ++ ": \"ref\" must have the same format and dimensions as \"clip\"");
-            freePointLists(&d);
+            freeOffsets(&d);
             zapi.freeNode(d.node);
             zapi.freeNode(refn);
             return;

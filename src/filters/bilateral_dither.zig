@@ -1,5 +1,6 @@
 const std = @import("std");
 const subspl = @import("bilateral_dither_subspl.zig");
+const simd = @import("simd.zig");
 const allocator = std.heap.c_allocator;
 
 const vec_len = std.simd.suggestVectorLength(f32) orelse 4;
@@ -56,6 +57,14 @@ inline fn buildCacheRow(
     }
 }
 
+/// G 4-px cache groups at offsets o[0..G] joined into one 4*G-lane vector
+/// (group gi -> lanes 4*gi .. 4*gi+3).
+inline fn groups(comptime G: usize, buf: []const f32, o: [G]usize) @Vector(4 * G, f32) {
+    if (G == 1) return buf[o[0]..][0..4].*;
+    const half = G / 2;
+    return std.simd.join(groups(half, buf, o[0..half].*), groups(half, buf, o[half..].*));
+}
+
 /// f32 accumulator vector -> `T` output vector: integers round-to-nearest and
 /// clamp to [0, peak]; float passes through unchanged.
 inline fn fromAccum(
@@ -66,6 +75,26 @@ inline fn fromAccum(
     zero_v: @Vector(N, f32),
 ) @Vector(N, T) {
     return if (T == f32) p else @intFromFloat(@round(@max(@min(p, peak_v), zero_v)));
+}
+
+/// Row stride of the mirror-padded cache. The dense path needs `vec_len`
+/// right-padding for its wide loads. The sub-sampled path instead must match
+/// the C reference stride (w + 2*rh, no pad): its point lists can hold
+/// out-of-window offsets for non-square geometry (a quirk of the original's
+/// transposed VNC scan) that resolve via linear addressing into neighbouring
+/// rows, so the stride has to be identical or those reads diverge.
+pub fn cacheStride(width: u32, rh: u32, subspl_active: bool) usize {
+    return @as(usize, width) + 2 * @as(usize, rh) + (if (subspl_active) @as(usize, 0) else vec_len);
+}
+
+/// Point lists -> linear cache offsets (y * cstride + x). Depends only on the
+/// plane geometry, so Create resolves it once per plane: the tap loop then
+/// does one load + add per list instead of loading the (x, y) pair,
+/// sign-extending both and an imul per tap. Same address arithmetic, exact
+/// in isize.
+pub fn resolveOffsets(pls: []const subspl.Coord, width: u32, rh: u32, out: []isize) void {
+    const cstride_i: isize = @intCast(cacheStride(width, rh, true));
+    for (out, pls) |*o, pt| o.* = @as(isize, pt.y) * cstride_i + @as(isize, pt.x);
 }
 
 pub fn processPlane(
@@ -82,7 +111,7 @@ pub fn processPlane(
     wmax: f32,
     sum_w_min: f32,
     peak: f32, // ignored for T == f32
-    point_lists: ?[]const subspl.Coord,
+    offsets: ?[]const isize, // sub-sampled point lists, from resolveOffsets
     k: usize,
 ) void {
     const f32v = @Vector(vec_len, f32);
@@ -91,14 +120,10 @@ pub fn processPlane(
     const rh_i: i32 = @intCast(rh);
     const rv_i: i32 = @intCast(rv);
 
-    // The dense path needs `vec_len` right-padding in the stride for the wide
-    // loads. The sub-sampled path instead must match the C reference stride
-    // (w + 2*rh, no pad): its point lists can hold out-of-window offsets for
-    // non-square geometry (a quirk of the original's transposed VNC scan) that
-    // resolve via linear addressing into neighbouring rows, so the stride has
-    // to be identical or those reads diverge. Extra tail rows keep them in-buffer.
-    const subspl_active = point_lists != null;
-    const cstride: usize = @as(usize, width) + 2 * @as(usize, rh) + (if (subspl_active) @as(usize, 0) else @as(usize, vec_len));
+    // See cacheStride; extra tail rows keep the sub-sampled path's
+    // out-of-window reads in-buffer.
+    const subspl_active = offsets != null;
+    const cstride = cacheStride(width, rh, subspl_active);
     const cheight: usize = @as(usize, height) + 2 * @as(usize, rv);
     const slack: usize = if (subspl_active) (2 * @as(usize, rh) + 2) * cstride + vec_len else 0;
     const cells = cstride * cheight + slack;
@@ -147,7 +172,7 @@ pub fn processPlane(
 
     const cstride_i: isize = @intCast(cstride);
 
-    if (point_lists) |pls| {
+    if (offsets) |offs| {
         // ---- sub-sampled "speed hack" (matching the SSE subspl path) ----
         const v4 = @Vector(4, f32);
         const v8 = @Vector(8, f32);
@@ -161,6 +186,15 @@ pub fn processPlane(
         const swmin4: v4 = @splat(sum_w_min);
         const zero4: v4 = @splat(0.0);
         const peak4: v4 = @splat(peak);
+        // wide body: 4-px groups per vector, 16 lanes on AVX-512 else 8
+        const BW = if (simd.use_avx512f) 16 else 8;
+        const G = BW / 4;
+        const VB = @Vector(BW, f32);
+        const mb: VB = @splat(m);
+        const wmaxb: VB = @splat(wmax);
+        const swminb: VB = @splat(sum_w_min);
+        const zerob: VB = @splat(0.0);
+        const peakb: VB = @splat(peak);
         const NBR = subspl.NBR_POINT_LISTS;
         var y: usize = 0;
         while (y < height) : (y += 1) {
@@ -169,30 +203,69 @@ pub fn processPlane(
             const center_base: usize = (y + rv) * cstride + rh;
             const drow: usize = y * stride;
             var x: usize = 0;
-            // Two adjacent 4-px groups per iteration: the tap loop is bound by
-            // its 2-deep dependent-FMA chain (~8-9 cy per 2 taps), so an 8-lane
-            // body retires 8 px per chain step instead of 4 at the same latency.
-            // Low lanes = group x / list la, high lanes = group x+4 / list lb —
-            // exactly the loads/taps two 4-wide iterations would do, in the same
-            // per-lane order, so the accumulation is bit-exact per pixel.
+            // G adjacent 4-px groups per vector (G = 2 at 8 lanes, 4 at 16 on
+            // AVX-512): the tap loop is bound by its 2-deep dependent-FMA
+            // chain (~8-9 cy per 2 taps), so a wide body retires G groups per
+            // chain step instead of one at the same latency. Lane block gi =
+            // group x + 4*gi with its own list -- exactly the loads/taps the
+            // 4-wide iterations would do, in the same per-lane order, so the
+            // accumulation is bit-exact per pixel. Two such bodies per
+            // iteration (2*G groups): two independent sum/sum_w chains overlap
+            // the dependent adds of one with the other's loads/ALU work.
+            while (x + 2 * BW <= width) : (x += 2 * BW) {
+                var lists: [2 * G][]const isize = undefined;
+                inline for (0..2 * G) |gi| {
+                    lists[gi] = offs[((start + (x >> 2) + gi) % NBR) * k ..][0..k];
+                }
+                const base0: usize = center_base + x;
+                const base1: usize = base0 + BW;
+                const cen0: VB = src_cache[base0..][0..BW].*;
+                const cen1: VB = src_cache[base1..][0..BW].*;
+                const cr0: VB = ref_cache[base0..][0..BW].*;
+                const cr1: VB = ref_cache[base1..][0..BW].*;
+                var sum0: VB = zerob;
+                var sw0: VB = zerob;
+                var sum1: VB = zerob;
+                var sw1: VB = zerob;
+                const b0: isize = @intCast(base0);
+                for (0..k) |t| {
+                    var o: [2 * G]usize = undefined;
+                    inline for (0..2 * G) |gi| o[gi] = @intCast(b0 + 4 * gi + lists[gi][t]);
+                    const v0 = groups(G, src_cache, o[0..G].*);
+                    const r0 = groups(G, ref_cache, o[0..G].*);
+                    const v1 = groups(G, src_cache, o[G..].*);
+                    const r1 = groups(G, ref_cache, o[G..].*);
+                    const w0 = @max(simd.minPs(BW, mb - @abs(r0 - cr0), wmaxb), zerob);
+                    const w1 = @max(simd.minPs(BW, mb - @abs(r1 - cr1), wmaxb), zerob);
+                    sw0 += w0;
+                    sw1 += w1;
+                    sum0 = @mulAdd(VB, v0 - cen0, w0, sum0);
+                    sum1 = @mulAdd(VB, v1 - cen1, w1, sum1);
+                }
+                dst[drow + x ..][0..BW].* = fromAccum(T, BW, cen0 + sum0 / @max(sw0, swminb), peakb, zerob);
+                dst[drow + x + BW ..][0..BW].* = fromAccum(T, BW, cen1 + sum1 / @max(sw1, swminb), peakb, zerob);
+            }
             while (x + 8 <= width) : (x += 8) {
                 const la = (start + (x >> 2)) % NBR;
                 const lb = if (la + 1 == NBR) 0 else la + 1;
-                const cla = pls[la * k ..][0..k];
-                const clb = pls[lb * k ..][0..k];
+                const cla = offs[la * k ..][0..k];
+                const clb = offs[lb * k ..][0..k];
                 const base: usize = center_base + x;
                 const cen: v8 = src_cache[base..][0..8].*;
                 const cen_ref: v8 = ref_cache[base..][0..8].*;
                 var sum: v8 = zero8;
                 var sum_w: v8 = zero8;
                 for (cla, clb) |pa, pb| {
-                    const offa: usize = @intCast(@as(isize, @intCast(base)) + @as(isize, pa.y) * cstride_i + @as(isize, pa.x));
-                    const offb: usize = @intCast(@as(isize, @intCast(base + 4)) + @as(isize, pb.y) * cstride_i + @as(isize, pb.x));
+                    const offa: usize = @intCast(@as(isize, @intCast(base)) + pa);
+                    const offb: usize = @intCast(@as(isize, @intCast(base + 4)) + pb);
                     const v = std.simd.join(@as(v4, src_cache[offa..][0..4].*), @as(v4, src_cache[offb..][0..4].*));
                     const vr = std.simd.join(@as(v4, ref_cache[offa..][0..4].*), @as(v4, ref_cache[offb..][0..4].*));
                     const diff = v - cen;
                     const dist = @abs(vr - cen_ref);
-                    const wgt = @max(@min(m8 - dist, wmax8), zero8);
+                    // minPs: bare vminps; wmax is never NaN (Create clamps it
+                    // with @max(.., unit)), so NaN lanes resolve to wmax exactly
+                    // like @min — drops the vcmpunordps + vblendvps fixup.
+                    const wgt = @max(simd.minPs(8, m8 - dist, wmax8), zero8);
                     sum_w += wgt;
                     sum = @mulAdd(v8, diff, wgt, sum); // FMA
                 }
@@ -204,19 +277,19 @@ pub fn processPlane(
             while (x < width) : (x += 4) {
                 const take = @min(@as(usize, 4), width - x);
                 const list_idx = (start + (x >> 2)) % NBR;
-                const cl = pls[list_idx * k ..][0..k];
+                const cl = offs[list_idx * k ..][0..k];
                 const base: usize = center_base + x;
                 const cen: v4 = src_cache[base..][0..4].*;
                 const cen_ref: v4 = ref_cache[base..][0..4].*;
                 var sum: v4 = zero4;
                 var sum_w: v4 = zero4;
-                for (cl) |pt| {
-                    const off: usize = @intCast(@as(isize, @intCast(base)) + @as(isize, pt.y) * cstride_i + @as(isize, pt.x));
+                for (cl) |po| {
+                    const off: usize = @intCast(@as(isize, @intCast(base)) + po);
                     const v: v4 = src_cache[off..][0..4].*;
                     const vr: v4 = ref_cache[off..][0..4].*;
                     const diff = v - cen;
                     const dist = @abs(vr - cen_ref);
-                    const wgt = @max(@min(m4 - dist, wmax4), zero4);
+                    const wgt = @max(simd.minPs(4, m4 - dist, wmax4), zero4);
                     sum_w += wgt;
                     sum = @mulAdd(v4, diff, wgt, sum); // FMA
                 }
@@ -265,7 +338,7 @@ pub fn processPlane(
                     const vr: f32v = ref_cache[off..][0..vec_len].*;
                     const diff = v - cen;
                     const dist = @abs(vr - cen_ref);
-                    const wgt = @max(@min(m_v - dist, wmax_v), zero_v);
+                    const wgt = @max(simd.minPs(vec_len, m_v - dist, wmax_v), zero_v);
                     sum_w += wgt;
                     sum = @mulAdd(f32v, diff, wgt, sum); // FMA
                 }

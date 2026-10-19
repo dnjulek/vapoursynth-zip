@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/color_map.zig");
+const simd = @import("../filters/simd.zig");
 const vszip = @import("../vszip.zig");
 
 const Colors = filter.Colors;
@@ -33,15 +34,43 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
         const srcp = src.getReadSlice(0);
         const dstp = dst.getWriteSlices();
 
-        var y: u32 = 0;
-        while (y < h) : (y += 1) {
-            var x: u32 = 0;
-            while (x < w) : (x += 1) {
-                const idx: u32 = y * stride + x;
-                const s: u8 = srcp[idx];
-                dstp[0][idx] = d.color[0][s];
-                dstp[1][idx] = d.color[1][s];
-                dstp[2][idx] = d.color[2][s];
+        const L = simd.LutU8;
+        if (comptime L.lanes > 0) {
+            // Three 256-entry byte LUTs over the same source bytes: the scalar
+            // loop is store-commit-bound (3 byte stores + 4 loads per px); the
+            // vector LUT (simd.LutU8: vpermi2b on AVX512-VBMI, the vpshufb
+            // network on AVX2) does one full-width store per plane. Rows are
+            // padded to the frame alignment (>= the vector width), so
+            // whole-vector blocks up to the stride stay in bounds; padding
+            // bytes are don't-care.
+            const tbl = [3]L{ L.init(&d.color[0]), L.init(&d.color[1]), L.init(&d.color[2]) };
+            const wv = w - w % L.lanes;
+            var y: u32 = 0;
+            while (y < h) : (y += 1) {
+                const row = y * stride;
+                var x: u32 = 0;
+                while (x < wv) : (x += L.lanes) {
+                    const v: @Vector(L.lanes, u8) = srcp[row + x ..][0..L.lanes].*;
+                    inline for (0..3) |c| {
+                        dstp[c][row + x ..][0..L.lanes].* = tbl[c].get(v);
+                    }
+                }
+                while (x < w) : (x += 1) {
+                    const s: u8 = srcp[row + x];
+                    inline for (0..3) |c| dstp[c][row + x] = d.color[c][s];
+                }
+            }
+        } else {
+            var y: u32 = 0;
+            while (y < h) : (y += 1) {
+                var x: u32 = 0;
+                while (x < w) : (x += 1) {
+                    const idx: u32 = y * stride + x;
+                    const s: u8 = srcp[idx];
+                    dstp[0][idx] = d.color[0][s];
+                    dstp[1][idx] = d.color[1][s];
+                    dstp[2][idx] = d.color[2][s];
+                }
             }
         }
 

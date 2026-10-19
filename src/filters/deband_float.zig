@@ -107,10 +107,6 @@ fn processPlane(
 ) void {
     const minv: f32v = @splat(pixel_min);
     const maxv: f32v = @splat(pixel_max);
-    var ref1_arr: [vec_len]f32 align(32) = undefined;
-    var ref2_arr: [vec_len]f32 align(32) = undefined;
-    var ref3_arr: [vec_len]f32 align(32) = undefined;
-    var ref4_arr: [vec_len]f32 align(32) = undefined;
 
     const thr_32: f32v = @splat(thr);
     const thr1_32: f32v = @splat(thr1);
@@ -145,26 +141,28 @@ fn processPlane(
         while (x < width) : (x += vec_len) {
             var center: f32v = src[row + x ..][0..vec_len].*;
 
+            // Gathers straight into vector lanes off one centre pointer (see
+            // deband_int: the stack-array form spilled its addresses).
+            const cp: [*]const f32 = src[row + x ..].ptr;
+            var r1_32: f32v = undefined;
+            var r3_32: f32v = undefined;
             inline for (0..vec_len) |i| {
-                const base: isize = @intCast(row + x + i);
                 const idx1: isize = ref1_row[x + i];
-                ref1_arr[i] = src[@intCast(base + idx1)];
-                ref3_arr[i] = src[@intCast(base - idx1)];
+                r1_32[i] = (cp + i + @as(usize, @bitCast(idx1)))[0];
+                r3_32[i] = (cp + i - @as(usize, @bitCast(idx1)))[0];
             }
 
+            var r2_32: f32v = @splat(0); // m1/m3 never read the horizontal refs
+            var r4_32: f32v = @splat(0);
             if (mode != .m1 and mode != .m3) {
                 inline for (0..vec_len) |i| {
-                    const base: isize = @intCast(row + x + i);
-                    const idx2: isize = @abs(ref2_row[x + i]);
-                    ref2_arr[i] = src[@intCast(base + idx2)];
-                    ref4_arr[i] = src[@intCast(base - idx2)];
+                    // float path uses |ref2| (unlike deband_int's signed
+                    // ref_pos_2) — preserved as-is
+                    const idx2: isize = @intCast(@abs(ref2_row[x + i]));
+                    r2_32[i] = (cp + i + @as(usize, @bitCast(idx2)))[0];
+                    r4_32[i] = (cp + i - @as(usize, @bitCast(idx2)))[0];
                 }
             }
-
-            const r1_32: f32v = @bitCast(ref1_arr);
-            const r2_32: f32v = @bitCast(ref2_arr);
-            const r3_32: f32v = @bitCast(ref3_arr);
-            const r4_32: f32v = @bitCast(ref4_arr);
 
             switch (mode) {
                 .m1, .m3 => {

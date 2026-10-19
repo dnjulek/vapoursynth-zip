@@ -72,190 +72,156 @@ pub fn MosquitoNR(comptime T: type) type {
             };
         }
 
-        fn smooth(pl: []const I, pw: usize, dirs: []I, blur: []I, wv: usize, w: usize, h: usize, strength: i32, comptime radius: u32) void {
-            const G = struct {
-                inline fn p(row: []const I, idx: usize) i32 {
-                    return row[idx];
-                }
-            };
-            const coef0: i32 = if (radius == 1) 64 - 2 * strength else 128 - 4 * strength;
+        // u8 at 16 (AVX2) / 32 (AVX512BW) lanes: one vpmaddwd per 8 / 16 pixels on interleaved (c, X)
+        // pairs, no widening (|coef1*c| + |k2*X| <= 2 * 256 * 4080 and no
+        // -32768 pairs); the generic form is its reference.
+        inline fn blendX(c: V, x: V, kc: i32, kx: i32, comptime rnd: i32, comptime sh: u5) V {
+            if (comptime I == i16 and ((VL == 16 and simd.use_avx2) or (VL == 32 and simd.use_avx512bw)))
+                return simd.maddPairShrI16(VL, c, x, @intCast(kc), @intCast(kx), rnd, sh);
+            const W = @Vector(VL, i32);
+            const r = (@as(W, c) * @as(W, @splat(kc)) + @as(W, x) * @as(W, @splat(kx)) + @as(W, @splat(rnd))) >> @splat(sh);
+            return if (I == i32) r else @intCast(r);
+        }
+
+        // Every direction's blend shares one formula: with coef1 == 2*coef0
+        // and k3 == 2*k2, the 1/2-weight group rewrites exactly as
+        //   (coef0*c + k2*S + rnd0) >> sh0 == (coef1*c + k2*(2*S) + 2*rnd0) >> (sh0+1)
+        // (numerator doubled, one more floor shift), and the 1/4-weight
+        // group as (coef1*c + k2*(2*T + Q) + rnd1) >> sh1. So only the tap
+        // sum X differs per direction: the argmin picks X alongside the SAD,
+        // and the multiply/round/shift runs once per pixel instead of once
+        // per candidate. Range: |X| <= 8 * (65535 << 4) (u16: i32 lanes,
+        // coef1*c + k2*X < 2^30) and X <= 8 * 4080 = 32640 (u8: fits i16).
+        fn smoothRow(pr: [5][]const I, orow: []I, wv: usize, strength: i32, comptime radius: u32) void {
+            const sh = if (radius == 1) 7 else 8;
             const coef1: i32 = if (radius == 1) 128 - 4 * strength else 256 - 8 * strength;
-            const coef2: i32 = strength;
+            const rnd: i32 = 1 << (sh - 1);
 
-            var y: usize = 0;
-            while (y < h) : (y += 1) {
-                const cy = y + 2;
-                const rm2 = pl[(cy - 2) * pw ..];
-                const rm1 = pl[(cy - 1) * pw ..];
-                const r0 = pl[cy * pw ..];
-                const rp1 = pl[(cy + 1) * pw ..];
-                const rp2 = pl[(cy + 2) * pw ..];
+            const w = orow.len;
+            const rm2 = pr[0];
+            const rm1 = pr[1];
+            const r0 = pr[2];
+            const rp1 = pr[3];
+            const rp2 = pr[4];
 
-                // --- vectorized direction pass into the row-local dirs buffer ---
-                var x: usize = 0;
-                while (x < wv) : (x += VL) {
-                    const cx = x + 2;
-                    var sad: [8]V = undefined;
-
-                    if (radius == 1) {
-                        const c = vload(r0, cx);
-                        const p_m10 = vload(r0, cx - 1);
-                        const p_p10 = vload(r0, cx + 1);
-                        const p_0m1 = vload(rm1, cx);
-                        const p_0p1 = vload(rp1, cx);
-                        const p_m1m1 = vload(rm1, cx - 1);
-                        const p_p1p1 = vload(rp1, cx + 1);
-                        const p_p1m1 = vload(rm1, cx + 1);
-                        const p_m1p1 = vload(rp1, cx - 1);
-                        sad[0] = vabs(p_m10 -% c) +% vabs(p_p10 -% c);
-                        sad[4] = vabs(vshr(p_m10 +% p_m1m1, 1) -% c) +% vabs(vshr(p_p10 +% p_p1p1, 1) -% c);
-                        sad[1] = vabs(p_m1m1 -% c) +% vabs(p_p1p1 -% c);
-                        sad[5] = vabs(vshr(p_m1m1 +% p_0m1, 1) -% c) +% vabs(vshr(p_p1p1 +% p_0p1, 1) -% c);
-                        sad[2] = vabs(p_0m1 -% c) +% vabs(p_0p1 -% c);
-                        sad[6] = vabs(vshr(p_0m1 +% p_p1m1, 1) -% c) +% vabs(vshr(p_0p1 +% p_m1p1, 1) -% c);
-                        sad[3] = vabs(p_p1m1 -% c) +% vabs(p_m1p1 -% c);
-                        sad[7] = vabs(vshr(p_p10 +% p_p1m1, 1) -% c) +% vabs(vshr(p_m10 +% p_m1p1, 1) -% c);
-                    } else {
-                        const c = vload(r0, cx);
-                        const p_m10 = vload(r0, cx - 1);
-                        const p_p10 = vload(r0, cx + 1);
-                        const p_m20 = vload(r0, cx - 2);
-                        const p_p20 = vload(r0, cx + 2);
-                        const p_0m1 = vload(rm1, cx);
-                        const p_0p1 = vload(rp1, cx);
-                        const p_0m2 = vload(rm2, cx);
-                        const p_0p2 = vload(rp2, cx);
-                        const p_m1m1 = vload(rm1, cx - 1);
-                        const p_p1p1 = vload(rp1, cx + 1);
-                        const p_p1m1 = vload(rm1, cx + 1);
-                        const p_m1p1 = vload(rp1, cx - 1);
-                        const p_m2m2 = vload(rm2, cx - 2);
-                        const p_p2p2 = vload(rp2, cx + 2);
-                        const p_p2m2 = vload(rm2, cx + 2);
-                        const p_m2p2 = vload(rp2, cx - 2);
-                        const p_m2m1 = vload(rm1, cx - 2);
-                        const p_p2p1 = vload(rp1, cx + 2);
-                        const p_m1m2 = vload(rm2, cx - 1);
-                        const p_p1p2 = vload(rp2, cx + 1);
-                        const p_p1m2 = vload(rm2, cx + 1);
-                        const p_m1p2 = vload(rp2, cx - 1);
-                        const p_p2m1 = vload(rm1, cx + 2);
-                        const p_m2p1 = vload(rp1, cx - 2);
-                        sad[0] = vabs(p_m10 -% c) +% vabs(p_p10 -% c) +% vabs(p_m20 -% c) +% vabs(p_p20 -% c);
-                        sad[4] = vabs(p_m2m1 -% c) +% vabs(p_p2p1 -% c) +%
-                            vabs(vshr(p_m10 +% p_m1m1, 1) -% c) +% vabs(vshr(p_p10 +% p_p1p1, 1) -% c);
-                        sad[1] = vabs(p_m1m1 -% c) +% vabs(p_p1p1 -% c) +% vabs(p_m2m2 -% c) +% vabs(p_p2p2 -% c);
-                        sad[5] = vabs(p_m1m2 -% c) +% vabs(p_p1p2 -% c) +%
-                            vabs(vshr(p_m1m1 +% p_0m1, 1) -% c) +% vabs(vshr(p_p1p1 +% p_0p1, 1) -% c);
-                        sad[2] = vabs(p_0m1 -% c) +% vabs(p_0p1 -% c) +% vabs(p_0m2 -% c) +% vabs(p_0p2 -% c);
-                        sad[6] = vabs(p_p1m2 -% c) +% vabs(p_m1p2 -% c) +%
-                            vabs(vshr(p_0m1 +% p_p1m1, 1) -% c) +% vabs(vshr(p_0p1 +% p_m1p1, 1) -% c);
-                        sad[3] = vabs(p_p1m1 -% c) +% vabs(p_m1p1 -% c) +% vabs(p_p2m2 -% c) +% vabs(p_m2p2 -% c);
-                        sad[7] = vabs(p_p2m1 -% c) +% vabs(p_m2p1 -% c) +%
-                            vabs(vshr(p_p1m1 +% p_p10, 1) -% c) +% vabs(vshr(p_m1p1 +% p_m10, 1) -% c);
-                    }
-
-                    var bv = sad[0];
-                    var bi: V = @splat(0);
-                    inline for (1..8) |id| {
-                        const lt = sad[id] < bv;
-                        bi = @select(I, lt, vsplat(@as(I, id)), bi);
-                        bv = @select(I, lt, sad[id], bv);
-                    }
-                    const flat = bv == vsplat(0);
-                    vstore(dirs, x, @select(I, flat, vsplat(8), bi));
-                }
-
-                const orow = blur[y * w ..];
-                var bx: usize = 0;
+            // Runs over the padded width wv (the pl rows' round-up slack holds
+            // valid samples); the last partial vector stores via a copy.
+            var x: usize = 0;
+            while (x < wv) : (x += VL) {
+                const cx = x + 2;
+                var sad: [8]V = undefined;
+                var xs: [8]V = undefined;
+                const c = vload(r0, cx);
                 if (radius == 1) {
-                    while (bx < w) : (bx += 1) {
-                        const cx = bx + 2;
-                        const c = G.p(r0, cx);
-                        orow[bx] = @intCast(switch (dirs[bx]) {
-                            0 => (coef0 * c + coef2 * (G.p(r0, cx - 1) + G.p(r0, cx + 1)) + 32) >> 6,
-                            1 => (coef0 * c + coef2 * (G.p(rm1, cx - 1) + G.p(rp1, cx + 1)) + 32) >> 6,
-                            2 => (coef0 * c + coef2 * (G.p(rm1, cx) + G.p(rp1, cx)) + 32) >> 6,
-                            3 => (coef0 * c + coef2 * (G.p(rm1, cx + 1) + G.p(rp1, cx - 1)) + 32) >> 6,
-                            4 => (coef1 * c + coef2 * (G.p(rm1, cx - 1) + G.p(r0, cx - 1) + G.p(r0, cx + 1) + G.p(rp1, cx + 1)) + 64) >> 7,
-                            5 => (coef1 * c + coef2 * (G.p(rm1, cx - 1) + G.p(rm1, cx) + G.p(rp1, cx) + G.p(rp1, cx + 1)) + 64) >> 7,
-                            6 => (coef1 * c + coef2 * (G.p(rm1, cx + 1) + G.p(rm1, cx) + G.p(rp1, cx) + G.p(rp1, cx - 1)) + 64) >> 7,
-                            7 => (coef1 * c + coef2 * (G.p(rm1, cx + 1) + G.p(r0, cx + 1) + G.p(r0, cx - 1) + G.p(rp1, cx - 1)) + 64) >> 7,
-                            else => c, // 8 == flat
-                        });
-                    }
+                    const p_m10 = vload(r0, cx - 1);
+                    const p_p10 = vload(r0, cx + 1);
+                    const p_0m1 = vload(rm1, cx);
+                    const p_0p1 = vload(rp1, cx);
+                    const p_m1m1 = vload(rm1, cx - 1);
+                    const p_p1p1 = vload(rp1, cx + 1);
+                    const p_p1m1 = vload(rm1, cx + 1);
+                    const p_m1p1 = vload(rp1, cx - 1);
+                    sad[0] = vabs(p_m10 -% c) +% vabs(p_p10 -% c);
+                    sad[4] = vabs(vshr(p_m10 +% p_m1m1, 1) -% c) +% vabs(vshr(p_p10 +% p_p1p1, 1) -% c);
+                    sad[1] = vabs(p_m1m1 -% c) +% vabs(p_p1p1 -% c);
+                    sad[5] = vabs(vshr(p_m1m1 +% p_0m1, 1) -% c) +% vabs(vshr(p_p1p1 +% p_0p1, 1) -% c);
+                    sad[2] = vabs(p_0m1 -% c) +% vabs(p_0p1 -% c);
+                    sad[6] = vabs(vshr(p_0m1 +% p_p1m1, 1) -% c) +% vabs(vshr(p_0p1 +% p_m1p1, 1) -% c);
+                    sad[3] = vabs(p_p1m1 -% c) +% vabs(p_m1p1 -% c);
+                    sad[7] = vabs(vshr(p_p10 +% p_p1m1, 1) -% c) +% vabs(vshr(p_m10 +% p_m1p1, 1) -% c);
+                    const s0 = p_m10 +% p_p10;
+                    const s1 = p_m1m1 +% p_p1p1;
+                    const s2 = p_0m1 +% p_0p1;
+                    const s3 = p_p1m1 +% p_m1p1;
+                    xs = .{ s0 +% s0, s1 +% s1, s2 +% s2, s3 +% s3, s0 +% s1, s1 +% s2, s3 +% s2, s3 +% s0 };
                 } else {
-                    const coef3: i32 = 2 * strength;
-                    while (bx < w) : (bx += 1) {
-                        const cx = bx + 2;
-                        const c = G.p(r0, cx);
-                        orow[bx] = @intCast(switch (dirs[bx]) {
-                            0 => (coef0 * c + coef2 * (G.p(r0, cx - 2) + G.p(r0, cx - 1) + G.p(r0, cx + 1) + G.p(r0, cx + 2)) + 64) >> 7,
-                            1 => (coef0 * c + coef2 * (G.p(rm2, cx - 2) + G.p(rm1, cx - 1) + G.p(rp1, cx + 1) + G.p(rp2, cx + 2)) + 64) >> 7,
-                            2 => (coef0 * c + coef2 * (G.p(rm2, cx) + G.p(rm1, cx) + G.p(rp1, cx) + G.p(rp2, cx)) + 64) >> 7,
-                            3 => (coef0 * c + coef2 * (G.p(rm2, cx + 2) + G.p(rm1, cx + 1) + G.p(rp1, cx - 1) + G.p(rp2, cx - 2)) + 64) >> 7,
-                            4 => (coef1 * c + coef3 * (G.p(rm1, cx - 2) + G.p(rp1, cx + 2)) + coef2 * (G.p(rm1, cx - 1) + G.p(r0, cx - 1) + G.p(r0, cx + 1) + G.p(rp1, cx + 1)) + 128) >> 8,
-                            5 => (coef1 * c + coef3 * (G.p(rm2, cx - 1) + G.p(rp2, cx + 1)) + coef2 * (G.p(rm1, cx - 1) + G.p(rm1, cx) + G.p(rp1, cx) + G.p(rp1, cx + 1)) + 128) >> 8,
-                            6 => (coef1 * c + coef3 * (G.p(rm2, cx + 1) + G.p(rp2, cx - 1)) + coef2 * (G.p(rm1, cx + 1) + G.p(rm1, cx) + G.p(rp1, cx) + G.p(rp1, cx - 1)) + 128) >> 8,
-                            7 => (coef1 * c + coef3 * (G.p(rm1, cx + 2) + G.p(rp1, cx - 2)) + coef2 * (G.p(rm1, cx + 1) + G.p(r0, cx + 1) + G.p(r0, cx - 1) + G.p(rp1, cx - 1)) + 128) >> 8,
-                            else => c, // 8 == flat
-                        });
-                    }
+                    const p_m10 = vload(r0, cx - 1);
+                    const p_p10 = vload(r0, cx + 1);
+                    const p_m20 = vload(r0, cx - 2);
+                    const p_p20 = vload(r0, cx + 2);
+                    const p_0m1 = vload(rm1, cx);
+                    const p_0p1 = vload(rp1, cx);
+                    const p_0m2 = vload(rm2, cx);
+                    const p_0p2 = vload(rp2, cx);
+                    const p_m1m1 = vload(rm1, cx - 1);
+                    const p_p1p1 = vload(rp1, cx + 1);
+                    const p_p1m1 = vload(rm1, cx + 1);
+                    const p_m1p1 = vload(rp1, cx - 1);
+                    const p_m2m2 = vload(rm2, cx - 2);
+                    const p_p2p2 = vload(rp2, cx + 2);
+                    const p_p2m2 = vload(rm2, cx + 2);
+                    const p_m2p2 = vload(rp2, cx - 2);
+                    const p_m2m1 = vload(rm1, cx - 2);
+                    const p_p2p1 = vload(rp1, cx + 2);
+                    const p_m1m2 = vload(rm2, cx - 1);
+                    const p_p1p2 = vload(rp2, cx + 1);
+                    const p_p1m2 = vload(rm2, cx + 1);
+                    const p_m1p2 = vload(rp2, cx - 1);
+                    const p_p2m1 = vload(rm1, cx + 2);
+                    const p_m2p1 = vload(rp1, cx - 2);
+                    sad[0] = vabs(p_m10 -% c) +% vabs(p_p10 -% c) +% vabs(p_m20 -% c) +% vabs(p_p20 -% c);
+                    sad[4] = vabs(p_m2m1 -% c) +% vabs(p_p2p1 -% c) +%
+                        vabs(vshr(p_m10 +% p_m1m1, 1) -% c) +% vabs(vshr(p_p10 +% p_p1p1, 1) -% c);
+                    sad[1] = vabs(p_m1m1 -% c) +% vabs(p_p1p1 -% c) +% vabs(p_m2m2 -% c) +% vabs(p_p2p2 -% c);
+                    sad[5] = vabs(p_m1m2 -% c) +% vabs(p_p1p2 -% c) +%
+                        vabs(vshr(p_m1m1 +% p_0m1, 1) -% c) +% vabs(vshr(p_p1p1 +% p_0p1, 1) -% c);
+                    sad[2] = vabs(p_0m1 -% c) +% vabs(p_0p1 -% c) +% vabs(p_0m2 -% c) +% vabs(p_0p2 -% c);
+                    sad[6] = vabs(p_p1m2 -% c) +% vabs(p_m1p2 -% c) +%
+                        vabs(vshr(p_0m1 +% p_p1m1, 1) -% c) +% vabs(vshr(p_0p1 +% p_m1p1, 1) -% c);
+                    sad[3] = vabs(p_p1m1 -% c) +% vabs(p_m1p1 -% c) +% vabs(p_p2m2 -% c) +% vabs(p_m2p2 -% c);
+                    sad[7] = vabs(p_p2m1 -% c) +% vabs(p_m2p1 -% c) +%
+                        vabs(vshr(p_p1m1 +% p_p10, 1) -% c) +% vabs(vshr(p_m1p1 +% p_m10, 1) -% c);
+                    // inner 2-tap sums shared by both weight groups
+                    const q0 = p_m10 +% p_p10;
+                    const q1 = p_m1m1 +% p_p1p1;
+                    const q2 = p_0m1 +% p_0p1;
+                    const q3 = p_p1m1 +% p_m1p1;
+                    const s0 = (p_m20 +% p_p20) +% q0;
+                    const s1 = (p_m2m2 +% p_p2p2) +% q1;
+                    const s2 = (p_0m2 +% p_0p2) +% q2;
+                    const s3 = (p_p2m2 +% p_m2p2) +% q3;
+                    const t4 = p_m2m1 +% p_p2p1;
+                    const t5 = p_m1m2 +% p_p1p2;
+                    const t6 = p_p1m2 +% p_m1p2;
+                    const t7 = p_p2m1 +% p_m2p1;
+                    xs = .{
+                        s0 +% s0,                 s1 +% s1,                 s2 +% s2,                 s3 +% s3,
+                        (t4 +% t4) +% (q1 +% q0), (t5 +% t5) +% (q1 +% q2), (t6 +% t6) +% (q3 +% q2), (t7 +% t7) +% (q3 +% q0),
+                    };
+                }
+
+                // strict < keeps the first minimum, as the old direction index did
+                var bv = sad[0];
+                var bx = xs[0];
+                inline for (1..8) |id| {
+                    const lt = sad[id] < bv;
+                    bx = @select(I, lt, xs[id], bx);
+                    bv = @select(I, lt, sad[id], bv);
+                }
+                const out = @select(I, bv == vsplat(0), c, blendX(c, bx, coef1, strength, rnd, sh)); // flat keeps c
+                if (x + VL <= w) {
+                    vstore(orow, x, out);
+                } else {
+                    const tail: [VL]I = out;
+                    @memcpy(orow[x..w], tail[0 .. w - x]);
                 }
             }
         }
 
-        fn fwdV(in: []const I, istride: usize, ibase: usize, va: []I, vd: []I, w: usize, h: usize) void {
-            const na = (h + 1) / 2;
-            const nd = h / 2;
-            var j: usize = 0;
-            while (j < nd) : (j += 1) {
-                const r0 = ibase + (2 * j) * istride;
-                const r1 = ibase + (2 * j + 1) * istride;
-                const r2 = ibase + (if (2 * j + 2 < h) 2 * j + 2 else h - 2) * istride;
-                var x: usize = 0;
-                while (x + VL <= w) : (x += VL)
-                    vstore(vd, j * w + x, vload(in, r1 + x) -% vshr(vload(in, r0 + x) +% vload(in, r2 + x), 1));
-                while (x < w) : (x += 1)
-                    vd[j * w + x] = in[r1 + x] -% ((in[r0 + x] +% in[r2 + x]) >> 1);
+        // One vertical lifting step of the 5/3 integer wavelet on a row:
+        // out = base -/+ ((a + b) >> sh). Forward predict is (sub, 1), forward
+        // update (add, 2), inverse update (sub, 2), inverse predict (add, 1);
+        // process() resolves the row edge mirrors when picking a and b.
+        fn liftRow(comptime sub: bool, comptime sh: comptime_int, base: []const I, a: []const I, b: []const I, out: []I) void {
+            const w = out.len;
+            var x: usize = 0;
+            while (x + VL <= w) : (x += VL) {
+                const t = vshr(vload(a, x) +% vload(b, x), sh);
+                vstore(out, x, if (sub) vload(base, x) -% t else vload(base, x) +% t);
             }
-            j = 0;
-            while (j < na) : (j += 1) {
-                const r0 = ibase + (2 * j) * istride;
-                const jl = if (j >= 1) j - 1 else 0;
-                const jr = if (j < nd) j else nd - 1;
-                var x: usize = 0;
-                while (x + VL <= w) : (x += VL)
-                    vstore(va, j * w + x, vload(in, r0 + x) +% vshr(vload(vd, jl * w + x) +% vload(vd, jr * w + x), 2));
-                while (x < w) : (x += 1)
-                    va[j * w + x] = in[r0 + x] +% ((vd[jl * w + x] +% vd[jr * w + x]) >> 2);
-            }
-        }
-
-        fn invV(va: []const I, vd: []const I, out: []I, w: usize, h: usize) void {
-            const na = (h + 1) / 2;
-            const nd = h / 2;
-            var j: usize = 0;
-            while (j < na) : (j += 1) {
-                const jl = if (j >= 1) j - 1 else 0;
-                const jr = if (j < nd) j else nd - 1;
-                const orow = (2 * j) * w;
-                var x: usize = 0;
-                while (x + VL <= w) : (x += VL)
-                    vstore(out, orow + x, vload(va, j * w + x) -% vshr(vload(vd, jl * w + x) +% vload(vd, jr * w + x), 2));
-                while (x < w) : (x += 1)
-                    out[orow + x] = va[j * w + x] -% ((vd[jl * w + x] +% vd[jr * w + x]) >> 2);
-            }
-            j = 0;
-            while (j < nd) : (j += 1) {
-                const r0 = (2 * j) * w;
-                const r2 = (if (2 * j + 2 < h) 2 * j + 2 else h - 2) * w;
-                const orow = (2 * j + 1) * w;
-                var x: usize = 0;
-                while (x + VL <= w) : (x += VL)
-                    vstore(out, orow + x, vload(vd, j * w + x) +% vshr(vload(out, r0 + x) +% vload(out, r2 + x), 1));
-                while (x < w) : (x += 1)
-                    out[orow + x] = vd[j * w + x] +% ((out[r0 + x] +% out[r2 + x]) >> 1);
+            while (x < w) : (x += 1) {
+                const t = (a[x] +% b[x]) >> sh;
+                out[x] = if (sub) base[x] -% t else base[x] +% t;
             }
         }
 
@@ -350,6 +316,157 @@ pub fn MosquitoNR(comptime T: type) type {
             }
         }
 
+        // 12-bit fixed point -> output row (vectorized; scalar tail)
+        fn storeRow(src: []const I, drow: [*]T, max_val: I) void {
+            const w = src.len;
+            const lo: V = @splat(0);
+            const hi: V = @splat(max_val);
+            var x: usize = 0;
+            while (x + VL <= w) : (x += VL) {
+                const v = @min(@max(vshr(vload(src, x) +% vsplat(8), 4), lo), hi);
+                drow[x..][0..VL].* = simd.intCastSignedToUnsigned(VT, v);
+            }
+            while (x < w) : (x += 1) {
+                var v = (src[x] +% 8) >> 4;
+                if (v < 0) v = 0;
+                if (v > max_val) v = max_val;
+                drow[x] = @intCast(v);
+            }
+        }
+
+        // Ring of the 12-bit source rows with the 2-sample mirror border.
+        // Padded row q (= y + 2, -2 <= y <= h + 1) lives in slot q % n and
+        // mirrors like the full padded plane did (-2 -> 2, h -> h-2, ...);
+        // its columns hold the row at +2, mirrored at both ends, and the
+        // round-up slack to wv + 4 repeats the last sample.
+        const PadRing = struct {
+            const n = 8; // live window: q in [2j+1, 2j+6] per output pair j
+            buf: []I,
+            pw: usize,
+            w: usize,
+            h: usize,
+            srcp: [*]const T,
+            stride: usize,
+            next: usize = 0,
+
+            fn row(self: *const PadRing, q: usize) []const I {
+                return self.buf[(q % n) * self.pw ..][0..self.pw];
+            }
+            // source row y, unpadded
+            fn data(self: *const PadRing, y: usize) []const I {
+                return self.row(y + 2)[2..][0..self.w];
+            }
+            fn fillTo(self: *PadRing, q_end: usize) void {
+                const w = self.w;
+                while (self.next < q_end) : (self.next += 1) {
+                    const q = self.next;
+                    const ys = if (q < 2) 2 - q else if (q >= self.h + 2) 2 * self.h - q else q - 2;
+                    const srow = self.srcp[ys * self.stride ..];
+                    const dst = self.buf[(q % n) * self.pw ..][0..self.pw];
+                    var x: usize = 0;
+                    while (x + VL <= w) : (x += VL) {
+                        const s: VT = srow[x..][0..VL].*;
+                        dst[2 + x ..][0..VL].* = @as(V, @intCast(s)) << @as(VShift, @splat(4));
+                    }
+                    while (x < w) : (x += 1)
+                        dst[2 + x] = @as(I, @intCast(srow[x])) << 4;
+                    dst[0] = dst[4]; // col -2 -> +2
+                    dst[1] = dst[3]; // col -1 -> +1
+                    dst[w + 2] = dst[w]; // col w  -> w-2
+                    dst[w + 3] = dst[w - 1]; // col w+1 -> w-3
+                    for (dst[w + 4 ..]) |*e| e.* = dst[w - 1]; // round-up slack (dir ignored)
+                }
+            }
+        };
+
+        // Row-streamed pipeline: smooth -> forward 5/3 of the smoothed and
+        // the original plane -> recombine -> inverse -> store, all through
+        // small row rings. The whole-plane form kept ~12 full i16 planes per
+        // frame (~25 MB at 1080p u8) and went DRAM-bound with every frame
+        // worker active (16T slower than 8T). Each row is computed by the
+        // same integer ops from the same inputs, so the output is identical.
+        fn stream(pr: *PadRing, dstp: [*]T, stride: usize, strength: i32, restore: i32, max_val: I, wv: usize, a: std.mem.Allocator, comptime radius: u32) !void {
+            const w = pr.w;
+            const h = pr.h;
+            const blur = try a.alloc(I, 4 * w); // blur row y in slot y % 4
+
+            if (restore == 0) {
+                for (0..h) |y| {
+                    pr.fillTo(y + 5);
+                    const orow = blur[0..w];
+                    smoothRow(.{ pr.row(y), pr.row(y + 1), pr.row(y + 2), pr.row(y + 3), pr.row(y + 4) }, orow, wv, strength, radius);
+                    storeRow(orow, dstp + y * stride, max_val);
+                }
+                return;
+            }
+
+            const na = @divCeil(h, 2);
+            const nd = h / 2;
+            const naw = @divCeil(w, 2);
+            const ndw = w / 2;
+            const vd_b = try a.alloc(I, 2 * w); // vertical detail rows j % 2
+            const vd_o = try a.alloc(I, 2 * w);
+            const even = try a.alloc(I, 2 * w); // reconstructed even rows j % 2
+            const va = try a.alloc(I, w); // vertical approximation, then va_rec
+            const odd = try a.alloc(I, w);
+            const ll_o = try a.alloc(I, naw);
+            const ll_b = try a.alloc(I, naw);
+            const hd_b = try a.alloc(I, ndw);
+            const hd_o = try a.alloc(I, ndw); // discarded
+
+            const R = struct {
+                inline fn at(buf: []I, i: usize, len: usize, comptime slots: usize) []I {
+                    return buf[(i % slots) * len ..][0..len];
+                }
+            };
+
+            var by: usize = 0; // next blur row to produce
+            for (0..na) |j| {
+                const last = @min(2 * j + 2, h - 1);
+                while (by <= last) : (by += 1) {
+                    pr.fillTo(by + 5);
+                    smoothRow(.{ pr.row(by), pr.row(by + 1), pr.row(by + 2), pr.row(by + 3), pr.row(by + 4) }, R.at(blur, by, w, 4), wv, strength, radius);
+                }
+
+                if (j < nd) {
+                    const r2 = if (2 * j + 2 < h) 2 * j + 2 else h - 2;
+                    liftRow(true, 1, R.at(blur, 2 * j + 1, w, 4), R.at(blur, 2 * j, w, 4), R.at(blur, r2, w, 4), R.at(vd_b, j, w, 2));
+                    liftRow(true, 1, pr.data(2 * j + 1), pr.data(2 * j), pr.data(r2), R.at(vd_o, j, w, 2));
+                }
+                const jl = if (j >= 1) j - 1 else 0;
+                const jr = if (j < nd) j else nd - 1;
+
+                // horizontal split of both approximation rows
+                liftRow(false, 2, R.at(blur, 2 * j, w, 4), R.at(vd_b, jl, w, 2), R.at(vd_b, jr, w, 2), va);
+                if (restore != 128) fwdH(va, ll_b, hd_b, w, 1, true) else fwdH(va, ll_b, hd_b, w, 1, false);
+                liftRow(false, 2, pr.data(2 * j), R.at(vd_o, jl, w, 2), R.at(vd_o, jr, w, 2), va);
+                fwdH(va, ll_o, hd_o, w, 1, true);
+
+                // restore == 128 (default) keeps ll = ll_o untouched, so the
+                // smoothed approximation band is never computed.
+                if (restore != 128) {
+                    const inv: i32 = 128 - restore;
+                    for (ll_o, ll_b) |*o, b| {
+                        o.* = @intCast((restore * w32(o.*) + inv * w32(b) + 64) >> 7);
+                    }
+                }
+
+                invH(ll_o, hd_b, va, w, 1);
+                const e = R.at(even, j, w, 2);
+                liftRow(true, 2, va, R.at(vd_b, jl, w, 2), R.at(vd_b, jr, w, 2), e);
+                storeRow(e, dstp + 2 * j * stride, max_val);
+                if (j >= 1) {
+                    liftRow(false, 1, R.at(vd_b, j - 1, w, 2), R.at(even, j - 1, w, 2), e, odd);
+                    storeRow(odd, dstp + (2 * j - 1) * stride, max_val);
+                }
+            }
+            if (nd == na) { // even h: odd row h-1 mirrors its lower even neighbour (h -> h-2)
+                const e = R.at(even, nd - 1, w, 2);
+                liftRow(false, 1, R.at(vd_b, nd - 1, w, 2), e, e, odd);
+                storeRow(odd, dstp + (h - 1) * stride, max_val);
+            }
+        }
+
         pub fn process(
             noalias dstp: [*]T,
             stride: usize,
@@ -372,111 +489,23 @@ pub fn MosquitoNR(comptime T: type) type {
                 return;
             }
 
-            const w = width;
-            const h = height;
-            const na_h = @divCeil(h, 2);
-            const nd_h = h / 2;
-            const na_w = @divCeil(w, 2);
-            const nd_w = w / 2;
-            const wv = @divCeil(w, VL) * VL;
             // alloc is the caller's per-frame arena, reused across frames;
-            // every buffer below is fully written before it is read, so the
-            // reuse is deterministic.
-            const a = alloc;
-
-            const blur = try a.alloc(I, w * h);
-
+            // every buffer is fully written before it is read, so the reuse
+            // is deterministic.
+            const wv = @divCeil(width, VL) * VL;
             const pw = wv + 4;
-            const ph = h + 4;
-            const pl_base = 2 * pw + 2;
-            const pl = try a.alloc(I, pw * ph);
-            {
-                var y: usize = 0;
-                while (y < h) : (y += 1) {
-                    const srow = srcp[y * stride ..];
-                    const dst = pl[(y + 2) * pw ..];
-                    var x: usize = 0;
-                    while (x + VL <= w) : (x += VL) {
-                        const s: VT = srow[x..][0..VL].*;
-                        dst[2 + x ..][0..VL].* = @as(V, @intCast(s)) << @as(VShift, @splat(4));
-                    }
-                    while (x < w) : (x += 1)
-                        dst[2 + x] = @as(I, @intCast(srow[x])) << 4;
-                    dst[0] = dst[4]; // col -2 -> +2
-                    dst[1] = dst[3]; // col -1 -> +1
-                    dst[w + 2] = dst[w]; // col w  -> w-2
-                    dst[w + 3] = dst[w - 1]; // col w+1 -> w-3
-                    for (dst[w + 4 .. pw]) |*e| e.* = dst[w - 1]; // round-up slack (dir ignored)
-                }
-                // top/bottom reflected rows (whole rows incl. padding)
-                @memcpy(pl[0..pw], pl[4 * pw ..][0..pw]); // row -2 -> +2
-                @memcpy(pl[pw..][0..pw], pl[3 * pw ..][0..pw]); // row -1 -> +1
-                @memcpy(pl[(h + 2) * pw ..][0..pw], pl[h * pw ..][0..pw]); // row h   -> h-2
-                @memcpy(pl[(h + 3) * pw ..][0..pw], pl[(h - 1) * pw ..][0..pw]); // row h+1 -> h-3
-            }
-
-            const dirs = try a.alloc(I, wv); // small per-row scratch (stays in cache)
+            var pr: PadRing = .{
+                .buf = try alloc.alloc(I, PadRing.n * pw),
+                .pw = pw,
+                .w = width,
+                .h = height,
+                .srcp = srcp,
+                .stride = stride,
+            };
             if (radius == 1) {
-                smooth(pl, pw, dirs, blur, wv, w, h, strength, 1);
+                try stream(&pr, dstp, stride, strength, restore, max_val, wv, alloc, 1);
             } else {
-                smooth(pl, pw, dirs, blur, wv, w, h, strength, 2);
-            }
-
-            const out12 = blur; // reused below as the reconstruction target
-
-            if (restore != 0) {
-                const va_o = try a.alloc(I, na_h * w);
-                const va_b = try a.alloc(I, na_h * w);
-                const vd_b = try a.alloc(I, nd_h * w);
-                const ll_o = try a.alloc(I, na_h * na_w);
-                const ll_b = try a.alloc(I, na_h * na_w);
-                const hd_b = try a.alloc(I, na_h * nd_w);
-                const va_rec = try a.alloc(I, na_h * w);
-                const scratch_vd = try a.alloc(I, nd_h * w);
-                const scratch_hd = try a.alloc(I, na_h * nd_w);
-
-                fwdV(pl, pw, pl_base, va_o, scratch_vd, w, h); // original: read pl interior
-                fwdH(va_o, ll_o, scratch_hd, w, na_h, true);
-
-                fwdV(blur, w, 0, va_b, vd_b, w, h); // smoothed: tight plane
-
-                const ll: []const I = ll_o;
-                if (restore != 128) {
-                    fwdH(va_b, ll_b, hd_b, w, na_h, true);
-                    const inv: i32 = 128 - restore;
-                    for (ll_o, ll_b) |*o, b| {
-                        o.* = @intCast((restore * w32(o.*) + inv * w32(b) + 64) >> 7);
-                    }
-                } else {
-                    // restore == 128 (default) keeps ll = ll_o untouched, so
-                    // the smoothed approximation band would be discarded —
-                    // skip computing it.
-                    fwdH(va_b, ll_b, hd_b, w, na_h, false);
-                }
-
-                invH(ll, hd_b, va_rec, w, na_h);
-                invV(va_rec, vd_b, out12, w, h);
-            }
-
-            // store 12-bit fixed point -> output (vectorized; scalar tail)
-            {
-                const lo: V = @splat(0);
-                const hi: V = @splat(max_val);
-                var y: usize = 0;
-                while (y < h) : (y += 1) {
-                    const drow = dstp[y * stride ..];
-                    var x: usize = 0;
-                    while (x + VL <= w) : (x += VL) {
-                        const v = @min(@max(vshr(vload(out12, y * w + x) +% vsplat(8), 4), lo), hi);
-                        drow[x..][0..VL].* = simd.intCastSignedToUnsigned(VT, v);
-                    }
-                    while (x < w) : (x += 1) {
-                        var v = (out12[y * w + x] +% 8) >> 4;
-                        if (v < 0) v = 0;
-                        if (v > max_val) v = max_val;
-                        drow[x] = @intCast(v);
-                    }
-                }
+                try stream(&pr, dstp, stride, strength, restore, max_val, wv, alloc, 2);
             }
         }
     };

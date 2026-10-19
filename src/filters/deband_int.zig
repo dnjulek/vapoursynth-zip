@@ -111,11 +111,6 @@ fn processPlane(
     comptime blur_first: bool,
     comptime add_grain: bool,
 ) void {
-    var ref1_arr: [vec_len]u16 align(32) = undefined;
-    var ref2_arr: [vec_len]u16 align(32) = undefined;
-    var ref3_arr: [vec_len]u16 align(32) = undefined;
-    var ref4_arr: [vec_len]u16 align(32) = undefined;
-
     const thr_32: u32v = @splat(@as(u32, thr));
     const minv: i32v = @splat(pixel_min);
     const maxv: i32v = @splat(pixel_max);
@@ -152,29 +147,35 @@ fn processPlane(
             const src_16: u16v = src[row + x ..][0..vec_len].*;
             var center: i32v = @intCast(src_16);
 
+            // Gathers straight into vector lanes off one centre pointer: the
+            // stack-array form made LLVM materialize all 4*vec_len addresses
+            // up front and spill them (rbp-slot reloads were the loop's hot
+            // spots). Same reads, same lanes.
+            const cp: [*]const u16 = src[row + x ..].ptr;
+            var r1_16: u16v = undefined;
+            var r3_16: u16v = undefined;
             inline for (0..vec_len) |i| {
-                const base: isize = @intCast(row + x + i);
                 const idx1: isize = ref1_row[x + i];
-                ref1_arr[i] = src[@intCast(base + idx1)];
-                ref3_arr[i] = src[@intCast(base - idx1)];
+                r1_16[i] = (cp + i + @as(usize, @bitCast(idx1)))[0];
+                r3_16[i] = (cp + i - @as(usize, @bitCast(idx1)))[0];
             }
 
+            var r2_16: u16v = undefined;
+            var r4_16: u16v = undefined;
             if (mode != .m1 and mode != .m3) {
                 inline for (0..vec_len) |i| {
-                    const base: isize = @intCast(row + x + i);
                     // idx2 may be negative (sample_mode 2): +idx2 reads the
                     // "forward" ref_2, -idx2 the "backward" ref_4 — matching the
                     // signed ref_pos_2 in neo_f3kdb.
                     const idx2: isize = ref2_row[x + i];
-                    ref2_arr[i] = src[@intCast(base + idx2)];
-                    ref4_arr[i] = src[@intCast(base - idx2)];
+                    r2_16[i] = (cp + i + @as(usize, @bitCast(idx2)))[0];
+                    r4_16[i] = (cp + i - @as(usize, @bitCast(idx2)))[0];
                 }
+            } else {
+                // m1/m3 never read the horizontal refs
+                r2_16 = @splat(0);
+                r4_16 = @splat(0);
             }
-
-            const r1_16: u16v = @bitCast(ref1_arr);
-            const r2_16: u16v = @bitCast(ref2_arr);
-            const r3_16: u16v = @bitCast(ref3_arr);
-            const r4_16: u16v = @bitCast(ref4_arr);
             const r1_32: i32v = @intCast(r1_16);
             const r2_32: i32v = @intCast(r2_16);
             const r3_32: i32v = @intCast(r3_16);

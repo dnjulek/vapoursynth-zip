@@ -221,6 +221,78 @@ inline fn colScale(comptime T: type, col: []const u32, tmp: []T, w: u32, radius:
     }
 }
 
+/// `scaleVec` before the final narrowing: the quotient in u32 lanes. Every lane
+/// is a box average, so it is <= maxInt(T) and the callers' saturating packs
+/// never actually saturate.
+pub inline fn scaleVec32(comptime T: type, comptime n: usize, s: @Vector(n, u32), mg: anytype) @Vector(n, u32) {
+    if (@TypeOf(mg).narrow) {
+        const mulv: @Vector(n, u32) = @splat(mg.mul);
+        const sh: @Vector(n, u5) = @splat(@intCast(mg.shift));
+        return (s *% mulv) >> sh;
+    }
+    _ = T;
+    if (comptime simd.use_avx2 and n % 2 == 0) {
+        // x86 even/odd split (shift >= 32 always holds for the wide magic, see
+        // magicFor). Each u64 lane carries two u32 sums; vpmuludq multiplies
+        // the low dword of each qword by the zero-extended magic. The even
+        // quotient ends up in the low dword of `pe >> shift`, the odd one in
+        // the high dword of `po >> (shift - 32)` (its high dword is exactly
+        // `po >> shift` because every quotient is < 2^32), so one vpblendd
+        // merges them — no widen/repack shuffles, unlike the generic u64
+        // form below (vpmovzxdq x2 + vshufps + vpermpd per 8 lanes, measured
+        // as the u16 h-pass bottleneck). The generic form stays the portable
+        // path: on NEON it maps to umull directly (see scaleVec).
+        std.debug.assert(mg.shift >= 32);
+        const H = n / 2;
+        const Q = @Vector(H, u64);
+        const lo32: Q = @splat(0xFFFF_FFFF);
+        const s64: Q = @bitCast(s);
+        const m64: Q = @splat(mg.mul);
+        const pe = (s64 & lo32) * m64;
+        const po = (s64 >> @splat(32)) * m64;
+        const qe = pe >> @splat(mg.shift);
+        const qo = po >> @splat(mg.shift - 32);
+        return @bitCast((qe & lo32) | (qo & ~lo32));
+    }
+    const U64V = @Vector(n, u64);
+    const mulv32: @Vector(n, u32) = @splat(mg.mul);
+    const sh: @Vector(n, u6) = @splat(mg.shift);
+    return @intCast((@as(U64V, @intCast(s)) * @as(U64V, @intCast(mulv32))) >> sh);
+}
+
+/// Vectors per narrowing store in the integer store paths below. On AVX2 at 8
+/// u32 lanes the per-vector u32->u8/u16 narrow is a shuffle wall (vextracti128
+/// + 2x vpshufb + vpunpckldq + a partial store per 8 px); grouping 4 (u8) or 2
+/// (u16) quotient vectors lets one saturating pack (simd.packClampU8x4 /
+/// packUsI32ToU16) do it with a single full-width store. Other widths keep the
+/// per-vector store (AVX-512 narrows natively with vpmov*).
+pub fn packGroup(comptime T: type, comptime n: usize) comptime_int {
+    if (!(n == 8 and simd.use_avx2)) return 1;
+    return if (T == u8) 4 else 2;
+}
+
+/// Store `g` = packGroup(T, n) quotient vectors at dst[0 .. g*n).
+pub inline fn storePacked(comptime T: type, comptime n: usize, dst: []T, q: [packGroup(T, n)]@Vector(n, u32)) void {
+    const g = comptime packGroup(T, n);
+    if (comptime g == 4) {
+        dst[0..32].* = simd.packClampU8x4(@bitCast(q[0]), @bitCast(q[1]), @bitCast(q[2]), @bitCast(q[3]));
+    } else if (comptime g == 2) {
+        dst[0..16].* = simd.packUsI32ToU16(@bitCast(q[0]), @bitCast(q[1]));
+    } else {
+        dst[0..n].* = @as(@Vector(n, T), @intCast(q[0]));
+    }
+}
+
+/// In-register inclusive prefix sum (mod 2^32) of n u32 lanes.
+inline fn scanDeltas(comptime n: usize, d0: @Vector(n, u32)) @Vector(n, u32) {
+    var d = d0;
+    comptime var sh: u32 = 1;
+    inline while (sh < n) : (sh *= 2) {
+        d = d +% std.simd.shiftElementsRight(d, sh, 0);
+    }
+    return d;
+}
+
 /// Vectorized center segment of the integer sliding-window sum:
 ///   for x in [x0, x1): sum += src[x+radius] - src[x-radius-1]; dst[x] = mg.apply(sum)
 /// The scalar running sum is loop-carried, so LLVM never vectorizes it
@@ -230,7 +302,14 @@ inline fn colScale(comptime T: type, col: []const u32, tmp: []T, w: u32, radius:
 /// running sum (raw window sum + radius; see blurInt) is non-negative and
 /// < 2^32, so the u32 residue *is* the value, and wrapping preserves it --
 /// negative deltas included, as their two's-complement residue.
-pub inline fn slideSumInt(
+///
+/// The carry between vectors stays a vector splat and advances by the
+/// broadcast *block total* (`carry +% splat(scan[n-1])`), which only depends on
+/// the current block's loads. The loop-carried chain is therefore one vpaddd
+/// per vector; carrying the last lane through a GPR (s[n-1] -> vmovd ->
+/// vpbroadcastd) put an extract + two domain crossings on it (~12 cycles per 8
+/// px, measured as the h-pass bottleneck).
+pub fn slideSumInt(
     comptime T: type,
     srcp: []const T,
     dstp: []T,
@@ -244,20 +323,31 @@ pub inline fn slideSumInt(
     var sum: u32 = sum0;
     var x: u32 = x0;
     if (comptime n > 1) {
-        var s_prev: u32 = sum;
+        const U = @Vector(n, u32);
+        const last: @Vector(n, i32) = @splat(n - 1);
+        const g = comptime packGroup(T, n);
+        var carry: U = @splat(sum);
+        while (x + g * n <= x1) : (x += g * n) {
+            var q: [g]U = undefined;
+            inline for (0..g) |k| {
+                const xk = x + k * n;
+                const a: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[xk + radius ..][0..n].*));
+                const b: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[xk - radius - 1 ..][0..n].*));
+                const d = scanDeltas(n, @bitCast(a - b));
+                q[k] = scaleVec32(T, n, d +% carry, mg);
+                carry = carry +% @shuffle(u32, d, undefined, last);
+            }
+            storePacked(T, n, dstp[x..], q);
+        }
+        // leftover whole vectors (fewer than one pack group)
         while (x + n <= x1) : (x += n) {
             const a: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[x + radius ..][0..n].*));
             const b: @Vector(n, i32) = @intCast(@as(@Vector(n, T), srcp[x - radius - 1 ..][0..n].*));
-            var d: @Vector(n, u32) = @bitCast(a - b);
-            comptime var sh: u32 = 1;
-            inline while (sh < n) : (sh *= 2) {
-                d = d +% std.simd.shiftElementsRight(d, sh, 0);
-            }
-            const s = d +% @as(@Vector(n, u32), @splat(s_prev));
-            dstp[x..][0..n].* = scaleVec(T, n, s, mg);
-            s_prev = s[n - 1];
+            const d = scanDeltas(n, @bitCast(a - b));
+            dstp[x..][0..n].* = @as(@Vector(n, T), @intCast(scaleVec32(T, n, d +% carry, mg)));
+            carry = carry +% @shuffle(u32, d, undefined, last);
         }
-        sum = s_prev;
+        sum = carry[0];
     }
     while (x < x1) : (x += 1) {
         sum +%= srcp[radius + x];

@@ -503,20 +503,22 @@ fn vagGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: 
     return dst.frame;
 }
 
-const Vg = @Vector(8, f32);
+// streaming per-lane add / divide: full native width (bit-exact at any)
+const vg_n = std.simd.suggestVectorLength(f32) orelse 8;
+const Vg = @Vector(vg_n, f32);
 
 fn vagAccumulate(acc: []f32, row: []const f32) void {
     var x: usize = 0;
-    while (x + 8 <= acc.len) : (x += 8) {
-        acc[x..][0..8].* = @as(Vg, acc[x..][0..8].*) + @as(Vg, row[x..][0..8].*);
+    while (x + vg_n <= acc.len) : (x += vg_n) {
+        acc[x..][0..vg_n].* = @as(Vg, acc[x..][0..vg_n].*) + @as(Vg, row[x..][0..vg_n].*);
     }
     while (x < acc.len) : (x += 1) acc[x] += row[x];
 }
 
 fn vagDivide(dst: []f32, num: []const f32, den: []const f32) void {
     var x: usize = 0;
-    while (x + 8 <= dst.len) : (x += 8) {
-        dst[x..][0..8].* = @as(Vg, num[x..][0..8].*) / @as(Vg, den[x..][0..8].*);
+    while (x + vg_n <= dst.len) : (x += vg_n) {
+        dst[x..][0..vg_n].* = @as(Vg, num[x..][0..vg_n].*) / @as(Vg, den[x..][0..vg_n].*);
     }
     while (x < dst.len) : (x += 1) dst[x] = num[x] / den[x];
 }

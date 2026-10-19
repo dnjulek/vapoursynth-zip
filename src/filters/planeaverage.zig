@@ -17,21 +17,22 @@ inline fn intRowSum(
     ref_row: []const T,
     w: u32,
 ) struct { sum: u64, diff: u64 } {
-    if (comptime T == u8 and simd.use_avx2) {
+    if (comptime T == u8 and simd.sad_u8_lanes > 0) {
         // Native byte width: vpsadbw against zero for the sum, vpsadbw(v, j)
-        // for the ref diff — ~6 instructions per 32 pixels vs ~7 per 8 for
-        // the widened-i32 form below (its portable twin).
-        const zero: @Vector(32, u8) = @splat(0);
-        var acc: @Vector(4, u64) = @splat(0);
-        var dacc: @Vector(4, u64) = @splat(0);
+        // for the ref diff — ~6 instructions per 32 (ymm) / 64 (zmm) pixels
+        // vs ~7 per 8 for the widened-i32 form below (its portable twin).
+        const L = simd.sad_u8_lanes;
+        const zero: @Vector(L, u8) = @splat(0);
+        var acc: @Vector(L / 8, u64) = @splat(0);
+        var dacc: @Vector(L / 8, u64) = @splat(0);
         var x: usize = 0;
-        const wv = w - w % 32;
-        while (x < wv) : (x += 32) {
-            const v: @Vector(32, u8) = row[x..][0..32].*;
-            acc += simd.sadU8x32(v, zero);
+        const wv = w - w % L;
+        while (x < wv) : (x += L) {
+            const v: @Vector(L, u8) = row[x..][0..L].*;
+            acc += simd.sadU8(L, v, zero);
             if (use_ref) {
-                const j: @Vector(32, u8) = ref_row[x..][0..32].*;
-                dacc += simd.sadU8x32(v, j);
+                const j: @Vector(L, u8) = ref_row[x..][0..L].*;
+                dacc += simd.sadU8(L, v, j);
             }
         }
         var sum: u64 = @reduce(.Add, acc);

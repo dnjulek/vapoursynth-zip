@@ -15,9 +15,29 @@ const allocator = std.heap.c_allocator;
 pub const filter_name = "SSIMULACRA2";
 const Scratch = []align(vszip.vec_len) f32;
 
+/// How one clip's frames are read: native RGB (int via LUT, or f32), or the
+/// RGBS that toRGBS made from YUV/GRAY.
+const Source = struct {
+    kind: filter_ssim.Input.Kind = .f32,
+    srgb: bool = true,
+    lut: []f32 = &.{},
+
+    fn input(self: *const Source, f: anytype) filter_ssim.Input {
+        return .{
+            .kind = self.kind,
+            .planes = .{ f.getReadSlice(0).ptr, f.getReadSlice(1).ptr, f.getReadSlice(2).ptr },
+            .stride = f.getStride(0),
+            .lut = self.lut,
+            .srgb = self.srgb,
+        };
+    }
+};
+
 const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
+    src1: Source = .{},
+    src2: Source = .{},
     // Reusable scratch buffers; getFrame runs concurrently so each call pops
     // its own buffer (or allocates one) and pushes it back when done.
     pool: std.ArrayList(Scratch) = .empty,
@@ -50,14 +70,14 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
         defer src1.deinit();
         defer src2.deinit();
 
+        // only the frame prop matters: pass the (refcounted) input frame on
         const dst = src1.copyFrame();
-        const w, const h, const stride = src1.getDimensions2(f32, 0);
+        const w = src1.getWidth(0);
+        const h = src1.getHeight(0);
 
-        const srcp1 = src1.getReadSlices2(f32);
-        const srcp2 = src2.getReadSlices2(f32);
-        const scratch = acquireScratch(d, filter_ssim.scratchSize(stride, w, h));
+        const scratch = acquireScratch(d, filter_ssim.scratchSize(w, h));
         defer releaseScratch(d, scratch);
-        const val = filter_ssim.process(srcp1, srcp2, stride, w, h, scratch);
+        const val = filter_ssim.process(d.src1.input(&src1), d.src2.input(&src2), w, h, scratch);
         const dst_prop = dst.getPropertiesRW();
         dst_prop.setFloat("SSIMULACRA2", val, .Replace);
         return dst.frame;
@@ -74,6 +94,8 @@ fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs
     }
     d.pool.deinit(allocator);
 
+    allocator.free(d.src1.lut);
+    allocator.free(d.src2.lut);
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
     allocator.destroy(d);
@@ -112,10 +134,8 @@ pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
         return;
     }
 
-    d.node1 = hz.toRGBS(d.node1, &zapi);
-    d.node2 = hz.toRGBS(d.node2, &zapi);
-    d.node1 = sRGBtoLinearRGB(d.node1, &zapi);
-    d.node2 = sRGBtoLinearRGB(d.node2, &zapi);
+    prepare(&d.node1, &d.src1, &zapi);
+    prepare(&d.node2, &d.src2, &zapi);
 
     const vi_out = zapi.getVideoInfo(d.node1);
     const data: *Data = allocator.create(Data) catch unreachable;
@@ -129,34 +149,26 @@ pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core:
     zapi.createVideoFilter(out, filter_name, vi_out, ssimulacra2GetFrame, ssimulacraFree, .Parallel, &deps, data);
 }
 
-pub fn sRGBtoLinearRGB(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
-    var in = node;
-    const frame = zapi.getFrame(0, node, null);
+/// RGB clips are read natively (8-16 bit int through a sample -> linear LUT,
+/// f32 decoded per row); YUV and GRAY go through toRGBS first. The sRGB
+/// decode runs inside the filter (libjxl's TF_SRGB, see filters/srgb.zig)
+/// unless frame 0 says the clip is already linear.
+fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI) void {
+    const fmt = zapi.getVideoInfo(node.*).format;
+    const native = fmt.colorFamily == .RGB and
+        ((fmt.sampleType == .Integer and fmt.bitsPerSample <= 16) or (fmt.sampleType == .Float and fmt.bitsPerSample == 32));
+    if (!native) node.* = hz.toRGBS(node.*, zapi);
+
+    const frame = zapi.getFrame(0, node.*, null);
     defer zapi.freeFrame(frame);
+    src.srgb = zapi.initZMap(zapi.getFramePropertiesRO(frame)).getTransfer() != .LINEAR;
 
-    const map_in = zapi.initZMap(zapi.getFramePropertiesRO(frame));
-    const transfer_in = map_in.getTransfer();
-    if (transfer_in == .LINEAR) {
-        return in;
+    const f = zapi.getVideoInfo(node.*).format;
+    if (f.sampleType == .Integer) {
+        src.kind = if (f.bytesPerSample == 1) .u8 else .u16;
+        src.lut = allocator.alloc(f32, if (f.bytesPerSample == 1) 256 else 65536) catch unreachable;
+        filter_ssim.buildLut(src.lut, @intCast(f.bitsPerSample), src.srgb);
+    } else {
+        src.kind = .f32;
     }
-
-    const reszplugin = zapi.getPluginByID2(.Resize);
-    const args = zapi.createZMap();
-
-    _ = args.consumeNode("clip", in, .Replace);
-    args.setData("prop", "_Transfer", .Utf8, .Replace);
-    args.setInt("intval", @backingInt(vsc.TransferCharacteristics.IEC_61966_2_1), .Replace);
-    const stdplugin = zapi.getPluginByID2(.Std);
-    var ret = args.invoke(stdplugin, "SetFrameProp");
-    in = ret.getNode("clip");
-    ret.free();
-    args.clear();
-
-    _ = args.consumeNode("clip", in, .Replace);
-    args.setInt("transfer", @backingInt(vsc.TransferCharacteristics.LINEAR), .Replace);
-    ret = args.invoke(reszplugin, "Bicubic");
-    const out = ret.getNode("clip");
-    ret.free();
-    args.free();
-    return out;
 }

@@ -85,12 +85,13 @@ pub fn processInt(comptime T: type, src: []const T, dst: []T, lut: *const [256]T
 }
 
 pub fn processIntU8(src: []const u8, dst: []u8, lut: *const [256]u8) void {
-    if (comptime simd.use_avx2) {
-        const chunks = simd.lutChunksU8(lut);
+    const L = simd.LutU8;
+    if (comptime L.lanes > 0) {
+        const tbl = L.init(lut);
         var i: usize = 0;
-        const n = dst.len - dst.len % 32;
-        while (i < n) : (i += 32) {
-            dst[i..][0..32].* = simd.lutU8x32(&chunks, src[i..][0..32].*);
+        const n = dst.len - dst.len % L.lanes;
+        while (i < n) : (i += L.lanes) {
+            dst[i..][0..L.lanes].* = tbl.get(src[i..][0..L.lanes].*);
         }
         while (i < dst.len) : (i += 1) dst[i] = lut[src[i]];
         return;
@@ -123,14 +124,15 @@ pub fn computeAverage(comptime T: type, src: []const T, stride: u32, w: u32, h: 
     }
 
     var sum: u64 = 0;
-    if (T == u8 and simd.use_avx2) {
-        const zero32: @Vector(32, u8) = @splat(0);
-        var acc: @Vector(4, u64) = @splat(0);
+    if (T == u8 and simd.sad_u8_lanes > 0) {
+        const n = simd.sad_u8_lanes;
+        const zero: @Vector(n, u8) = @splat(0);
+        var acc: @Vector(n / 8, u64) = @splat(0);
         var tail: u64 = 0;
         for (0..h) |_| {
             var x: u32 = 0;
-            while (x + 32 <= w) : (x += 32) {
-                acc += simd.sadU8x32(row[x..][0..32].*, zero32);
+            while (x + n <= w) : (x += n) {
+                acc += simd.sadU8(n, row[x..][0..n].*, zero);
             }
             while (x < w) : (x += 1) tail += row[x];
             row = row[stride..];

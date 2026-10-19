@@ -2,6 +2,7 @@ const std = @import("std");
 const simd = @import("simd.zig");
 const math = std.math;
 const vcl = @import("../vcl.zig");
+const srgb = @import("srgb.zig");
 
 const allocator = std.heap.c_allocator;
 
@@ -37,28 +38,148 @@ const skip_table: [3][6]SkipInfo = blk: {
     break :blk table;
 };
 
-/// Scratch buffer size (in f32 elements) needed by `process` for a given plane geometry.
-pub fn scratchSize(stride: u32, w: u32, h: u32) usize {
-    const wh: usize = @as(usize, stride) * h;
-    const b_size: usize = @as(usize, (stride + 1) / 2) * ((h + 1) / 2);
-    return 6 * b_size + 10 * wh + w + 64;
+/// One input clip as the scale-0 sweep reads it: three RGB planes in their
+/// native sample type, decoded to linear light one row at a time (so no
+/// linear plane is ever stored).
+pub const Input = struct {
+    pub const Kind = enum { u8, u16, f32 };
+    kind: Kind,
+    planes: [3][*]const u8,
+    stride: usize, // bytes
+    /// integer kinds: sample -> linear light (see buildLut)
+    lut: []const f32 = &.{},
+    /// f32 kind: decode with the sRGB transfer (false: already linear)
+    srgb: bool = true,
+
+    fn row(self: Input, c: usize, y: u32, dst: []f32, w: u32) void {
+        const base = self.planes[c] + y * self.stride;
+        switch (self.kind) {
+            .u8 => for (dst[0..w], base[0..w]) |*o, v| {
+                o.* = self.lut[v];
+            },
+            .u16 => {
+                const sp: [*]const u16 = @ptrCast(@alignCast(base));
+                for (dst[0..w], sp[0..w]) |*o, v| o.* = self.lut[v];
+            },
+            .f32 => {
+                const sp: [*]const f32 = @ptrCast(@alignCast(base));
+                if (self.srgb) linearizeRow(sp[0..w], dst[0..w]) else @memcpy(dst[0..w], sp[0..w]);
+            },
+        }
+    }
+};
+
+// Encoded-value domain before the sRGB decode: [0, 1], what libjxl sees.
+// Its input is always PNG samples, so out-of-range float values (e.g. YUV ->
+// RGB overshoot) are clamped exactly as saving the clip to PNG would; left
+// unclamped, the odd extension (negative light) and the polynomial outside
+// its fit range derail the score by up to hundreds of points. In range this
+// is libjxl's result unchanged.
+const in_lo: f32 = 0.0;
+const in_hi: f32 = 1.0;
+
+inline fn decode(v: anytype) @TypeOf(v) {
+    const V = @TypeOf(v);
+    return srgb.toLinear(@min(@max(v, @as(V, @splat(in_lo))), @as(V, @splat(in_hi))));
 }
 
-pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32, h: u32, scratch: []f32) f64 {
-    const wh: u32 = stride * h;
+fn linearizeRow(src: []const f32, dst: []f32) void {
+    const FV = @Vector(vec_size, f32);
+    var x: usize = 0;
+    while (x + vec_size <= src.len) : (x += vec_size) {
+        const v: FV = src[x..][0..vec_size].*;
+        dst[x..][0..vec_size].* = decode(v);
+    }
+    while (x < src.len) : (x += 1) {
+        dst[x] = decode(@as(@Vector(1, f32), @splat(src[x])))[0];
+    }
+}
+
+/// Integer sample -> linear light table: v * (1 / peak) in f32, as libjxl
+/// loads 8/16-bit samples, then the sRGB decode unless `is_srgb` is false.
+/// Sized for the sample type (256 / 65536) so out-of-range samples above
+/// the nominal peak stay in bounds.
+pub fn buildLut(lut: []f32, bits: u5, is_srgb: bool) void {
+    const scale: f32 = @as(f32, 1.0) / @as(f32, @floatFromInt((@as(u32, 1) << bits) - 1));
+    for (lut, 0..) |*o, i| {
+        const x = @as(f32, @floatFromInt(i)) * scale;
+        o.* = if (is_srgb) decode(@as(@Vector(1, f32), @splat(x)))[0] else x;
+    }
+}
+
+/// Row buffers of the fused per-scale sweep (sweepScale), carved from the
+/// tail of the scratch block. Rows are w + 64 long: blurH's input row is read
+/// past w by its vector body.
+const RowScratch = struct {
+    // Rings keyed by source row % ring_n: an output row's 9-tap window spans
+    // at most 9 consecutive source rows (the edge mirrors stay inside it).
+    const ring_n = 10;
+    // tmp/mu1/mu2/s12/sq + linear-RGB and XYB rings (2 images x 3 planes
+    // each) + product rings (2 x 3 planes)
+    const rows = 5 + 18 * ring_n;
+    tmp: []f32,
+    mu1: []f32,
+    mu2: []f32,
+    s12: []f32,
+    sq: []f32,
+    lin: [2][3][]f32,
+    xyb: [2][3][]f32,
+    p12: [3][]f32,
+    psq: [3][]f32,
+    rl: usize,
+
+    fn init(buf: []f32, w: u32) RowScratch {
+        const rl: usize = @as(usize, w) + 64;
+        const ring = ring_n * rl;
+        var rs: RowScratch = undefined;
+        rs.rl = rl;
+        rs.tmp = buf[0..rl];
+        rs.mu1 = buf[rl..][0..rl];
+        rs.mu2 = buf[2 * rl ..][0..rl];
+        rs.s12 = buf[3 * rl ..][0..rl];
+        rs.sq = buf[4 * rl ..][0..rl];
+        var off: usize = 5 * rl;
+        for (0..2) |img| {
+            for (0..3) |p| {
+                rs.lin[img][p] = buf[off..][0..ring];
+                rs.xyb[img][p] = buf[off + ring ..][0..ring];
+                off += 2 * ring;
+            }
+        }
+        for (0..3) |p| {
+            rs.p12[p] = buf[off..][0..ring];
+            rs.psq[p] = buf[off + ring ..][0..ring];
+            off += 2 * ring;
+        }
+        return rs;
+    }
+
+    inline fn at(self: RowScratch, ring: []f32, r: u32) []f32 {
+        return ring[(r % ring_n) * self.rl ..][0..self.rl];
+    }
+};
+
+/// Float row stride of the (virtual) full-resolution plane; only fixes the
+/// strides of the half-resolution chain buffers, never the result.
+fn baseStride(w: u32) u32 {
+    return std.mem.alignForward(u32, w, 16);
+}
+
+/// Scratch buffer size (in f32 elements) needed by `process` for a given plane geometry.
+pub fn scratchSize(w: u32, h: u32) usize {
+    const stride = baseStride(w);
+    const b_size: usize = @as(usize, (stride + 1) / 2) * ((h + 1) / 2);
+    return 6 * b_size + RowScratch.rows * (@as(usize, w) + 64);
+}
+
+pub fn process(in1: Input, in2: Input, w: u32, h: u32, scratch: []f32) f64 {
+    const stride = baseStride(w);
     // The downscale chain buffers only ever hold scale >= 1 (half resolution).
     const b_size: u32 = ((stride + 1) / 2) * ((h + 1) / 2);
 
     const srcp1b = [3][]f32{ scratch[0 * b_size .. 1 * b_size], scratch[1 * b_size .. 2 * b_size], scratch[2 * b_size .. 3 * b_size] };
     const srcp2b = [3][]f32{ scratch[3 * b_size .. 4 * b_size], scratch[4 * b_size .. 5 * b_size], scratch[5 * b_size .. 6 * b_size] };
-    const rest = scratch[6 * b_size ..];
-    const tmpp1 = [3][]f32{ rest[0 * wh .. 1 * wh], rest[1 * wh .. 2 * wh], rest[2 * wh .. 3 * wh] };
-    const tmpp2 = [3][]f32{ rest[3 * wh .. 4 * wh], rest[4 * wh .. 5 * wh], rest[5 * wh .. 6 * wh] };
-    const tmpp3 = rest[6 * wh .. 7 * wh];
-    const tmpsq = rest[7 * wh .. 8 * wh];
-    const tmpps12 = rest[8 * wh .. 9 * wh];
-    const tmppmu1 = rest[9 * wh .. 10 * wh];
-    const blur_tmp = rest[10 * wh ..][0 .. w + 64];
+    const rs = RowScratch.init(scratch[6 * b_size ..], w);
 
     var plane_avg_ssim: [6][6]f64 = undefined;
     var plane_avg_edge: [6][12]f64 = undefined;
@@ -69,10 +190,9 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
     var scale: u32 = 0;
     while (scale < 6) : (scale += 1) {
         if (scale > 0) {
-            if (scale == 1) {
-                downscale(srcp1, srcp1b, stride2, w2, h2);
-                downscale(srcp2, srcp2b, stride2, w2, h2);
-            } else {
+            // scale 1 was downscaled by the scale-0 sweep, straight from the
+            // linearized input rows
+            if (scale > 1) {
                 downscale(srcp1b, srcp1b, stride2, w2, h2);
                 downscale(srcp2b, srcp2b, stride2, w2, h2);
             }
@@ -82,48 +202,33 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
         }
 
         const one_per_pixels: f64 = 1.0 / @as(f64, @floatFromInt(w2 * h2));
-        if (scale == 0) {
-            toXYB(srcp1, tmpp1, stride2, w2, h2);
-            toXYB(srcp2, tmpp2, stride2, w2, h2);
-        } else {
-            toXYB(srcp1b, tmpp1, stride2, w2, h2);
-            toXYB(srcp2b, tmpp2, stride2, w2, h2);
+        var active: [3]Active = undefined;
+        for (&active, 0..) |*a, plane| {
+            const skip = skip_table[plane][scale];
+            a.* = .{ .ssim = !skip.ssim, .edge = !skip.artifact or !skip.detailloss };
         }
 
-        var plane: u32 = 0;
-        while (plane < 3) : (plane += 1) {
-            const skip = skip_table[plane][scale];
+        var ssim: [3]SsimAcc = @splat(.{});
+        var edge: [3]EdgeAcc = @splat(.{});
+        const in_b1 = [3][]const f32{ srcp1b[0], srcp1b[1], srcp1b[2] };
+        const in_b2 = [3][]const f32{ srcp2b[0], srcp2b[1], srcp2b[2] };
+        if (scale == 0) {
+            const s0: Scale0 = .{ .in = .{ in1, in2 }, .ds = .{ srcp1b, srcp2b }, .ds_stride = (stride + 1) / 2 };
+            sweepScale(s0, in_b1, in_b2, stride2, w2, h2, active, rs, &ssim, &edge);
+        } else {
+            sweepScale(null, in_b1, in_b2, stride2, w2, h2, active, rs, &ssim, &edge);
+        }
 
-            if (skip.all()) {
-                plane_avg_ssim[scale][plane * 2] = 0.0;
-                plane_avg_ssim[scale][plane * 2 + 1] = 0.0;
-                plane_avg_edge[scale][plane * 4 + 0] = 0.0;
-                plane_avg_edge[scale][plane * 4 + 1] = 0.0;
-                plane_avg_edge[scale][plane * 4 + 2] = 0.0;
-                plane_avg_edge[scale][plane * 4 + 3] = 0.0;
-                continue;
-            }
-
-            if (!skip.ssim) {
-                multiply(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-                blur(tmpp3, tmpps12, stride2, w2, h2, blur_tmp);
-
-                addSquare(tmpp1[plane], tmpp2[plane], tmpp3, stride2, w2, h2);
-                blur(tmpp3, tmpsq, stride2, w2, h2, blur_tmp);
-            }
-
-            blur(tmpp1[plane], tmppmu1, stride2, w2, h2, blur_tmp);
-            blur(tmpp2[plane], tmpp3, stride2, w2, h2, blur_tmp);
-
-            if (!skip.ssim) {
-                ssimMap(tmpsq, tmpps12, tmppmu1, tmpp3, stride2, w2, h2, plane, one_per_pixels, &plane_avg_ssim[scale]);
+        for (0..3) |plane| {
+            if (active[plane].ssim) {
+                ssim[plane].finish(one_per_pixels, plane_avg_ssim[scale][plane * 2 ..][0..2]);
             } else {
                 plane_avg_ssim[scale][plane * 2] = 0.0;
                 plane_avg_ssim[scale][plane * 2 + 1] = 0.0;
             }
 
-            if (!skip.artifact or !skip.detailloss) {
-                edgeMap(tmpp1[plane], tmpp2[plane], tmppmu1, tmpp3, stride2, w2, h2, plane, one_per_pixels, &plane_avg_edge[scale]);
+            if (active[plane].edge) {
+                edge[plane].finish(one_per_pixels, plane_avg_edge[scale][plane * 4 ..][0..4]);
             } else {
                 plane_avg_edge[scale][plane * 4 + 0] = 0.0;
                 plane_avg_edge[scale][plane * 4 + 1] = 0.0;
@@ -137,100 +242,87 @@ pub fn process(srcp1: [3][]const f32, srcp2: [3][]const f32, stride: u32, w: u32
 }
 
 fn downscale(src: [3][]const f32, dst: [3][]f32, src_stride: u32, in_w: u32, in_h: u32) void {
-    const fscale: f32 = 2.0;
-    const uscale: u32 = 2;
-    const out_w = @divTrunc((in_w + uscale - 1), uscale);
-    const out_h = @divTrunc((in_h + uscale - 1), uscale);
-    const dst_stride = @divTrunc((src_stride + uscale - 1), uscale);
-    const normalize: f32 = 1.0 / (fscale * fscale);
+    const out_h = @divTrunc((in_h + 1), 2);
+    const dst_stride = @divTrunc((src_stride + 1), 2);
+    for (0..3) |plane| {
+        var oy: u32 = 0;
+        while (oy < out_h) : (oy += 1) {
+            const row0 = src[plane][(oy * 2) * src_stride ..];
+            const row1: ?[]const f32 = if (oy * 2 + 1 < in_h) src[plane][(oy * 2 + 1) * src_stride ..] else null;
+            downscaleRow(row0, row1, dst[plane][oy * dst_stride ..], in_w);
+        }
+    }
+}
 
+/// One output row of the 2x2 box downscale. `row1` is null on the last row of
+/// an odd height, where the window's lower row clamps to `row0`.
+fn downscaleRow(row0: []const f32, row1: ?[]const f32, dstp: []f32, in_w: u32) void {
+    const out_w = @divTrunc((in_w + 1), 2);
+    const normalize: f32 = 1.0 / 4.0;
     const FV = @Vector(vec_size, f32);
     const normv: FV = @splat(normalize);
-
     // ox values whose 2x2 window needs no edge clamping
     const full_w: u32 = in_w / 2;
 
-    var plane: u32 = 0;
-    while (plane < 3) : (plane += 1) {
-        const srcp = src[plane];
-        var dstp = dst[plane];
-        var oy: u32 = 0;
-        while (oy < out_h) : (oy += 1) {
-            var ox: u32 = 0;
-
-            if (oy * 2 + 1 < in_h) {
-                const row0 = srcp[(oy * 2) * src_stride ..];
-                const row1 = srcp[(oy * 2 + 1) * src_stride ..];
-                while (ox + vec_size <= full_w) : (ox += vec_size) {
-                    const a0: FV = row0[ox * 2 ..][0..vec_size].*;
-                    const b0: FV = row0[ox * 2 + vec_size ..][0..vec_size].*;
-                    const a1: FV = row1[ox * 2 ..][0..vec_size].*;
-                    const b1: FV = row1[ox * 2 + vec_size ..][0..vec_size].*;
-                    // asm deinterleave: the @shuffle form makes LLVM shred
-                    // each plain load into partial loads + blends, rebuilt per
-                    // shuffle (measured ~55 instr/block vs ~14 at 8 lanes, and
-                    // again at 16 lanes on znver4).
-                    const e0 = simd.evenLanesF32(vec_size, a0, b0);
-                    const o0 = simd.oddLanesF32(vec_size, a0, b0);
-                    const e1 = simd.evenLanesF32(vec_size, a1, b1);
-                    const o1 = simd.oddLanesF32(vec_size, a1, b1);
-                    // same add order as the scalar 2x2 loop
-                    const sum = ((e0 + o0) + e1) + o1;
-                    dstp[ox..][0..vec_size].* = sum * normv;
-                }
-            }
-
-            while (ox < out_w) : (ox += 1) {
-                var sum: f32 = 0.0;
-                var iy: u32 = 0;
-                while (iy < uscale) : (iy += 1) {
-                    var ix: u32 = 0;
-                    while (ix < uscale) : (ix += 1) {
-                        const x: u32 = @min((ox * uscale + ix), (in_w - 1));
-                        const y: u32 = @min((oy * uscale + iy), (in_h - 1));
-                        sum += srcp[y * src_stride + x];
-                    }
-                }
-                dstp[ox] = sum * normalize;
-            }
-            dstp = dstp[dst_stride..];
+    var ox: u32 = 0;
+    if (row1) |r1| {
+        while (ox + vec_size <= full_w) : (ox += vec_size) {
+            const a0: FV = row0[ox * 2 ..][0..vec_size].*;
+            const b0: FV = row0[ox * 2 + vec_size ..][0..vec_size].*;
+            const a1: FV = r1[ox * 2 ..][0..vec_size].*;
+            const b1: FV = r1[ox * 2 + vec_size ..][0..vec_size].*;
+            // asm deinterleave: the @shuffle form makes LLVM shred
+            // each plain load into partial loads + blends, rebuilt per
+            // shuffle (measured ~55 instr/block vs ~14 at 8 lanes, and
+            // again at 16 lanes on znver4).
+            const e0 = simd.evenLanesF32(vec_size, a0, b0);
+            const o0 = simd.oddLanesF32(vec_size, a0, b0);
+            const e1 = simd.evenLanesF32(vec_size, a1, b1);
+            const o1 = simd.oddLanesF32(vec_size, a1, b1);
+            // same add order as the scalar 2x2 loop
+            const sum = ((e0 + o0) + e1) + o1;
+            dstp[ox..][0..vec_size].* = sum * normv;
         }
+    }
+    const r1 = row1 orelse row0;
+    while (ox < out_w) : (ox += 1) {
+        var sum: f32 = 0.0;
+        inline for (0..2) |iy| {
+            const r = if (iy == 0) row0 else r1;
+            inline for (0..2) |ix| {
+                const x: u32 = @min(ox * 2 + ix, in_w - 1);
+                sum += r[x];
+            }
+        }
+        dstp[ox] = sum * normalize;
     }
 }
 
-fn multiply(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+fn multiplyRow(src1: []const f32, src2: []const f32, dst: []f32, w: u32) void {
     const Vec = @Vector(vec_size, f32);
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        const off = y * stride;
-        var x: u32 = 0;
-        while (x + vec_size <= w) : (x += vec_size) {
-            const a: Vec = src1[off + x ..][0..vec_size].*;
-            const b: Vec = src2[off + x ..][0..vec_size].*;
-            dst[off + x ..][0..vec_size].* = a * b;
-        }
-        while (x < w) : (x += 1) {
-            dst[off + x] = src1[off + x] * src2[off + x];
-        }
+    var x: u32 = 0;
+    while (x + vec_size <= w) : (x += vec_size) {
+        const a: Vec = src1[x..][0..vec_size].*;
+        const b: Vec = src2[x..][0..vec_size].*;
+        dst[x..][0..vec_size].* = a * b;
+    }
+    while (x < w) : (x += 1) {
+        dst[x] = src1[x] * src2[x];
     }
 }
 
-fn addSquare(src1: []const f32, src2: []const f32, dst: []f32, stride: u32, w: u32, h: u32) void {
+fn addSquareRow(src1: []const f32, src2: []const f32, dst: []f32, w: u32) void {
     const Vec = @Vector(vec_size, f32);
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        const off = y * stride;
-        var x: u32 = 0;
-        while (x + vec_size <= w) : (x += vec_size) {
-            const a: Vec = src1[off + x ..][0..vec_size].*;
-            const b: Vec = src2[off + x ..][0..vec_size].*;
-            const v = a + b;
-            dst[off + x ..][0..vec_size].* = v * v;
-        }
-        while (x < w) : (x += 1) {
-            const v = src1[off + x] + src2[off + x];
-            dst[off + x] = v * v;
-        }
+    var x: u32 = 0;
+    while (x + vec_size <= w) : (x += vec_size) {
+        const a: Vec = src1[x..][0..vec_size].*;
+        const b: Vec = src2[x..][0..vec_size].*;
+        const v = a + b;
+        dst[x..][0..vec_size].* = v * v;
+    }
+    while (x < w) : (x += 1) {
+        const v = src1[x] + src2[x];
+        dst[x] = v * v;
     }
 }
 
@@ -330,45 +422,148 @@ inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
     }
 }
 
-fn blur(src: []const f32, dst: []f32, stride: u32, w: u32, h: u32, tmp_buf: []f32) void {
-    const kernel = [ksize]f32{
-        0.0076144188642501831054687500,
-        0.0360749699175357818603515625,
-        0.1095860823988914489746093750,
-        0.2134445458650588989257812500,
-        0.2665599882602691650390625000,
-        0.2134445458650588989257812500,
-        0.1095860823988914489746093750,
-        0.0360749699175357818603515625,
-        0.0076144188642501831054687500,
-    };
+const blur_kernel = [ksize]f32{
+    0.0076144188642501831054687500,
+    0.0360749699175357818603515625,
+    0.1095860823988914489746093750,
+    0.2134445458650588989257812500,
+    0.2665599882602691650390625000,
+    0.2134445458650588989257812500,
+    0.1095860823988914489746093750,
+    0.0360749699175357818603515625,
+    0.0076144188642501831054687500,
+};
 
-    const tmp = tmp_buf[0..w];
+/// Source rows of the 9-tap vertical window for output row i (mirrored at
+/// the plane edges).
+fn blurRows(i: i32, ih: i32) [ksize]u32 {
+    var rows: [ksize]u32 = undefined;
+    const dist_from_bottom: i32 = ih - 1 - i;
+    var k: i32 = 0;
+    while (k < radius) : (k += 1) {
+        const row: i32 = if (i < radius - k) (@min(radius - k - i, ih - 1)) else (i - radius + k);
+        rows[@intCast(k)] = @bitCast(row);
+    }
+    k = radius;
+    while (k < ksize) : (k += 1) {
+        const row: i32 = if (dist_from_bottom < k - radius) (i - @min(k - radius - dist_from_bottom, i)) else (i - radius + k);
+        rows[@intCast(k)] = @bitCast(row);
+    }
+    return rows;
+}
 
+/// One output row of the separable 9x9 blur: vertical taps into `tmp`, then
+/// the horizontal pass into `dst`.
+inline fn blurRow(srcp: [ksize][]const f32, dst: []f32, tmp: []f32, w: u32) void {
+    blurV(srcp, tmp, blur_kernel, w);
+    blurH(tmp, dst, blur_kernel, @intCast(w));
+}
+
+const Active = struct { ssim: bool, edge: bool };
+
+/// Fused per-scale sweep. Per output row: the XYB rows of the 9-tap window
+/// are made on demand from the linear RGB input (toXYBRow, once per source
+/// row, all three planes of both images), then per plane the four blurs
+/// (mu1, mu2, blur(a*b), blur((a+b)^2)) and the ssim/edge reductions run on a
+/// few cache-resident rows. The plane-at-a-time form wrote 6 full XYB planes
+/// plus ~20 full-plane f32 passes per scale and went DRAM-bound with every
+/// frame worker active. Bit-exact against it: every row is the same ops on
+/// the same rows, and each plane's accumulators see rows top to bottom.
+/// Scale 0 of sweepScale: rows come from the native-format inputs, are
+/// linearized once into the `lin` rings, and the 2x2 downscale feeding scale 1
+/// is emitted from those same rows (so the full-resolution linear image never
+/// exists as a plane).
+const Scale0 = struct {
+    in: [2]Input,
+    ds: [2][3][]f32,
+    ds_stride: u32,
+};
+
+fn sweepScale(s0: ?Scale0, in1: [3][]const f32, in2: [3][]const f32, stride: u32, w: u32, h: u32, active: [3]Active, rs: RowScratch, ssim: *[3]SsimAcc, edge: *[3]EdgeAcc) void {
+    const n = RowScratch.ring_n;
+    const any_active = active[0].ssim or active[0].edge or active[1].ssim or active[1].edge or active[2].ssim or active[2].edge;
+    if (s0 == null and !any_active) return;
+    var next_ds: u32 = 0; // scale 0: next downscaled row to emit
+    const ds_h = (h + 1) / 2;
+    var tag_xyb: [n]u32 = @splat(std.math.maxInt(u32));
+    var tag_prod: [3][n]u32 = @splat(@splat(std.math.maxInt(u32)));
+    const ih: i32 = @intCast(h);
     var i: i32 = 0;
-    const ih: i32 = @bitCast(h);
-    while (i < h) : (i += 1) {
-        const ui: u32 = @bitCast(i);
-        var srcp: [ksize][]const f32 = undefined;
-        const dstp: []f32 = dst[(ui * stride)..];
-        const dist_from_bottom: i32 = ih - 1 - i;
+    while (i < ih) : (i += 1) {
+        const rows = blurRows(i, ih);
+        inline for (0..ksize) |k| {
+            const r = rows[k];
+            if (tag_xyb[r % n] != r) {
+                if (s0) |z| {
+                    inline for (0..2) |img| {
+                        var lr: [3][]f32 = undefined;
+                        inline for (0..3) |c| {
+                            lr[c] = rs.at(rs.lin[img][c], r);
+                            z.in[img].row(c, r, lr[c], w);
+                        }
+                        toXYBRow(.{ lr[0], lr[1], lr[2] }, .{ rs.at(rs.xyb[img][0], r), rs.at(rs.xyb[img][1], r), rs.at(rs.xyb[img][2], r) }, w);
+                    }
+                } else {
+                    const off = r * stride;
+                    toXYBRow(.{ in1[0][off..], in1[1][off..], in1[2][off..] }, .{ rs.at(rs.xyb[0][0], r), rs.at(rs.xyb[0][1], r), rs.at(rs.xyb[0][2], r) }, w);
+                    toXYBRow(.{ in2[0][off..], in2[1][off..], in2[2][off..] }, .{ rs.at(rs.xyb[1][0], r), rs.at(rs.xyb[1][1], r), rs.at(rs.xyb[1][2], r) }, w);
+                }
+                tag_xyb[r % n] = r;
+            }
+        }
+        const ui: u32 = @intCast(i);
 
-        var k: i32 = 0;
-        while (k < radius) : (k += 1) {
-            const row: i32 = if (i < radius - k) (@min(radius - k - i, ih - 1)) else (i - radius + k);
-            const urow: u32 = @bitCast(row);
-            srcp[@intCast(k)] = src[(urow * stride)..];
+        if (s0) |z| {
+            // rows <= min(i + radius, h - 1) are now linearized and still in
+            // the ring; emit every downscaled row whose 2x2 window is ready
+            const ready = @min(ui + radius, h - 1);
+            while (next_ds < ds_h and @min(2 * next_ds + 1, h - 1) <= ready) : (next_ds += 1) {
+                const y0 = 2 * next_ds;
+                const has1 = y0 + 1 < h;
+                inline for (0..2) |img| {
+                    inline for (0..3) |c| {
+                        const ring = rs.lin[img][c];
+                        downscaleRow(rs.at(ring, y0), if (has1) rs.at(ring, y0 + 1) else null, z.ds[img][c][next_ds * z.ds_stride ..], w);
+                    }
+                }
+            }
+            if (!any_active) continue;
         }
 
-        k = radius;
-        while (k < ksize) : (k += 1) {
-            const row: i32 = if (dist_from_bottom < k - radius) (i - @min(k - radius - dist_from_bottom, i)) else (i - radius + k);
-            const urow: u32 = @bitCast(row);
-            srcp[@intCast(k)] = src[(urow * stride)..];
-        }
+        for (0..3) |p| {
+            const act = active[p];
+            if (!(act.ssim or act.edge)) continue;
+            var r1: [ksize][]const f32 = undefined;
+            var r2: [ksize][]const f32 = undefined;
+            inline for (0..ksize) |k| {
+                r1[k] = rs.at(rs.xyb[0][p], rows[k]);
+                r2[k] = rs.at(rs.xyb[1][p], rows[k]);
+            }
+            blurRow(r1, rs.mu1, rs.tmp, w);
+            blurRow(r2, rs.mu2, rs.tmp, w);
 
-        blurV(srcp, tmp, kernel, w);
-        blurH(tmp, dstp, kernel, @intCast(w));
+            if (act.ssim) {
+                var q12: [ksize][]const f32 = undefined;
+                var qsq: [ksize][]const f32 = undefined;
+                inline for (0..ksize) |k| {
+                    const r = rows[k];
+                    const p12 = rs.at(rs.p12[p], r);
+                    const psq = rs.at(rs.psq[p], r);
+                    if (tag_prod[p][r % n] != r) {
+                        multiplyRow(r1[k], r2[k], p12, w);
+                        addSquareRow(r1[k], r2[k], psq, w);
+                        tag_prod[p][r % n] = r;
+                    }
+                    q12[k] = p12;
+                    qsq[k] = psq;
+                }
+                blurRow(q12, rs.s12, rs.tmp, w);
+                blurRow(qsq, rs.sq, rs.tmp, w);
+                ssim[p].row(rs.sq, rs.s12, rs.mu1, rs.mu2, w);
+            }
+
+            if (act.edge) edge[p].row(rs.at(rs.xyb[0][p], ui), rs.at(rs.xyb[1][p], ui), rs.mu1, rs.mu2, w);
+        }
     }
 }
 
@@ -390,7 +585,8 @@ const K_M22: f32 = 1.0 - K_M20 - K_M21;
 const OPSIN_ABSORBANCE_MATRIX = [9]f32{ K_M00, K_M01, K_M02, K_M10, K_M11, K_M12, K_M20, K_M21, K_M22 };
 const OPSIN_ABSORBANCE_BIAS: f32 = K_D0;
 
-fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) void {
+/// One row of the linear RGB -> XYB transform (all three planes).
+fn toXYBRow(srcp: [3][]const f32, dstp: [3][]f32, w: u32) void {
     const FV = @Vector(vec_size, f32);
     const zero: FV = @splat(0.0);
     const bias: FV = @splat(OPSIN_ABSORBANCE_BIAS);
@@ -410,10 +606,7 @@ fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) vo
     const m21: FV = @splat(OPSIN_ABSORBANCE_MATRIX[7]);
     const m22: FV = @splat(OPSIN_ABSORBANCE_MATRIX[8]);
 
-    var srcp = _srcp;
-    var dstp = _dstp;
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
+    {
         if (w >= vec_size) {
             // the final vector backsteps to w - vec_size (overlapping recompute)
             // so every pixel takes the identical SIMD path
@@ -463,12 +656,6 @@ fn toXYB(_srcp: [3][]const f32, _dstp: [3][]f32, stride: u32, w: u32, h: u32) vo
                 dstp[2][x] = (cz[0] - ys) + 0.55;
             }
         }
-
-        var i: u32 = 0;
-        while (i < 3) : (i += 1) {
-            srcp[i] = srcp[i][stride..];
-            dstp[i] = dstp[i][stride..];
-        }
     }
 }
 
@@ -478,55 +665,42 @@ fn tothe4th(y: f64) f64 {
     return x;
 }
 
-fn ssimMap(
-    sumsquared: []f32,
-    s12: []f32,
-    mu1: []f32,
-    mu2: []f32,
-    stride: u32,
-    w: u32,
-    h: u32,
-    plane: u32,
-    one_per_pixels: f64,
-    plane_avg_ssim: []f64,
-) void {
-    const FV = @Vector(vec_size, f32);
-    const DV = @Vector(vec_size, f64);
-    const onef: FV = @splat(1.0);
-    const twof: FV = @splat(2.0);
-    const e9f: FV = @splat(0.0009);
-    const oned: DV = @splat(1.0);
-    const zerod: DV = @splat(0.0);
+const AccFV = @Vector(vec_size, f32);
+const AccDV = @Vector(vec_size, f64);
 
-    var sum0v: DV = @splat(0.0);
-    var sum1v: DV = @splat(0.0);
-    var sum1 = [2]f64{ 0.0, 0.0 };
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        const sqp = sumsquared[(y * stride)..];
-        const s12p = s12[(y * stride)..];
-        const mu1p = mu1[(y * stride)..];
-        const mu2p = mu2[(y * stride)..];
+/// SSIM-map accumulators, fed one row at a time (rows top to bottom; the
+/// per-lane vector sums and the scalar-tail sums are reduced only in finish).
+const SsimAcc = struct {
+    sum0v: AccDV = @splat(0.0),
+    sum1v: AccDV = @splat(0.0),
+    sum1: [2]f64 = .{ 0.0, 0.0 },
+
+    fn row(self: *SsimAcc, sqp: []const f32, s12p: []const f32, mu1p: []const f32, mu2p: []const f32, w: u32) void {
+        const onef: AccFV = @splat(1.0);
+        const twof: AccFV = @splat(2.0);
+        const e9f: AccFV = @splat(0.0009);
+        const oned: AccDV = @splat(1.0);
+        const zerod: AccDV = @splat(0.0);
 
         var x: u32 = 0;
         while (x + vec_size <= w) : (x += vec_size) {
-            const m1: FV = mu1p[x..][0..vec_size].*;
-            const m2: FV = mu2p[x..][0..vec_size].*;
-            const s12v: FV = s12p[x..][0..vec_size].*;
-            const sqv: FV = sqp[x..][0..vec_size].*;
+            const m1: AccFV = mu1p[x..][0..vec_size].*;
+            const m2: AccFV = mu2p[x..][0..vec_size].*;
+            const s12v: AccFV = s12p[x..][0..vec_size].*;
+            const sqv: AccFV = sqp[x..][0..vec_size].*;
             const m11 = m1 * m1;
             const m22 = m2 * m2;
             const m12 = m1 * m2;
             const m_diff = m1 - m2;
-            const num_m: DV = @floatCast(@mulAdd(FV, m_diff, -m_diff, onef));
-            const num_s: DV = @floatCast(@mulAdd(FV, (s12v - m12), twof, e9f));
-            const denom_s: DV = @floatCast(sqv - twof * s12v - m11 - m22 + e9f);
-            const d1: DV = @max(oned - ((num_m * num_s) / denom_s), zerod);
+            const num_m: AccDV = @floatCast(@mulAdd(AccFV, m_diff, -m_diff, onef));
+            const num_s: AccDV = @floatCast(@mulAdd(AccFV, (s12v - m12), twof, e9f));
+            const denom_s: AccDV = @floatCast(sqv - twof * s12v - m11 - m22 + e9f);
+            const d1: AccDV = @max(oned - ((num_m * num_s) / denom_s), zerod);
 
-            sum0v += d1;
+            self.sum0v += d1;
             var t4 = d1 * d1;
             t4 *= t4;
-            sum1v += t4;
+            self.sum1v += t4;
         }
 
         while (x < w) : (x += 1) {
@@ -541,92 +715,77 @@ fn ssimMap(
             const denom_s: f64 = (sqp[x] - 2.0 * s12p[x] - m11 - m22 + 0.0009);
             const d1: f64 = @max(1.0 - ((num_m * num_s) / denom_s), 0.0);
 
-            sum1[0] += d1;
-            sum1[1] += tothe4th(d1);
+            self.sum1[0] += d1;
+            self.sum1[1] += tothe4th(d1);
         }
     }
 
-    sum1[0] += @reduce(.Add, sum0v);
-    sum1[1] += @reduce(.Add, sum1v);
+    fn finish(self: *SsimAcc, one_per_pixels: f64, out: *[2]f64) void {
+        self.sum1[0] += @reduce(.Add, self.sum0v);
+        self.sum1[1] += @reduce(.Add, self.sum1v);
+        out[0] = one_per_pixels * self.sum1[0];
+        out[1] = @sqrt(@sqrt(one_per_pixels * self.sum1[1]));
+    }
+};
 
-    plane_avg_ssim[plane * 2] = one_per_pixels * sum1[0];
-    plane_avg_ssim[plane * 2 + 1] = @sqrt(@sqrt(one_per_pixels * sum1[1]));
-}
+/// Edge-map accumulators (artifact / detail-loss), same row-feeding scheme.
+const EdgeAcc = struct {
+    art0: AccDV = @splat(0.0),
+    art1: AccDV = @splat(0.0),
+    det0: AccDV = @splat(0.0),
+    det1: AccDV = @splat(0.0),
+    sum2: [4]f64 = .{ 0.0, 0.0, 0.0, 0.0 },
 
-fn edgeMap(
-    im1: []f32,
-    im2: []f32,
-    mu1: []f32,
-    mu2: []f32,
-    stride: u32,
-    w: u32,
-    h: u32,
-    plane: u32,
-    one_per_pixels: f64,
-    plane_avg_edge: []f64,
-) void {
-    const FV = @Vector(vec_size, f32);
-    const DV = @Vector(vec_size, f64);
-    const oned: DV = @splat(1.0);
-    const zerod: DV = @splat(0.0);
-
-    var art0: DV = @splat(0.0);
-    var art1: DV = @splat(0.0);
-    var det0: DV = @splat(0.0);
-    var det1: DV = @splat(0.0);
-    var sum2 = [4]f64{ 0.0, 0.0, 0.0, 0.0 };
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        const im1p = im1[(y * stride)..];
-        const im2p = im2[(y * stride)..];
-        const mu1p = mu1[(y * stride)..];
-        const mu2p = mu2[(y * stride)..];
+    fn row(self: *EdgeAcc, im1p: []const f32, im2p: []const f32, mu1p: []const f32, mu2p: []const f32, w: u32) void {
+        const oned: AccDV = @splat(1.0);
+        const zerod: AccDV = @splat(0.0);
 
         var x: u32 = 0;
         while (x + vec_size <= w) : (x += vec_size) {
-            const v1: FV = im1p[x..][0..vec_size].*;
-            const v2: FV = im2p[x..][0..vec_size].*;
-            const m1: FV = mu1p[x..][0..vec_size].*;
-            const m2: FV = mu2p[x..][0..vec_size].*;
-            const n2: DV = @floatCast(@abs(v2 - m2));
-            const n1: DV = @floatCast(@abs(v1 - m1));
-            const d1: DV = (oned + n2) / (oned + n1) - oned;
+            const v1: AccFV = im1p[x..][0..vec_size].*;
+            const v2: AccFV = im2p[x..][0..vec_size].*;
+            const m1: AccFV = mu1p[x..][0..vec_size].*;
+            const m2: AccFV = mu2p[x..][0..vec_size].*;
+            const n2: AccDV = @floatCast(@abs(v2 - m2));
+            const n1: AccDV = @floatCast(@abs(v1 - m1));
+            const d1: AccDV = (oned + n2) / (oned + n1) - oned;
 
             const artifact = @max(d1, zerod);
-            art0 += artifact;
+            self.art0 += artifact;
             var a4 = artifact * artifact;
             a4 *= a4;
-            art1 += a4;
+            self.art1 += a4;
 
             const detail_lost = @max(-d1, zerod);
-            det0 += detail_lost;
+            self.det0 += detail_lost;
             var l4 = detail_lost * detail_lost;
             l4 *= l4;
-            det1 += l4;
+            self.det1 += l4;
         }
 
         while (x < w) : (x += 1) {
             const d1: f64 = (1.0 + @as(f64, @abs(im2p[x] - mu2p[x]))) /
                 (1.0 + @as(f64, @abs(im1p[x] - mu1p[x]))) - 1.0;
             const artifact: f64 = @max(d1, 0.0);
-            sum2[0] += artifact;
-            sum2[1] += tothe4th(artifact);
+            self.sum2[0] += artifact;
+            self.sum2[1] += tothe4th(artifact);
             const detail_lost: f64 = @max(-d1, 0.0);
-            sum2[2] += detail_lost;
-            sum2[3] += tothe4th(detail_lost);
+            self.sum2[2] += detail_lost;
+            self.sum2[3] += tothe4th(detail_lost);
         }
     }
 
-    sum2[0] += @reduce(.Add, art0);
-    sum2[1] += @reduce(.Add, art1);
-    sum2[2] += @reduce(.Add, det0);
-    sum2[3] += @reduce(.Add, det1);
-
-    plane_avg_edge[plane * 4] = one_per_pixels * sum2[0];
-    plane_avg_edge[plane * 4 + 1] = @sqrt(@sqrt(one_per_pixels * sum2[1]));
-    plane_avg_edge[plane * 4 + 2] = one_per_pixels * sum2[2];
-    plane_avg_edge[plane * 4 + 3] = @sqrt(@sqrt(one_per_pixels * sum2[3]));
-}
+    fn finish(self: *EdgeAcc, one_per_pixels: f64, out: *[4]f64) void {
+        self.sum2[0] += @reduce(.Add, self.art0);
+        self.sum2[1] += @reduce(.Add, self.art1);
+        self.sum2[2] += @reduce(.Add, self.det0);
+        self.sum2[3] += @reduce(.Add, self.det1);
+        out[0] = one_per_pixels * self.sum2[0];
+        out[1] = @sqrt(@sqrt(one_per_pixels * self.sum2[1]));
+        out[2] = one_per_pixels * self.sum2[2];
+        out[3] = @sqrt(@sqrt(one_per_pixels * self.sum2[3]));
+    }
+};
 
 fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
     var ssim: f64 = 0.0;

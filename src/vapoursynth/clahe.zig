@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/clahe.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -16,9 +17,12 @@ const Data = struct {
     vi: *const vs.VideoInfo = undefined,
     limit: u32 = 0,
     tiles: [2]u32 = .{ 0, 0 },
+    bits: u5 = 8, // histogram bits: the integer depth, 16 for float
 };
 
-fn CLAHE(comptime T: type) type {
+/// `clamp`: 9..15-bit integer clips bin min(v, peak) so stray samples above
+/// the nominal peak stay inside their LUT row (8/16-bit need no guard).
+fn CLAHE(comptime T: type, comptime clamp: bool) type {
     return struct {
         pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
@@ -36,7 +40,8 @@ fn CLAHE(comptime T: type) type {
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);
                     const width, const height, const stride = src.getDimensions2(T, plane);
-                    filter.applyCLAHE(T, srcp, dstp, stride, width, height, d.limit, &d.tiles);
+                    const chroma = d.vi.format.colorFamily == .YUV and plane > 0;
+                    filter.applyCLAHE(T, clamp, srcp, dstp, stride, width, height, d.limit, &d.tiles, d.bits, chroma);
                 }
 
                 const dst_prop = dst.getPropertiesRW();
@@ -65,13 +70,9 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
     const map_out = zapi.initZMap(out);
     d.node, d.vi = map_in.getNodeVi("clip").?;
 
-    if (d.vi.format.sampleType != .Integer or
-        (d.vi.format.bitsPerSample != 8 and d.vi.format.bitsPerSample != 16))
-    {
-        map_out.setError(filter_name ++ ": only 8 or 16 bit int formats supported.");
-        zapi.freeNode(d.node);
-        return;
-    }
+    const dt = hz.DataType.select(map_out, d.node, d.vi, filter_name, false) catch return;
+    // float is equalized on 16-bit bins (see filters/clahe.zig Bins)
+    d.bits = if (d.vi.format.sampleType == .Integer) @intCast(d.vi.format.bitsPerSample) else 16;
 
     d.limit = map_in.getValue(u32, "limit") orelse 7;
     const df_arr = [2]i64{ 3, 3 };
@@ -102,7 +103,7 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
         return;
     }
 
-    const hist_size: u64 = math.shl(u64, 1, d.vi.format.bitsPerSample);
+    const hist_size: u64 = math.shl(u64, 1, d.bits);
     const tw: u64 = @as(u64, @intCast(d.vi.width)) / @as(u64, d.tiles[0]);
     const th: u64 = @as(u64, @intCast(d.vi.height)) / @as(u64, d.tiles[1]);
     const cl: u64 = @as(u64, d.limit) * tw * th / hist_size;
@@ -119,6 +120,12 @@ pub fn claheCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs
         .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    const getFrame = if (d.vi.format.bytesPerSample == 1) &CLAHE(u8).getFrame else &CLAHE(u16).getFrame;
+    const getFrame: vs.FilterGetFrame = switch (dt) {
+        .U8 => &CLAHE(u8, false).getFrame,
+        .U16 => if (d.bits == 16) &CLAHE(u16, false).getFrame else &CLAHE(u16, true).getFrame,
+        .F16 => &CLAHE(f16, false).getFrame,
+        .F32 => &CLAHE(f32, false).getFrame,
+        .U32 => unreachable,
+    };
     zapi.createVideoFilter(out, filter_name, d.vi, getFrame, claheFree, .Parallel, &deps, data);
 }
