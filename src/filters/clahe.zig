@@ -11,8 +11,73 @@ const F32V = @Vector(vec_len, f32);
 // don't serialize on a single bin's load-add-store chain
 const n_sub = 4;
 
+/// Sample -> histogram bin mapping. Integer clips bin by value (`bits` of
+/// the format, so 10-bit gets 1024 bins and a 10-bit peak, not the 16-bit
+/// container's). Float clips are quantized to 16-bit bins on the fly in both
+/// passes (no u16 plane is stored): bin = round((v + off) * 65535) clamped to
+/// [0, 65535], off = 0.5 on YUV chroma ([-0.5, 0.5]) and 0 otherwise; NaN
+/// lands in bin 0. The equalization then runs exactly as on a 16-bit clip and
+/// the interpolated LUT value maps back as res / 65535 - off, unrounded.
+pub fn Bins(comptime T: type, comptime clamp: bool) type {
+    return struct {
+        const Self = @This();
+        pub const is_float = @typeInfo(T) == .float;
+        /// LUT / bin storage type
+        pub const L = if (T == u8) u8 else u16;
+        bits: u5,
+        off: f32 = 0, // float: chroma offset
+        peak_f: f32,
+        inv_peak: f32,
+
+        pub fn init(bits: u5, chroma: bool) Self {
+            const peak: u32 = (@as(u32, 1) << bits) - 1;
+            const pf: f32 = @floatFromInt(peak);
+            return .{ .bits = bits, .off = if (is_float and chroma) 0.5 else 0, .peak_f = pf, .inv_peak = 1.0 / pf };
+        }
+
+        inline fn histSize(self: Self) u32 {
+            return @as(u32, 1) << self.bits;
+        }
+
+        pub inline fn bin(self: Self, v: T) u32 {
+            if (comptime is_float) {
+                const x = (@as(f32, @floatCast(v)) + self.off) * self.peak_f + 0.5;
+                return @intFromFloat(@min(@max(x, 0.0), self.peak_f));
+            }
+            if (comptime clamp) return @min(@as(u32, v), (@as(u32, 1) << self.bits) - 1);
+            return v;
+        }
+
+        pub inline fn bins(self: Self, v: @Vector(vec_len, T)) U32V {
+            if (comptime is_float) {
+                const f: F32V = if (T == f32) v else @floatCast(v);
+                const x = (f + @as(F32V, @splat(self.off))) * @as(F32V, @splat(self.peak_f)) + @as(F32V, @splat(0.5));
+                return @intFromFloat(@min(@max(x, @as(F32V, @splat(0.0))), @as(F32V, @splat(self.peak_f))));
+            }
+            const u: U32V = @intCast(v);
+            if (comptime clamp) return @min(u, @as(U32V, @splat((@as(u32, 1) << self.bits) - 1)));
+            return u;
+        }
+
+        /// interpolated LUT value -> output sample
+        pub inline fn out(self: Self, res: F32V) @Vector(vec_len, T) {
+            if (comptime is_float) {
+                const r = res * @as(F32V, @splat(self.inv_peak)) - @as(F32V, @splat(self.off));
+                return if (T == f32) r else @floatCast(r);
+            }
+            return @intFromFloat(@trunc(res + @as(F32V, @splat(0.5))));
+        }
+
+        pub inline fn out1(self: Self, res: f32) T {
+            if (comptime is_float) return @floatCast(res * self.inv_peak - self.off);
+            return @intFromFloat(@trunc(res + 0.5));
+        }
+    };
+}
+
 pub fn applyCLAHE(
     comptime T: type,
+    comptime clamp: bool,
     srcp: []const T,
     dstp: []T,
     stride: u32,
@@ -20,9 +85,13 @@ pub fn applyCLAHE(
     height: u32,
     limit: u32,
     tiles: []u32,
+    bits: u5,
+    chroma: bool,
 ) void {
-    const hist_size: u32 = @as(u32, 1) << @as(u32, @typeInfo(T).int.bits);
-    const peak: f32 = @floatFromInt(hist_size - 1);
+    const B = Bins(T, clamp);
+    const bn = B.init(bits, chroma);
+    const hist_size: u32 = bn.histSize();
+    const peak: f32 = bn.peak_f;
     const tile_width: u32 = width / tiles[0];
     const tile_height: u32 = height / tiles[1];
     const tile_size_total: u64 = @as(u64, tile_width) * tile_height;
@@ -30,31 +99,33 @@ pub fn applyCLAHE(
     var clip_limit: i32 = @intCast(@as(u64, limit) * tile_size_total / hist_size);
     clip_limit = @max(clip_limit, 1);
 
-    const lut = allocator.alloc(T, tiles[0] * tiles[1] * hist_size) catch unreachable;
+    const lut = allocator.alloc(B.L, tiles[0] * tiles[1] * hist_size) catch unreachable;
     defer allocator.free(lut);
 
-    calcLut(T, srcp, stride, width, height, lut, tile_width, tile_height, tiles, clip_limit, lut_scale);
+    calcLut(T, B, bn, srcp, stride, width, height, lut, tile_width, tile_height, tiles, clip_limit, lut_scale);
     if (T == u8) {
         interpolateU8(srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
     } else {
-        interpolate(T, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+        interpolate(T, B, bn, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
     }
 }
 
 fn calcLut(
     comptime T: type,
+    comptime B: type,
+    bn: B,
     srcp: []const T,
     stride: u32,
     width: u32,
     height: u32,
-    lut: []T,
+    lut: []B.L,
     tile_width: u32,
     tile_height: u32,
     tiles: []u32,
     clip_limit: i32,
     lut_scale: f32,
 ) void {
-    const hist_size: u32 = @as(u32, 1) << @as(u32, @typeInfo(T).int.bits);
+    const hist_size: u32 = bn.histSize();
     const hist_sizei: i32 = @intCast(hist_size);
     const tiles_x = tiles[0];
     const tiles_y = tiles[1];
@@ -82,14 +153,26 @@ fn calcLut(
                 const row = srcp[y * stride ..];
                 var x: u32 = tx * tile_width;
                 const xe = @min((tx + 1) * tile_width, width);
+                if (comptime B.is_float) {
+                    // quantize vec_len samples at once, then scatter
+                    while (x + vec_len <= xe) : (x += vec_len) {
+                        const b = bn.bins(row[x..][0..vec_len].*);
+                        inline for (0..vec_len / 4) |k| {
+                            h0[b[4 * k]] += 1;
+                            h1[b[4 * k + 1]] += 1;
+                            h2[b[4 * k + 2]] += 1;
+                            h3[b[4 * k + 3]] += 1;
+                        }
+                    }
+                }
                 while (x + 4 <= xe) : (x += 4) {
-                    h0[row[x]] += 1;
-                    h1[row[x + 1]] += 1;
-                    h2[row[x + 2]] += 1;
-                    h3[row[x + 3]] += 1;
+                    h0[bn.bin(row[x])] += 1;
+                    h1[bn.bin(row[x + 1])] += 1;
+                    h2[bn.bin(row[x + 2])] += 1;
+                    h3[bn.bin(row[x + 3])] += 1;
                 }
                 while (x < xe) : (x += 1) {
-                    h0[row[x]] += 1;
+                    h0[bn.bin(row[x])] += 1;
                 }
             }
 
@@ -158,7 +241,7 @@ fn calcLut(
                     p += @as(I32V, @splat(run));
                     run = p[vec_len - 1];
                     const f: F32V = @floatFromInt(p);
-                    const out: @Vector(vec_len, T) = @intFromFloat(@trunc(f * scalev + halfv));
+                    const out: @Vector(vec_len, B.L) = @intFromFloat(@trunc(f * scalev + halfv));
                     lut_row[i..][0..vec_len].* = out;
                 }
             }
@@ -187,17 +270,19 @@ inline fn prefixSum(v: I32V) I32V {
 
 fn interpolate(
     comptime T: type,
+    comptime B: type,
+    bn: B,
     srcp: []const T,
     dstp: []T,
     stride: u32,
     width: u32,
     height: u32,
-    lut: []const T,
+    lut: []const B.L,
     tile_width: u32,
     tile_height: u32,
     tiles: []u32,
 ) void {
-    const hist_size: u32 = @as(u32, 1) << @as(u32, @typeInfo(T).int.bits);
+    const hist_size: u32 = bn.histSize();
     const tiles_x: i32 = @intCast(tiles[0]);
     const tiles_y: i32 = @intCast(tiles[1]);
 
@@ -243,13 +328,12 @@ fn interpolate(
         const onev: F32V = @splat(1.0);
         const yav: F32V = @splat(ya);
         const one_m_yav: F32V = @splat(1 - ya);
-        const halfv: F32V = @splat(0.5);
         const p1v: U32V = @splat(lut_p1h);
         const p2v: U32V = @splat(lut_p2h);
 
         var x: u32 = 0;
         while (x + vec_len <= width) : (x += vec_len) {
-            const sv: U32V = @intCast(@as(@Vector(vec_len, T), src_row[x..][0..vec_len].*));
+            const sv = bn.bins(src_row[x..][0..vec_len].*);
             const t1: U32V = tx1h[x..][0..vec_len].*;
             const t2: U32V = tx2h[x..][0..vec_len].*;
             const idx0 = p1v + t1 + sv;
@@ -275,12 +359,11 @@ fn interpolate(
             const lv2: F32V = l2;
             const lv3: F32V = l3;
             const res = (lv0 * one_m_xav + lv1 * xav) * one_m_yav + (lv2 * one_m_xav + lv3 * xav) * yav;
-            const out: @Vector(vec_len, T) = @intFromFloat(@trunc(res + halfv));
-            dst_row[x..][0..vec_len].* = out;
+            dst_row[x..][0..vec_len].* = bn.out(res);
         }
 
         while (x < width) : (x += 1) {
-            const src_val = src_row[x];
+            const src_val = bn.bin(src_row[x]);
             const lut0: f32 = @floatFromInt(lut[lut_p1h + tx1h[x] + src_val]);
             const lut1: f32 = @floatFromInt(lut[lut_p1h + tx2h[x] + src_val]);
             const lut2: f32 = @floatFromInt(lut[lut_p2h + tx1h[x] + src_val]);
@@ -288,7 +371,7 @@ fn interpolate(
             const xa = xa_arr[x];
             const res: f32 = (lut0 * (1 - xa) + lut1 * xa) * (1 - ya) + (lut2 * (1 - xa) + lut3 * xa) * ya;
 
-            dst_row[x] = @trunc(res + 0.5);
+            dst_row[x] = bn.out1(res);
         }
     }
 }

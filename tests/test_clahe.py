@@ -4,9 +4,10 @@ import vapoursynth as vs
 from golden import Case, grid, sweep
 from helpers import assert_same_clip, avg, plane_stats, repack
 
-# CLAHE accepts any 8- or 16-bit integer clip: the Create callback checks only
-# sampleType + bitsPerSample, not color family, and getFrame applies the same
-# equalization to every plane. So Gray, YUV (all subsamplings) and RGB are all
+# CLAHE accepts every 8..16-bit integer and f16/f32 clip (integer clips bin by
+# their own bit depth; float is equalized on 16-bit bins, see clahe_ref.py),
+# regardless of color family, and getFrame applies the same equalization to
+# every plane. So Gray, YUV (all subsamplings) and RGB are all
 # valid paths and are swept here. `limit` scales by tile_size_total / hist_size
 # and is integer-truncated, so on 16-bit small limits collapse to the same
 # clip_limit; the {2,4,10} sweep is therefore anchored on GRAY8 (where they're
@@ -25,6 +26,12 @@ CASES = (
             vs.YUV444P16,
             vs.RGB24,
             vs.RGB48,
+            vs.GRAY10,
+            vs.YUV420P10,
+            vs.GRAYS,
+            vs.YUV444PS,
+            vs.RGBS,
+            vs.GRAYH,
         ],
         args=grid(limit=[2, 4, 10])
         + [
@@ -94,12 +101,99 @@ def test_tiles_default_and_pair_equivalence(to_gray):
     assert_same_clip(src.vszip.CLAHE(limit=15, tiles=[3, 3]), ref)
 
 
-@pytest.mark.parametrize("fmt", [vs.GRAY8, vs.GRAY16])
+@pytest.mark.parametrize("fmt", [vs.GRAY8, vs.GRAY10, vs.GRAY12, vs.GRAY16, vs.GRAYH, vs.GRAYS])
 def test_formats_run(to_gray, fmt):
     src = to_gray(fmt)
     out = src.vszip.CLAHE()
     assert out.format.id == src.format.id
-    assert 0.0 < avg(out) < 1.0
+    # std.PlaneStats has no f16 path: measure GRAYH through f32
+    meas = out.resize.Point(format=vs.GRAYS) if fmt == vs.GRAYH else out
+    assert 0.0 < avg(meas) < 1.0
+
+
+@pytest.fixture(scope="module")
+def np():
+    return pytest.importorskip("numpy")
+
+
+def _plane(np, clip, p):
+    return np.asarray(clip.get_frame(0)[p]).copy()
+
+
+ORACLE = [
+    (vs.GRAY8, 8, dict(limit=4, tiles=3)),
+    (vs.GRAY10, 10, dict(limit=4, tiles=3)),
+    (vs.GRAY10, 10, dict(limit=40, tiles=[5, 2])),
+    (vs.GRAY12, 12, dict(limit=7, tiles=[2, 4])),
+    (vs.GRAY14, 14, dict(limit=300, tiles=4)),
+    (vs.GRAY16, 16, dict(limit=2560, tiles=[3, 5])),
+    (vs.GRAYS, 16, dict(limit=7, tiles=3)),
+    (vs.GRAYS, 16, dict(limit=2560, tiles=[4, 2])),
+    (vs.GRAYH, 16, dict(limit=7, tiles=3)),
+]
+
+
+@pytest.mark.parametrize(("fmt", "bits", "args"), ORACLE, ids=lambda v: str(v))
+@pytest.mark.parametrize("geo", [(197, 113, 300, 100), (64, 37, 10, 20)], ids=["odd", "small"])
+def test_matches_reference(np, src_rgb, fmt, bits, args, geo):
+    """Bit-exact against the NumPy reference for every bin count (tails, tile
+    remainder strips, 9..15-bit bins and float quantization included)."""
+    from clahe_ref import clahe_plane
+
+    w, h, x, y = geo
+    src = src_rgb.std.CropAbs(width=w, height=h, left=x, top=y).resize.Bilinear(format=fmt, matrix=1).std.RemoveFrameProps("_Matrix")
+    fobj = src.format
+    is_float = fobj.sample_type == vs.FLOAT
+    tiles = args["tiles"] if isinstance(args["tiles"], list) else [args["tiles"]] * 2
+    got = _plane(np, src.vszip.CLAHE(**args), 0)
+    want = clahe_plane(_plane(np, src, 0), bits, args["limit"], tiles, is_float=is_float, out_dtype=got.dtype)
+    np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize("fmt", [vs.YUV444PS, vs.YUV420PS, vs.YUV420P10, vs.YUV444PH])
+def test_matches_reference_yuv(np, src_rgb, fmt):
+    """Every plane, with float chroma offset by +0.5 into the [0, 1] bins."""
+    from clahe_ref import clahe_plane
+
+    src = src_rgb.std.CropAbs(width=150, height=90, left=200, top=150).resize.Bilinear(format=fmt, matrix=1)
+    fobj = src.format
+    is_float = fobj.sample_type == vs.FLOAT
+    bits = 16 if is_float else fobj.bits_per_sample
+    out = src.vszip.CLAHE(limit=9, tiles=[3, 2])
+    for p in range(3):
+        got = _plane(np, out, p)
+        want = clahe_plane(_plane(np, src, p), bits, 9, [3, 2], is_float=is_float, off=0.5 if (is_float and p) else 0.0, out_dtype=got.dtype)
+        np.testing.assert_array_equal(got, want, err_msg=f"plane {p}")
+
+
+def test_float_equals_16bit_path(np, to_gray):
+    """f32 samples that sit exactly on 16-bit codes take the same bins and
+    LUTs as the GRAY16 clip; the float output is the unrounded value of the
+    integer one (within half a 16-bit step)."""
+    g16 = to_gray(vs.GRAY16)
+    gs = g16.std.Expr("x 65535 /", format=vs.GRAYS)
+    i = _plane(np, g16.vszip.CLAHE(limit=15, tiles=[3, 4]), 0).astype(np.float64)
+    f = _plane(np, gs.vszip.CLAHE(limit=15, tiles=[3, 4]), 0).astype(np.float64) * 65535
+    # + f32 rounding of res / 65535 (~6e-8 relative)
+    assert np.abs(f - i).max() <= 0.5 + 0.01
+
+
+def test_stray_samples_above_peak_are_safe(np, to_gray):
+    """10-bit clips holding values above 1023 (invalid but representable)
+    bin as the peak instead of indexing past their LUT row."""
+    src = to_gray(vs.GRAY10)
+    stray = src.std.Expr("x 512 < x 60000 ?")  # half the plane far above peak
+    out = _plane(np, stray.vszip.CLAHE(limit=4, tiles=3), 0)
+    assert out.max() <= 1023
+    np.testing.assert_array_equal(out, _plane(np, stray.std.Expr("x 1023 min").vszip.CLAHE(limit=4, tiles=3), 0))
+
+
+def test_float_nan_and_out_of_range_are_safe(np, to_gray):
+    """NaN bins as 0 and values outside [0, 1] clamp to the end bins."""
+    src = to_gray(vs.GRAYS)
+    odd = src.std.Expr("x 0.2 < 0 0 / x 0.8 > x 3 * x 0.5 < x 1 - x ? ? ?")
+    out = _plane(np, odd.vszip.CLAHE(), 0)
+    assert np.isfinite(out).all() and out.min() >= 0 and out.max() <= 1
 
 
 def test_equalization_increases_contrast(to_gray):
@@ -110,12 +204,10 @@ def test_equalization_increases_contrast(to_gray):
     assert stats["PlaneStatsMin"] < 4000
 
 
-@pytest.mark.parametrize("fmt", [vs.GRAY10, vs.GRAY12, vs.GRAY32, vs.GRAYS])
-def test_unsupported_formats_rejected(core, fmt):
-    """Only 8- and 16-bit integer clips are accepted (10-bit used to be let
-    through and was equalized to the 16-bit peak; 32-bit was reinterpreted)."""
-    src = core.std.BlankClip(None, 64, 64, fmt, length=1)
-    with pytest.raises(vs.Error, match="only 8 or 16 bit int formats supported"):
+def test_unsupported_formats_rejected(core):
+    """32-bit integer is the only rejected sample format."""
+    src = core.std.BlankClip(None, 64, 64, vs.GRAY32, length=1)
+    with pytest.raises(vs.Error, match="not supported Int format"):
         src.vszip.CLAHE()
 
 
@@ -132,15 +224,8 @@ def test_tiles_too_many_error(to_gray):
 @pytest.mark.parametrize(
     ("fmt", "args", "msg"),
     [
-        # rejected sample types / bit depths (float + non-8/16 integer)
-        (vs.GRAY10, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.GRAY12, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.GRAY14, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.GRAY32, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.GRAYH, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.GRAYS, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.YUV420P10, dict(), "only 8 or 16 bit int formats supported"),
-        (vs.YUV444PS, dict(), "only 8 or 16 bit int formats supported"),
+        # rejected sample type (32-bit integer)
+        (vs.GRAY32, dict(), "not supported Int format"),
         # tiles array bound (max 2 values)
         (vs.GRAY16, dict(tiles=[2, 2, 2]), "tiles array can't have more than 2 values"),
         (vs.GRAY16, dict(tiles=[1, 2, 3, 4]), "tiles array can't have more than 2 values"),
