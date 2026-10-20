@@ -81,13 +81,165 @@ test "planeaverage matches a scalar oracle with stride padding" {
     try std.testing.expectApproxEqRel(want, planeaverage.average(u8, &buf, stride, w, h, ex, 255), 1e-12);
 }
 
+const boxblur_ct = @import("filters/boxblur_comptime.zig");
+const bilateral = @import("filters/bilateral.zig");
+const eedi3 = @import("filters/eedi3.zig");
+const planeminmax = @import("filters/planeminmax.zig");
+
+/// Non-generic wrappers around representative generic kernels. Taking their
+/// address forces semantic analysis of the wrapper bodies, i.e. of each
+/// kernel instantiated for `T` (taking `&kernel` of a generic function does
+/// not). The plugin builds instantiate every kernel they use; this keeps the
+/// host-free check honest for the shared drivers.
+fn Inst(comptime T: type) type {
+    return struct {
+        const Tmp = struct {
+            pub fn get(_: @This()) error{OutOfMemory}![]T {
+                return &.{};
+            }
+        };
+        const Sink = struct {
+            pub fn setInt(_: *@This(), _: [:0]const u8, _: i64, _: anytype) void {}
+            pub fn setFloat(_: *@This(), _: [:0]const u8, _: f64, _: anytype) void {}
+        };
+
+        fn blurPlane(p: boxblur_rt.Params, s: []const T, d: []T, sc: *const boxblur_rt.Scratch(T)) !void {
+            try boxblur_rt.blurPlane(T, p, s, d, 1, 1, 1, sc, Tmp{});
+        }
+        fn hvBlur(s: []const T, d: []T) !void {
+            try boxblur_ct.hvBlur(T, 3, s, d, 1, 1, 1);
+        }
+        fn bilat(s: []const T, d: []T, k: *bilateral.Data) !void {
+            try bilateral.bilateral(T, s, s, d, 1, 1, 1, 0, false, k);
+        }
+        fn interp(k: *const eedi3.Data, sc: *eedi3.Scratch, s: []const T, d: []T) void {
+            eedi3.processPlane(T, k, sc, s, d, null, null, 0, 0, 1, 1, 1, 1);
+        }
+        fn minMax(s: []const T, k: *planeminmax.Data) !void {
+            var sink: Sink = .{};
+            try planeminmax.minMax(T, s, 1, &sink, 1, 1, k);
+        }
+    };
+}
+
 test "generic kernels instantiate for every plugin sample type" {
     inline for (.{ u8, u16, f32 }) |T| {
-        _ = &boxblur_rt.hblur;
-        _ = &limit_filter.process;
+        const I = Inst(T);
+        _ = &I.blurPlane;
+        _ = &I.bilat;
+        _ = &I.interp;
+        _ = &I.minMax;
+        if (T == f32) _ = &I.hvBlur; // CT kernels are float-only in the plugins
         const s: []const T = &.{};
         const d: []T = &.{};
         limit_filter.process(T, s, s, s, d, 1, 1, 2);
         limiter.clampSlice(T, d, s, 0, 1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Allocation-failure cleanup: fail every allocation position in turn and
+// require that nothing stays allocated (after the error, and after normal
+// destruction once construction succeeds).
+// ---------------------------------------------------------------------------
+
+const common = @import("common.zig");
+const deband_setup = @import("filters/deband_setup.zig");
+const xpsnr = @import("filters/xpsnr.zig");
+
+fn faultSweep(ctx: anytype, comptime run: fn (@TypeOf(ctx)) anyerror!void) !void {
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        var fa = std.testing.FailingAllocator.init(std.heap.c_allocator, .{ .fail_index = i });
+        common.test_hooks.backing = fa.allocator();
+        defer common.test_hooks.backing = std.heap.c_allocator;
+        const r = run(ctx);
+        std.testing.expectEqual(fa.allocated_bytes, fa.freed_bytes) catch |e| {
+            std.debug.print("fail_index {d}: {d} bytes left allocated\n", .{ i, fa.allocated_bytes - fa.freed_bytes });
+            return e;
+        };
+        if (r) |_| {
+            if (!fa.has_induced_failure) {
+                try std.testing.expect(i > 0); // the sweep exercised some allocation
+                return;
+            }
+        } else |e| try std.testing.expectEqual(error.OutOfMemory, e);
+    }
+}
+
+test "eedi3 allocScratch releases partial construction" {
+    const Case = struct { hp: bool, t_rows: u32 };
+    inline for (.{ Case{ .hp = false, .t_rows = 0 }, Case{ .hp = true, .t_rows = 16 } }) |cs| {
+        try faultSweep(cs, struct {
+            fn run(c: Case) anyerror!void {
+                const s = try eedi3.allocScratch(64, 64, 8, c.hp, c.t_rows, 2 * c.t_rows, 2);
+                eedi3.freeScratch(s);
+            }
+        }.run);
+    }
+}
+
+test "deband TempBuff.init releases partial construction" {
+    inline for (.{ true, false }) |is_int| {
+        var d: deband_setup.Data = .{ .width = 32, .height = 16, .num_frames = 3, .is_int = is_int, .is_yuv = true, .strides = .{ 64, 64 }, .ssw = 1, .ssh = 1 };
+        d.configure(.{
+            .thr = .{ 1, 1, 1 },
+            .thr1 = .{ 1, 1, 1 },
+            .thr2 = .{ 1, 1, 1 },
+            .grain = .{ 4, 4, 4 },
+            .sample_mode = 2,
+            .range = 15,
+            .seed = 0,
+            .blur_first = true,
+            .dynamic_grain = true,
+            .keep_tv_range = false,
+            .angle_boost = 1.5,
+            .max_angle = 0.15,
+            .random_param_ref = 1,
+            .random_param_grain = 1,
+            .random_algo_ref = 1,
+            .random_algo_grain = 1,
+        });
+        try faultSweep(&d, struct {
+            fn run(dd: *deband_setup.Data) anyerror!void {
+                var tb = try deband_setup.TempBuff.init(dd);
+                tb.deinit(dd);
+            }
+        }.run);
+    }
+}
+
+test "bilateral init and PBFIC release partial allocations" {
+    try faultSweep({}, struct {
+        fn run(_: void) anyerror!void {
+            var k = try bilateral.Data.init(.{
+                .sigmaS = .{ 3, 3, 3 },
+                .sigmaR = .{ 0.02, 0.02, 0.02 },
+                .algorithm = .{ 1, 2, 0 },
+                .PBFICnum = .{ 0, 0, 0 },
+                .planes = .{ true, true, false },
+                .yuv = true,
+                .plane_w = .{ 32, 32, 32 },
+                .plane_h = .{ 32, 32, 32 },
+                .hist_len = 256,
+            });
+            defer k.deinit();
+            var src: [32 * 32]u8 = @splat(100);
+            var dst: [32 * 32]u8 = undefined;
+            try bilateral.bilateral(u8, &src, &src, &dst, 32, 32, 32, 0, false, &k);
+        }
+    }.run);
+}
+
+test "xpsnr getWSSE releases partial allocations" {
+    try faultSweep({}, struct {
+        fn run(_: void) anyerror!void {
+            const w = 256;
+            const h = 128;
+            var org: [w * h]u8 = @splat(50);
+            var rec: [w * h]u8 = @splat(52);
+            var wsse = [3]u64{ 0, 0, 0 };
+            try xpsnr.getWSSE(u8, .{ &org, &.{}, &.{} }, .{ &rec, &.{}, &.{} }, null, null, &wsse, .{ w, 0, 0 }, .{ h, 0, 0 }, .{ w, 0, 0 }, 8, 1, 24, false);
+        }
+    }.run);
 }

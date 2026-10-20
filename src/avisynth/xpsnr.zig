@@ -125,7 +125,7 @@ fn XPSNR(comptime T: type) type {
                 d.results[@intCast(n)] = rec;
             }
 
-            try dst.makePropertyWritable(env);
+            try ctx.makePropertyWritable(&dst);
             const props = dst.propsRW(env);
             props.setFloat("XPSNR_Y", cur_xpsnr[0], .replace) catch return ctx.fail("could not set XPSNR_Y.", .{});
             props.setFloat("XPSNR_U", cur_xpsnr[1], .replace) catch return ctx.fail("could not set XPSNR_U.", .{});
@@ -168,7 +168,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     const vi = reference.videoInfo();
     const vi2 = distorted.videoInfo();
-    try hz.compareClips(ctx, &.{ vi, vi2 }, .SAME_LEN);
+    try hz.compareClips(ctx, &.{ vi, vi2 }, .SAME_LEN, .color_only);
     const format = try hz.planarFormat(ctx, vi);
 
     var d: Data = .{ .format = format, .reference = .{ .clip = reference }, .results = undefined };

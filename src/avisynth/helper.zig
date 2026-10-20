@@ -45,9 +45,19 @@ pub const ClipLen = enum {
     MISMATCH,
 };
 
+/// Which planes of the secondary clips a caller reads (VapourSynth formats
+/// have no alpha, so vszip's compareNodes has no such rule).
+pub const AlphaRule = enum {
+    /// Only color planes are read: alpha presence may differ.
+    color_only,
+    /// The alpha plane is read too: every clip must have alpha iff `vis[0]` has.
+    same,
+};
+
 /// vszip's compareNodes: every clip must match `vis[0]` in size, family,
-/// subsampling and depth (and length per `len`).
-pub fn compareClips(ctx: *avs.Create, vis: []const ?*const c.AVS_VideoInfo, len: ClipLen) error{Failed}!void {
+/// subsampling and depth (and length per `len`), plus alpha presence when
+/// `alpha == .same`.
+pub fn compareClips(ctx: *avs.Create, vis: []const ?*const c.AVS_VideoInfo, len: ClipLen, alpha: AlphaRule) error{Failed}!void {
     const vi0 = vis[0].?;
     const f0 = try planarFormat(ctx, vi0);
     for (vis[1..]) |opt| {
@@ -61,6 +71,8 @@ pub fn compareClips(ctx: *avs.Create, vis: []const ?*const c.AVS_VideoInfo, len:
             return ctx.fail("all input clips must have the same subsampling.", .{});
         if (f0.bits != f.bits)
             return ctx.fail("all input clips must have the same bit depth.", .{});
+        if (alpha == .same and f0.has_alpha != f.has_alpha)
+            return ctx.fail("all input clips must have an alpha plane, or none.", .{});
         switch (len) {
             .SAME_LEN => if (vi0.num_frames != vi.num_frames)
                 return ctx.fail("all input clips must have the same length.", .{}),
@@ -199,19 +211,36 @@ pub fn planeIndex(comptime table: anytype, planes: [3]bool, fallback: u32) u32 {
     return fallback;
 }
 
-/// Per-call scratch for canonical source copies; `deinit` frees them all.
+/// Per-call scratch for canonical source copies and temp planes; `deinit`
+/// (or `reset`) frees them all. Grows as needed: temporal filters can hold
+/// many copies (WNNM: 2 per frame of a 31-frame window per plane).
 pub const Scratch = struct {
-    bufs: [8]?[]align(64) u8 = @splat(null),
+    bufs: std.ArrayList([]align(64) u8) = .empty,
+    /// Canonical copies made so far, so a plane requested again (WNNM's
+    /// reference when it is the source, clamped edge frames of a temporal
+    /// window) shares one copy. Keyed by the source plane's address and
+    /// geometry: valid while the source frames stay alive, so `reset` before
+    /// releasing a source frame that a later `canonical` call could alias.
+    memo: std.ArrayList(Memo) = .empty,
+
+    const Memo = struct { src: usize, pitch: usize, rows: usize, row_bytes: usize, want: usize, out: [*]align(64) u8 };
 
     pub fn deinit(self: *Scratch) void {
-        for (&self.bufs) |*b| {
-            if (b.*) |s| std.heap.c_allocator.free(s);
-            b.* = null;
-        }
+        for (self.bufs.items) |b| std.heap.c_allocator.free(b);
+        self.bufs.deinit(std.heap.c_allocator);
+        self.memo.deinit(std.heap.c_allocator);
+        self.* = .{};
+    }
+
+    /// Free every copy but keep the bookkeeping capacity (per-plane reuse).
+    pub fn reset(self: *Scratch) void {
+        for (self.bufs.items) |b| std.heap.c_allocator.free(b);
+        self.bufs.clearRetainingCapacity();
+        self.memo.clearRetainingCapacity();
     }
 
     /// Zeroed full plane of `stride * height` elements (temp planes for
-    /// multi-pass kernels), freed by `deinit`.
+    /// multi-pass kernels), freed by `deinit`/`reset`.
     pub fn plane(self: *Scratch, comptime T: type, stride: usize, height: usize) error{OutOfMemory}![]T {
         const buf = try self.alloc(stride * height * @sizeOf(T));
         @memset(buf, 0);
@@ -220,13 +249,10 @@ pub const Scratch = struct {
     }
 
     fn alloc(self: *Scratch, n: usize) error{OutOfMemory}![]align(64) u8 {
-        for (&self.bufs) |*b| {
-            if (b.* == null) {
-                b.* = try std.heap.c_allocator.alignedAlloc(u8, .@"64", n);
-                return b.*.?;
-            }
-        }
-        unreachable; // more than 8 canonical copies in one call
+        try self.bufs.ensureUnusedCapacity(std.heap.c_allocator, 1);
+        const b = try std.heap.c_allocator.alignedAlloc(u8, .@"64", n);
+        self.bufs.appendAssumeCapacity(b);
+        return b;
     }
 };
 
@@ -234,16 +260,33 @@ pub const Scratch = struct {
 /// output frame's) and a 64-byte aligned start, so `fullSlice()` is safe and
 /// single-stride kernels can address source and destination alike. Freshly
 /// allocated upstream frames already qualify (no copy); horizontally cropped
-/// or foreign-pitch planes are repacked into `scratch`.
+/// or foreign-pitch planes are repacked into `scratch` (one copy per distinct
+/// source plane, see `Scratch.memo`).
 pub fn canonical(comptime T: type, src: avs.Plane(T), want_pitch: usize, scratch: *Scratch) error{OutOfMemory}!avs.Plane(T) {
     if (src.pitch == want_pitch and src.isAligned(64)) return src;
     std.debug.assert(want_pitch >= src.rowBytes());
+    const key: Scratch.Memo = .{
+        .src = @intFromPtr(src.ptr),
+        .pitch = src.pitch,
+        .rows = src.height,
+        .row_bytes = src.rowBytes(),
+        .want = want_pitch,
+        .out = undefined,
+    };
+    for (scratch.memo.items) |m| {
+        if (m.src == key.src and m.pitch == key.pitch and m.rows == key.rows and m.row_bytes == key.row_bytes and m.want == key.want)
+            return .{ .ptr = @ptrCast(@alignCast(m.out)), .pitch = want_pitch, .width = src.width, .height = src.height };
+    }
+    try scratch.memo.ensureUnusedCapacity(std.heap.c_allocator, 1);
     const buf = try scratch.alloc(want_pitch * @max(src.height, 1));
     for (0..src.height) |y| {
         const d = buf[y * want_pitch ..][0..want_pitch];
         @memcpy(d[0..src.rowBytes()], std.mem.sliceAsBytes(src.row(y)));
         @memset(d[src.rowBytes()..], 0);
     }
+    var m = key;
+    m.out = buf.ptr;
+    scratch.memo.appendAssumeCapacity(m);
     return .{ .ptr = @ptrCast(@alignCast(buf.ptr)), .pitch = want_pitch, .width = src.width, .height = src.height };
 }
 

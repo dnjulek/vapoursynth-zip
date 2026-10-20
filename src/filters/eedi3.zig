@@ -4,34 +4,34 @@ const simd = @import("simd.zig");
 const hz = @import("../common.zig");
 
 pub const io: std.Io = std.Io.Threaded.global_single_threaded.io();
-pub const allocator = std.heap.c_allocator;
+pub const allocator = hz.kernel_allocator;
 
 pub const Scratch = struct {
-    r3p: []align(vec_align) f32,
-    r1p: []align(vec_align) f32,
-    r1n: []align(vec_align) f32,
-    r3n: []align(vec_align) f32,
-    t_base: []align(vec_align) f32,
+    r3p: []align(vec_align) f32 = &.{},
+    r1p: []align(vec_align) f32 = &.{},
+    r1n: []align(vec_align) f32 = &.{},
+    r3n: []align(vec_align) f32 = &.{},
+    t_base: []align(vec_align) f32 = &.{},
     // Sliding-window sums of t_base (see interpLine): t_win[j] = sum_{k=-nrad}^{nrad} t_base[j+k].
-    t_win: []align(vec_align) f32,
-    t_costs: []align(vec_align) f32,
-    pbackt: []align(vec_align) i8,
-    fpath: []align(vec_align) i32,
-    dmap: []i32,
-    tline: []align(vec_align) u8,
-    bmask: []bool,
-    block_active: []bool,
+    t_win: []align(vec_align) f32 = &.{},
+    t_costs: []align(vec_align) f32 = &.{},
+    pbackt: []align(vec_align) i8 = &.{},
+    fpath: []align(vec_align) i32 = &.{},
+    dmap: []i32 = &.{},
+    tline: []align(vec_align) u8 = &.{},
+    bmask: []bool = &.{},
+    block_active: []bool = &.{},
 
-    hp3p: []align(vec_align) f32,
-    hp1p: []align(vec_align) f32,
-    hp1n: []align(vec_align) f32,
-    hp3n: []align(vec_align) f32,
+    hp3p: []align(vec_align) f32 = &.{},
+    hp1p: []align(vec_align) f32 = &.{},
+    hp1n: []align(vec_align) f32 = &.{},
+    hp3n: []align(vec_align) f32 = &.{},
     // hp-only cost-stage scratch (see interpLineHP): per-column bases and their
     // sliding-window sums.
-    base_m: []align(vec_align) f32,
-    base_hp: []align(vec_align) f32,
-    win_m: []align(vec_align) f32,
-    win_hp: []align(vec_align) f32,
+    base_m: []align(vec_align) f32 = &.{},
+    base_hp: []align(vec_align) f32 = &.{},
+    win_m: []align(vec_align) f32 = &.{},
+    win_hp: []align(vec_align) f32 = &.{},
 
     // horizontal-only (fully-transposed pipeline): column-major scratch frames.
     // srcT/dstT hold the source and destination in transposed (column-major)
@@ -41,10 +41,10 @@ pub const Scratch = struct {
     // frame samples, so they are byte buffers viewed as []T at the glue layer
     // (Scratch itself stays non-generic so the per-instance pool doesn't need
     // a comptime type).
-    srcT: []align(vec_align) u8,
-    dstT: []align(vec_align) u8,
-    maskT: []u8,
-    scpT: []align(vec_align) u8,
+    srcT: []align(vec_align) u8 = &.{},
+    dstT: []align(vec_align) u8 = &.{},
+    maskT: []u8 = &.{},
+    scpT: []align(vec_align) u8 = &.{},
 };
 
 /// Kernel configuration (host-independent part of vszip's Data; the host
@@ -1227,6 +1227,9 @@ pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32
     const pad_buf_len = hz.ceilN(w + pad_buf_w, hz.scratchAlignmentT(@sizeOf(f32)));
     const tpitch_alloc: u32 = if (hp) tpitch_hp_max else tpitch_max;
     const s = try allocator.create(Scratch);
+    // Every slice starts empty, so freeScratch is valid at any failure point.
+    s.* = .{};
+    errdefer freeScratch(s);
     s.r3p = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);
     s.r1p = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);
     s.r1n = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);

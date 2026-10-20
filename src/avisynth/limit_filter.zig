@@ -71,7 +71,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     const vi = flt.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
-    try hz.compareClips(ctx, &.{ vi, src.videoInfo(), if (ref) |r| r.videoInfo() else null }, .SAME_LEN);
+    try hz.compareClips(ctx, &.{ vi, src.videoInfo(), if (ref) |r| r.videoInfo() else null }, .SAME_LEN, .color_only);
 
     var d: Data = .{
         .format = format,

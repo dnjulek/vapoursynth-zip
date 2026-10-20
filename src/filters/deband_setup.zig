@@ -6,7 +6,7 @@ const std = @import("std");
 const math = std.math;
 const hz = @import("../common.zig");
 
-const allocator = std.heap.c_allocator;
+const allocator = hz.kernel_allocator;
 
 const INTERNAL_BIT_DEPTH: i32 = 16;
 const TV_RANGE_Y_MIN: i32 = 16 << (INTERNAL_BIT_DEPTH - 8);
@@ -165,6 +165,9 @@ pub const TempBuff = struct {
 
     pub fn init(d: *const Data) !TempBuff {
         var tb = TempBuff{};
+        // Unallocated tables are empty slices (and the chroma aliases in slot
+        // 2 are never freed), so deinit is valid at any failure point.
+        errdefer tb.deinit(d);
         try tb.initFrameLuts(d);
         return tb;
     }

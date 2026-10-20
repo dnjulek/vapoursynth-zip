@@ -3,6 +3,37 @@
 //! (no VapourSynth or AviSynth types may appear here).
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Allocator of the shared kernels: exactly `std.heap.c_allocator` in the
+/// plugins. In host-free tests it forwards to `test_hooks.backing`, so the
+/// tests can inject allocation failures and check that every partially
+/// constructed object is released.
+pub const kernel_allocator: std.mem.Allocator = if (builtin.is_test) test_hooks.forwarding else std.heap.c_allocator;
+
+pub const test_hooks = struct {
+    pub var backing: std.mem.Allocator = std.heap.c_allocator;
+
+    const forwarding: std.mem.Allocator = .{ .ptr = undefined, .vtable = &.{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    } };
+
+    fn alloc(_: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+        return backing.rawAlloc(len, a, ra);
+    }
+    fn resize(_: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) bool {
+        return backing.rawResize(m, a, n, ra);
+    }
+    fn remap(_: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
+        return backing.rawRemap(m, a, n, ra);
+    }
+    fn free(_: *anyopaque, m: []u8, a: std.mem.Alignment, ra: usize) void {
+        backing.rawFree(m, a, ra);
+    }
+};
 
 /// Suggested u8 vector length for the compile target (not runtime CPU).
 pub const vec_len = std.simd.suggestVectorLength(u8) orelse 32;

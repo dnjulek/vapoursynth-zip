@@ -998,6 +998,13 @@ pub const Config = struct {
             d.max_iw = @max(d.max_iw, pw);
             d.max_ih = @max(d.max_ih, ph);
         }
+        // A search range past the largest processed plane selects the same
+        // windows (the searches clamp to the plane), so clamp it here: the
+        // search arithmetic (center +- range) runs in u32/i32.
+        const max_dim = @max(d.max_iw, d.max_ih);
+        d.bm_range = @min(d.bm_range, max_dim);
+        d.ps_range = @min(d.ps_range, max_dim);
+
         const m = d.bs * d.bs;
         d.lda = (m + 15) & ~@as(u32, 15);
         d.q = @min(m, d.gs);

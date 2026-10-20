@@ -40,6 +40,39 @@ pub fn outputBits(pf: zigimg.PixelFormat) u8 {
     return @intCast(@max(pf.info().bits_per_channel, 8));
 }
 
+/// The output layout a supported pixel format decodes to. A clip's format is
+/// fixed by its first image, so every later frame must decode to the same
+/// layout (checked per frame: `validate=true` only checks eagerly, and files
+/// can change afterwards). Formats differing only in storage (rgb24/bgr24,
+/// gray1..gray8) share a layout.
+pub const Layout = struct {
+    gray: bool,
+    bits: u8,
+    float: bool,
+    alpha: bool,
+
+    pub fn of(pf: zigimg.PixelFormat) Layout {
+        return .{
+            .gray = pf.isGrayscale(),
+            .bits = outputBits(pf),
+            .float = pf.info().variant == .float,
+            .alpha = hasAlpha(pf),
+        };
+    }
+
+    pub fn eql(a: Layout, b: Layout) bool {
+        return a.gray == b.gray and a.bits == b.bits and a.float == b.float and a.alpha == b.alpha;
+    }
+};
+
+/// Why a later image cannot be written into the clip's frames, if it can't.
+pub fn frameMismatch(image: *const Image, width: u32, height: u32, layout: Layout) ?Mismatch {
+    if (image.width != width or image.height != height) return .dimensions;
+    const pf = image.pixelFormat();
+    if (!supported(pf) or !Layout.of(pf).eql(layout)) return .pixel_format;
+    return null;
+}
+
 fn scaleSample(comptime T: type, value: anytype) T {
     if (@TypeOf(value) == T) return value;
     return zigimg.color.ScaleValue(T)(value);

@@ -98,6 +98,7 @@ fn Wnnm(comptime BS: ?u32) type {
 
             for (0..d.format.color_planes) |plane| {
                 if (!d.cfg.process[plane]) continue;
+                defer scratch.reset(); // copies are per plane
                 const id = d.format.planeId(plane);
                 const dp = dst.planeMut(f32, id);
                 const sp = try hz.canonical(f32, src.plane(f32, id), dp.pitch, &scratch);
@@ -150,6 +151,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 const id = d.format.planeId(plane);
                 const dp = dst.planeMut(f32, id);
                 if (!d.cfg.process[plane]) continue;
+                defer scratch.reset(); // copies are per plane
                 const pitch = dp.pitch;
                 const center = srcs[d.cfg.radius].plane(f32, id);
                 const w = center.width;

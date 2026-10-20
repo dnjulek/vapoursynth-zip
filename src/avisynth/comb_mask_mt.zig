@@ -29,7 +29,8 @@ fn CombMaskMT(comptime same_thr: bool) type {
             var scratch: hz.Scratch = .{};
             defer scratch.deinit();
 
-            for (0..d.format.numPlanes()) |plane| {
+            hz.copyAlpha(ctx.env(), dst, src, d.format); // alpha passes through
+            for (0..d.format.color_planes) |plane| {
                 const id = d.format.planeId(plane);
                 const dp = dst.planeMut(u8, id);
                 const sp = try hz.canonical(u8, src.plane(u8, id), dp.pitch, &scratch);

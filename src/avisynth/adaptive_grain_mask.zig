@@ -1,6 +1,8 @@
 //! vszip_AdaptiveGrainMask(clip, float "luma_scaling")
 //!
-//! Output: a Gray clip of the input's depth, computed from the luma plane.
+//! Output: a Gray clip of the input's depth, computed from logical plane 0
+//! (Y, or R for planar RGB, as in vszip; AviSynth's default plane of planar
+//! RGB is G).
 
 const std = @import("std");
 const math = std.math;
@@ -17,6 +19,8 @@ const Data = struct {
     luma_scaling: f32,
     peak: f32,
     shift: u5,
+    /// Input plane read: logical plane 0 of the input format.
+    src_plane: c_int,
 };
 
 const F = avs.Filter(Data, filter_name);
@@ -46,7 +50,7 @@ fn AdaptiveGrainMask(comptime T: type) type {
             defer scratch.deinit();
 
             const dp = dst.planeMut(T, c.AVS_PLANAR_Y);
-            const raw = src.plane(T, c.AVS_PLANAR_Y);
+            const raw = src.plane(T, d.src_plane);
             const sp = try hz.canonical(T, raw, dp.pitch, &scratch);
             const avg = filter.computeAverage(T, sp.fullSlice(), @intCast(sp.stride()), sp.width, sp.height, d.peak);
             const temp = filter.calcLumaScaling(avg, d.luma_scaling);
@@ -72,6 +76,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const format = try hz.planarFormat(ctx, vi);
 
     var d: Data = undefined;
+    d.src_plane = format.planeId(0);
     if (format.isFloat()) {
         d.peak = 1.0;
         d.shift = 0;

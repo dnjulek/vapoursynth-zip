@@ -159,7 +159,7 @@ pub const Data = struct {
 };
 const vszip = @import("../common.zig");
 
-const allocator = std.heap.c_allocator;
+const allocator = hz.kernel_allocator;
 const AlignedF32 = []align(vszip.vec_len) f32;
 
 const VLEN = @max(vszip.vec_len / @sizeOf(f32), 1);
@@ -280,8 +280,8 @@ fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: 
     const pbfic_buf: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, num * pcount);
     defer allocator.free(pbfic_buf);
     const wk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
-    const jk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
     defer allocator.free(wk);
+    const jk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
     defer allocator.free(jk);
 
     for (0..num) |k| {

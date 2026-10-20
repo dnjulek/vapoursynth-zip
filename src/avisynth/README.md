@@ -57,12 +57,13 @@ vszip's int-typed booleans (`tv_range=1`) are AviSynth `bool`s here (`tv_range=t
 
 AviSynth+ is a different host, so a few behaviors are adapted rather than copied:
 
-- **Formats.** AviSynth+ has no half-float, 9-bit, or 32-bit-integer planar formats, so vszip's f16/u9/u32 paths do not exist. Alpha planes of YUVA/RGBAP clips pass through untouched; vszip never sees them because VapourSynth keeps alpha separately. `Dither` rejects alpha clips, and `EEDI3(dh=true)` rejects alpha.
+- **Formats.** AviSynth+ has no half-float, 9-bit, or 32-bit-integer planar formats, so vszip's f16/u9/u32 paths do not exist. Alpha planes of YUVA/RGBAP clips pass through untouched (mask filters such as CombMask copy the input's alpha too); vszip never sees them because VapourSynth keeps alpha separately. `Dither` converts alpha as full-range data with plain rounding (never dithered), so internal depth round trips (Deband below 16 bit, XPSNR's depth match) return it unchanged. `EEDI3(dh=true)` rejects alpha. Secondary clips may differ from the primary in alpha presence, except in PlaneAverage/PlaneMinMax when the alpha plane is selected (`planes=[3]`): then `clipb` must carry alpha too.
 - **Range metadata.** AviSynth+ uses `_ColorRange` (0 = full, 1 = limited), while VapourSynth R4 uses `_Range` (1 = full). Range-dependent filters (Deband, LimitFilter) read `_ColorRange`, and filters that tag full range write it.
 - **RFS `mismatch`.** AviSynth clips cannot vary in format or size, so `mismatch=true` only tolerates a frame-rate difference; the output keeps clipa's rate.
 - **XPSNR averages.** vszip adds to running totals per evaluation, so a frame recomputed by the cache counts twice. Here each frame index stores its result once, and the printed average reduces over the evaluated frames in index order (it reports "N of M frames"). Per-frame props are identical.
-- **SSIMULACRA2 on YUV.** Non-RGB input is converted with AviSynth's `ConvertBits(32).ConvertToPlanarRGB(matrix=...)` instead of zimg. The metric kernel is exact (RGB input is bit-exact with vszip), but YUV scores depend on that conversion. Convert to RGBPS yourself to control it.
+- **SSIMULACRA2 on YUV.** Non-RGB input is converted with AviSynth's `ConvertBits(32).ConvertToPlanarRGB()` instead of zimg. Like zimg, the matrix and range come from each input's `_Matrix` / `_ColorRange`; an absent or unspecified `_Matrix` falls back to vszip's guess (BT.709 above 650 lines, else BT.601). The metric kernel is exact (RGB input is bit-exact with vszip, 4:4:4 YUV converts within float rounding), but subsampled chroma goes through AviSynth's resampler, so 4:2:x scores differ slightly. Convert to RGBPS yourself to control it.
 - **ImageRead alpha.** RGBA images use the native A plane (RGBAP). Gray+alpha has no AviSynth planar format, so it returns Y plus a separate Y frame in the `_Alpha` frame property (vszip's representation).
+- **ImageRead later frames.** Every frame is checked when decoded, not only with `validate=true`: a file whose size or decoded layout (gray/RGB, depth, alpha) differs from the first image raises a frame error. The VapourSynth build does the same.
 - **Scratch pools.** vszip keys EEDI3/WNNM scratch by thread ID. Here every request checks a block out of a mutex-guarded pool and returns it, so blocks are exclusive per request, including nested use on one thread.
 
 Every filter registers `AVS_MT_NICE_FILTER`, and frame n depends only on n (temporal filters clamp neighbors like vszip). On AviSynth+ ≤ 3.7.5, concurrent C-filter calls share an error slot, so under `Prefetch` an error message may name the wrong frame. Successful frames are unaffected.
@@ -89,6 +90,7 @@ Coverage per filter:
 - Error messages.
 - `test_avs_mt.py`: `Prefetch(4)` with shuffled and repeated requests must equal serial output.
 - `test_avs_registration.py`: every name is reachable and dispatches to its own create.
+- `test_avs_regressions.py`: combinations the matrices miss (temporal windows on verified foreign-pitch inputs, mixed alpha layouts, later ImageRead format changes, RGB plane routing, extreme WNNM ranges, alpha pass-through); cases that used to abort run in a child process. `avsrt.Clip.geometry()` gives the plane addresses and pitches the host delivers, so a test can assert the layout it relies on (a small horizontal crop is often realigned by the host).
 - A sensitivity test that proves a 1-LSB difference is caught.
 
 Run the tests against both debug and fast builds.

@@ -87,7 +87,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     const ref = try ctx.optClip(1, "ref");
     errdefer if (ref) |r| r.release();
-    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN);
+    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, .color_only);
 
     var k = filter.Data.init(.{
         .sigmaS = sigma_s,

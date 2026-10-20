@@ -42,6 +42,8 @@ const Data = struct {
     format: avs.Format,
     vi_gray: c.AVS_VideoInfo,
     layout: Layout,
+    /// Decoded layout of the first image; every frame must match it.
+    decoded: ir.Layout,
     paths: [][:0]u8,
 
     pub fn deinit(self: *Data) void {
@@ -93,8 +95,12 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     var image = loadImage(path, &png_color) catch |err|
         return ctx.fail("Couldn't open '{s}' ({any})", .{ path, err });
     defer image.deinit(allocator);
-    if (image.width != ctx.vi().width or image.height != ctx.vi().height)
-        return ctx.fail("'{s}' is {d}x{d}, the clip is {d}x{d} (use validate=true to check at load time).", .{ path, image.width, image.height, ctx.vi().width, ctx.vi().height });
+    const vi = ctx.vi();
+    if (ir.frameMismatch(&image, @intCast(vi.width), @intCast(vi.height), d.decoded)) |m| switch (m) {
+        .dimensions => return ctx.fail("'{s}' is {d}x{d}, the clip is {d}x{d} (use validate=true to check at load time).", .{ path, image.width, image.height, vi.width, vi.height }),
+        .pixel_format => return ctx.fail("'{s}' has pixel format {s}, which does not match the clip's first image (use validate=true to check at load time).", .{ path, @tagName(image.pixelFormat()) }),
+        .none => unreachable,
+    };
 
     const dst = try ctx.newFrame(null);
     errdefer dst.release();
@@ -181,7 +187,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     vi.pixel_type = avs.format.pixelType(format) catch return ctx.fail("unsupported image layout.", .{});
     const vi_gray = hz.withFormat(vi, hz.grayOf(format));
 
-    const d: Data = .{ .format = format, .vi_gray = vi_gray, .layout = layout, .paths = paths };
+    const d: Data = .{ .format = format, .vi_gray = vi_gray, .layout = layout, .decoded = ir.Layout.of(pf), .paths = paths };
     const out = try F.create(ctx.env, null, d, F.getFrame(getFrame), .{ .mt_mode = .nice, .vi = vi });
     return avs.Create.returnClip(out);
 }

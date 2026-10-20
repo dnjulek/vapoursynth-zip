@@ -7,6 +7,7 @@
 const std = @import("std");
 const math = std.math;
 const avs = @import("avisynth");
+const c = avs.c;
 
 const hz = @import("helper.zig");
 const filter = @import("../filters/dither.zig");
@@ -22,6 +23,9 @@ const Data = struct {
     format_in: avs.Format,
     num_planes: u32,
     cfg: filter.Config,
+    /// Alpha conversion (full range, rounded, never dithered) when the clip
+    /// has an alpha plane.
+    alpha: ?filter.Config,
     stamp_range: ?hz.Range,
 };
 
@@ -49,7 +53,20 @@ fn Frames(comptime T: type, comptime U: type) type {
             return .{ .src = sp.fullSlice(), .dst = dp.fullSlice(), .w = dp.width, .h = dp.height, .ss = @intCast(sp.stride()), .ds = @intCast(dp.stride()) };
         }
 
-        fn finish(d: *const Data, ctx: *avs.FrameCtx, dst: avs.Frame) void {
+        /// Convert the alpha plane (if any) and stamp the range.
+        fn finish(d: *const Data, ctx: *avs.FrameCtx, src: avs.Frame, dst: avs.Frame, scratch: *hz.Scratch) !void {
+            if (d.alpha) |ac| {
+                if (ac.identity) {
+                    avs.copyPlane(ctx.env(), dst, src, c.AVS_PLANAR_A);
+                } else {
+                    const pl = try plane(d, src, dst, 3, scratch);
+                    if (comptime @typeInfo(U) == .float) {
+                        filter.Convert(T, U).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, ac.sc[0]);
+                    } else {
+                        filter.Ordered(T, U, .round).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, ac.sc[0], ac.peak_out, 3, ac.bits_in, ac.bits_out, ac.int_kernel[0]);
+                    }
+                }
+            }
             if (d.stamp_range) |r| hz.setRange(ctx.env(), dst, r);
         }
     };
@@ -68,7 +85,7 @@ fn OrderedFilter(comptime T: type, comptime U: type, comptime mode: filter.Order
                 const pl = try Fr.plane(d, f.src, f.dst, p, &scratch);
                 filter.Ordered(T, U, mode).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, d.cfg.sc[p], d.cfg.peak_out, @intCast(p), d.cfg.bits_in, d.cfg.bits_out, d.cfg.int_kernel[p]);
             }
-            Fr.finish(d, ctx, f.dst);
+            try Fr.finish(d, ctx, f.src, f.dst, &scratch);
             return f.dst;
         }
     };
@@ -95,7 +112,7 @@ fn ErrdiffFilter(comptime T: type, comptime U: type, comptime mode: errdiff.Fmtc
                     errdiff.Fmtc(T, U, mode).processPlaneFloat(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, d.cfg.sc[p].scale, d.cfg.sc[p].offset, d.cfg.peak_out, dif_bits, &err_buf);
                 }
             }
-            Fr.finish(d, ctx, f.dst);
+            try Fr.finish(d, ctx, f.src, f.dst, &scratch);
             return f.dst;
         }
     };
@@ -118,7 +135,7 @@ fn ZimgErrdiffFilter(comptime T: type, comptime U: type) type {
                 const pl = try Fr.plane(d, f.src, f.dst, p, &scratch);
                 errdiff.Zimg(T, U).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, d.cfg.sc[p].scale, d.cfg.sc[p].offset, d.cfg.peak_out, error_top, error_cur);
             }
-            Fr.finish(d, ctx, f.dst);
+            try Fr.finish(d, ctx, f.src, f.dst, &scratch);
             return f.dst;
         }
     };
@@ -137,7 +154,7 @@ fn MulAddUpFilter(comptime T: type, comptime U: type) type {
                 const pl = try Fr.plane(d, f.src, f.dst, p, &scratch);
                 filter.MulAddUp(T, U).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, d.cfg.gain_up, d.cfg.add_up[p]);
             }
-            Fr.finish(d, ctx, f.dst);
+            try Fr.finish(d, ctx, f.src, f.dst, &scratch);
             return f.dst;
         }
     };
@@ -156,7 +173,7 @@ fn ConvertFilter(comptime T: type, comptime U: type) type {
                 const pl = try Fr.plane(d, f.src, f.dst, p, &scratch);
                 filter.Convert(T, U).processPlane(pl.src, pl.dst, pl.w, pl.h, pl.ss, pl.ds, d.cfg.sc[p]);
             }
-            Fr.finish(d, ctx, f.dst);
+            try Fr.finish(d, ctx, f.src, f.dst, &scratch);
             return f.dst;
         }
     };
@@ -166,7 +183,7 @@ fn passGetFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     var src = try ctx.childFrame(n);
     if (d.stamp_range == null) return src;
     errdefer src.release();
-    try src.makePropertyWritable(ctx.env());
+    try ctx.makePropertyWritable(&src);
     hz.setRange(ctx.env(), src, d.stamp_range.?);
     return src;
 }
@@ -210,7 +227,6 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
-    if (format.has_alpha) return ctx.fail("clips with an alpha plane are not supported.", .{});
 
     const bitdepth = try ctx.int(i64, 1, "bitdepth", null, math.minInt(i64), math.maxInt(i64));
     const dst_float_default = bitdepth == 32;
@@ -244,6 +260,20 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const fulls = fulls_opt orelse range_default;
     const fulld = fulld_opt orelse fulls;
     d.stamp_range = if (fulls_opt != null or fulld_opt != null) (if (fulld) hz.Range.FULL else .LIMITED) else null;
+
+    // Alpha is data, not color: full range at both ends, plainly rounded
+    // (up-conversion then down-conversion returns the original values).
+    d.alpha = if (format.has_alpha) filter.Config.init(.{
+        .bits_in = format.bits,
+        .src_float = src_float,
+        .bits_out = @intCast(bitdepth),
+        .dst_float = dst_float,
+        .fulls = true,
+        .fulld = true,
+        .mode = .round,
+        .is_yuv = false,
+        .width = @intCast(vi.width),
+    }) else null;
 
     d.cfg = filter.Config.init(.{
         .bits_in = format.bits,

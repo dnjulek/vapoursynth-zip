@@ -1,7 +1,7 @@
 const std = @import("std");
 const simd = @import("simd.zig");
 const math = std.math;
-const allocator = std.heap.c_allocator;
+const allocator = @import("../common.zig").kernel_allocator;
 
 const XPSNR_GAMMA: u32 = 2;
 
@@ -582,8 +582,8 @@ pub fn getWSSE(
     const avg_act: f64 = @sqrt(16.0 * @as(f64, @floatFromInt(sft)) / @sqrt(@max(0.00001, r)));
 
     const sse_luma = try allocator.alloc(f64, w_blk * h_blk);
-    const weights = try allocator.alloc(f64, w_blk * h_blk);
     defer allocator.free(sse_luma);
+    const weights = try allocator.alloc(f64, w_blk * h_blk);
     defer allocator.free(weights);
 
     var y: usize = 0;

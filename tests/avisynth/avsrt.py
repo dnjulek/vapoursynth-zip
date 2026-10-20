@@ -176,6 +176,20 @@ class Clip:
             L.avs_release_video_frame(f)
         return Frame(planes, props)
 
+    def geometry(self, n=0):
+        """Per-plane (address, pitch, row_size, height) of frame `n` as the
+        host delivers it: lets a test assert that an input really has a
+        foreign pitch or an unaligned start before relying on it."""
+        L = lib()
+        f = L.avs_get_frame(self.ptr, n)
+        if not f:
+            raise AvsError("avs_get_frame failed")
+        try:
+            return [(L.avs_get_read_ptr_p(f, pid), L.avs_get_pitch_p(f, pid), L.avs_get_row_size_p(f, pid), L.avs_get_height_p(f, pid))
+                    for pid in plane_ids(self.pixel_type)]
+        finally:
+            L.avs_release_video_frame(f)
+
     def frames(self, ns=None):
         return [self.frame(n) for n in (range(self.num_frames) if ns is None else ns)]
 

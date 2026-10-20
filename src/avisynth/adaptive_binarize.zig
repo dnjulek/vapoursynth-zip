@@ -51,7 +51,8 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     const dst = try ctx.newFrame(src);
     errdefer dst.release();
 
-    for (0..d.format.numPlanes()) |plane| {
+    hz.copyAlpha(ctx.env(), dst, src, d.format); // alpha passes through
+    for (0..d.format.color_planes) |plane| {
         const id = d.format.planeId(plane);
         const s1 = src.plane(u8, id);
         const s2 = src2.plane(u8, id);
@@ -68,7 +69,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const other = try ctx.clip(1, "clip2");
     errdefer other.release();
     const vi = clip.videoInfo();
-    try hz.compareClips(ctx, &.{ vi, other.videoInfo() }, .BIGGER_THAN);
+    try hz.compareClips(ctx, &.{ vi, other.videoInfo() }, .BIGGER_THAN, .color_only);
     const format = try hz.planarFormat(ctx, vi);
     if (format.sample != .u8) return ctx.fail("only 8 bit int format supported.", .{});
 

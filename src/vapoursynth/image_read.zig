@@ -18,6 +18,8 @@ const Data = struct {
     vi: vs.VideoInfo = undefined,
     vi_gray: vs.VideoInfo = undefined,
     paths: [][]u8 = undefined,
+    /// Decoded layout of the first image; every frame must match it.
+    decoded: ir.Layout = undefined,
 };
 
 /// The frame planes (and the separate alpha frame) as ImageRead targets.
@@ -51,6 +53,19 @@ fn Read(comptime alpha: bool) type {
                 };
 
                 defer image.deinit(allocator);
+
+                // The format is fixed by the first image: a later file that
+                // decodes differently cannot be written into these frames.
+                const path = d.paths[@intCast(n)];
+                if (ir.frameMismatch(&image, @intCast(d.vi.width), @intCast(d.vi.height), d.decoded)) |m| {
+                    const err_msg = switch (m) {
+                        .dimensions => allocator.printSentinel("{s}: '{s}' is {}x{}, the clip is {}x{} (use validate=True to check at load time)", .{ filter_name, path, image.width, image.height, d.vi.width, d.vi.height }, 0),
+                        else => allocator.printSentinel("{s}: '{s}' has pixel format {s}, which does not match the clip's first image (use validate=True to check at load time)", .{ filter_name, path, @tagName(image.pixelFormat()) }, 0),
+                    } catch unreachable;
+                    zapi.setFilterError(err_msg);
+                    allocator.free(err_msg);
+                    return null;
+                }
 
                 const dst = zapi.initZFrameFromVi(&d.vi, null);
                 const adst = if (alpha) zapi.initZFrameFromVi(&d.vi_gray, null);
@@ -160,6 +175,7 @@ pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     transferred = true;
 
     const alpha = ir.hasAlpha(pf);
+    data.decoded = ir.Layout.of(pf);
     const gf: vs.FilterGetFrame = if (alpha) &Read(true).getFrame else &Read(false).getFrame;
 
     zapi.createVideoFilter(out, filter_name, &d.vi, gf, readFree, .Unordered, null, data);

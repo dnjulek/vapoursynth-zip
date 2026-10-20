@@ -47,7 +47,7 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
             defer if (refb) ref.release();
 
             // Share the pixels; only the property map gets a private copy.
-            try frame.makePropertyWritable(env);
+            try ctx.makePropertyWritable(&frame);
             var sink: hz.PropSink = .{ .rw = frame.propsRW(env) };
             _ = sink.rw.delete(d.prop_d);
             _ = sink.rw.delete(d.prop_a);
@@ -88,10 +88,10 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     const ref = try ctx.optClip(2, "clipb");
     errdefer if (ref) |r| r.release();
-    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN);
-
     var planes = try ctx.planes(3, format.numPlanes(), false);
     if (!ctx.defined(3)) planes[0] = true; // vszip default: planes=[0]
+    // A selected alpha plane is read from clipb too.
+    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, if (planes[3]) .same else .color_only);
 
     const prop_in = (try ctx.string(4, "prop")) orelse "psm";
     const prop_d = try hz.dupeSuffix(prop_in, "Diff");

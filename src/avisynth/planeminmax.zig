@@ -36,7 +36,7 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
             const ref = if (refb) try ctx.getFrame(d.ref.get(), n);
             defer if (refb) ref.release();
 
-            try frame.makePropertyWritable(env);
+            try ctx.makePropertyWritable(&frame);
             var sink: hz.PropSink = .{ .rw = frame.propsRW(env) };
             _ = sink.rw.delete(d.k.prop.d);
             _ = sink.rw.delete(d.k.prop.ma);
@@ -91,10 +91,10 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     const ref = try ctx.optClip(3, "clipb");
     errdefer if (ref) |r| r.release();
-    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN);
-
     var planes = try ctx.planes(4, format.numPlanes(), false);
     if (!ctx.defined(4)) planes[0] = true; // vszip default: planes=[0]
+    // A selected alpha plane is read from clipb too.
+    if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, if (planes[3]) .same else .color_only);
 
     const maxthr = try getThr(ctx, 2, "maxthr");
     const minthr = try getThr(ctx, 1, "minthr");
