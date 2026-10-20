@@ -572,10 +572,13 @@ fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, w
         const lower: u32 = stride * j;
         const upper: u32 = lower + width;
 
+        // `j + k >= height`, not `j >= height - k`: the subtraction wraps for
+        // planes under 3 rows (the original's signed ints made it negative,
+        // so every such row clamps onto x0's side, as here).
         var x0: u32 = lower;
-        var x1: u32 = if (j >= height - 1) x0 else (x0 + stride);
-        var x2: u32 = if (j >= height - 2) x1 else (x1 + stride);
-        var x3: u32 = if (j >= height - 3) x2 else (x2 + stride);
+        var x1: u32 = if (j + 1 >= height) x0 else (x0 + stride);
+        var x2: u32 = if (j + 2 >= height) x1 else (x1 + stride);
+        var x3: u32 = if (j + 3 >= height) x2 else (x2 + stride);
 
         while (x0 + VLEN <= upper) : ({
             x0 += VLEN;
