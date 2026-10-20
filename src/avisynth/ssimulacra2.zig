@@ -2,11 +2,14 @@
 //!
 //! Returns `reference` with the per-frame prop SSIMULACRA2. Planar RGB inputs
 //! (8-16 bit int, 32-bit float) are read natively, bit-exact with vszip.
-//! YUV/Gray inputs are converted to RGBPS first with AviSynth's own
-//! ConvertBits(32) + ConvertToPlanarRGB (matrix Rec709 above 650 lines, else
-//! Rec601, like vszip's choice); vszip uses zimg (resize.Bicubic) there, so
-//! scores of YUV inputs differ slightly (chroma resampler details). The sRGB transfer is undone in
-//! the filter unless frame 0 carries `_Transfer` = 8 (linear).
+//! YUV/Gray inputs are converted to float RGB per frame, like zimg on the
+//! VapourSynth side: an internal stage normalizes each frame with its own
+//! `_ColorRange` (limited when unset); subsampled chroma is upsampled by
+//! AviSynth's ConvertToYUV444 (in float; vszip's zimg resampler differs
+//! slightly); then the frame's own `_Matrix` is applied (2 or unset: BT.709
+//! above 650 lines, else BT.601, vszip's default). A YUV reference is then
+//! returned as RGBPS (RGBAPS with its alpha when it has one). The sRGB transfer
+//! is undone in the filter unless frame 0 carries `_Transfer` = 8 (linear).
 
 const std = @import("std");
 const math = std.math;
@@ -22,18 +25,27 @@ pub const filter_name = "vszip_SSIMULACRA2";
 pub const params = "c[distorted]c";
 const Scratch = []align(common.vec_len) f32;
 
-/// How one clip's frames are read: native RGB (int via LUT, or f32).
+/// How one clip's frames are read: native RGB (int via LUT, or f32), or
+/// normalized float YUV444/Gray converted to RGB per frame (`yuv`).
 const Source = struct {
     kind: filter_ssim.Input.Kind = .f32,
     srgb: bool = true,
     lut: []f32 = &.{},
-    format: avs.Format = undefined,
+    yuv: ?Yuv = null,
+};
+
+const Yuv = struct {
+    gray: bool,
+    /// For the matrix fallback.
+    height: c_int,
 };
 
 const Data = struct {
     other: avs.OwnedClip,
     src1: Source = .{},
     src2: Source = .{},
+    /// YUVA reference: its alpha is copied into the RGBAPS output.
+    out_alpha: bool = false,
     // Reusable scratch buffers; concurrent calls each pop their own buffer
     // (or allocate one) and push it back when done.
     pool: std.ArrayList(Scratch) = .empty,
@@ -81,21 +93,111 @@ fn input(src: *const Source, frame: avs.Frame, scratch: *hz.Scratch) !filter_ssi
     return .{ .kind = src.kind, .planes = planes, .stride = pitch, .lut = src.lut, .srgb = src.srgb };
 }
 
+/// YCbCr -> RGB coefficients for normalized full-range input (Y in [0, 1],
+/// Cb/Cr in [-0.5, 0.5]): R = Y + cr_r*Cr, G = Y + cb_g*Cb + cr_g*Cr,
+/// B = Y + cb_b*Cb. Computed in f64 and rounded once, like zimg.
+const Coeffs = struct { cr_r: f32, cb_g: f32, cr_g: f32, cb_b: f32 };
+
+fn coeffsOf(matrix: i64) ?Coeffs {
+    const kr: f64, const kb: f64 = switch (matrix) {
+        1 => .{ 0.2126, 0.0722 }, // BT.709
+        4 => .{ 0.30, 0.11 }, // FCC
+        5, 6 => .{ 0.299, 0.114 }, // BT.470BG / ST 170M (BT.601)
+        7 => .{ 0.212, 0.087 }, // ST 240M
+        9 => .{ 0.2627, 0.0593 }, // BT.2020 non-constant luminance
+        else => return null,
+    };
+    const kg = 1.0 - kr - kb;
+    return .{
+        .cr_r = @floatCast(2.0 * (1.0 - kr)),
+        .cb_g = @floatCast(-2.0 * kb * (1.0 - kb) / kg),
+        .cr_g = @floatCast(-2.0 * kr * (1.0 - kr) / kg),
+        .cb_b = @floatCast(2.0 * (1.0 - kb)),
+    };
+}
+
+/// Convert one normalized float YUV444/Gray frame to RGB rows at `dst`
+/// (three planes sharing `pitch` bytes), with that frame's `_Matrix`.
+fn toRgb(ctx: *avs.FrameCtx, yuv: Yuv, src: avs.Frame, dst: [3][*]u8, pitch: usize, n: c_int) !void {
+    const y_pl = src.plane(f32, c.AVS_PLANAR_Y);
+    const w = y_pl.width;
+    if (yuv.gray) {
+        for (0..y_pl.height) |y| {
+            for (dst) |plane| {
+                const out: [*]f32 = @ptrCast(@alignCast(plane + y * pitch));
+                @memcpy(out[0..w], y_pl.row(y));
+            }
+        }
+        return;
+    }
+    var m = src.propsRO(ctx.env()).intOr("_Matrix", 2);
+    if (m == 2) m = if (yuv.height > 650) 1 else 6;
+    const k = coeffsOf(m) orelse
+        return ctx.fail("frame {d}: unsupported _Matrix {d} (supported: 1, 4, 5, 6, 7, 9; 2 or unset uses BT.709 above 650 lines, else BT.601).", .{ n, m });
+    const u_pl = src.plane(f32, c.AVS_PLANAR_U);
+    const v_pl = src.plane(f32, c.AVS_PLANAR_V);
+    for (0..y_pl.height) |y| {
+        const ys = y_pl.row(y);
+        const us = u_pl.row(y);
+        const vs = v_pl.row(y);
+        const r: [*]f32 = @ptrCast(@alignCast(dst[0] + y * pitch));
+        const g: [*]f32 = @ptrCast(@alignCast(dst[1] + y * pitch));
+        const b: [*]f32 = @ptrCast(@alignCast(dst[2] + y * pitch));
+        for (0..w) |x| {
+            r[x] = ys[x] + k.cr_r * vs[x];
+            g[x] = ys[x] + k.cb_g * us[x] + k.cr_g * vs[x];
+            b[x] = ys[x] + k.cb_b * us[x];
+        }
+    }
+}
+
 fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
-    var frame = try ctx.childFrame(n); // reference: only the prop is added
+    const env = ctx.env();
+    var scratch: hz.Scratch = .{};
+    defer scratch.deinit();
+    const w: u32 = @intCast(ctx.vi().width);
+    const h: u32 = @intCast(ctx.vi().height);
+
+    // Output: the reference itself (RGB input: only the prop is added), or
+    // its per-frame RGB conversion plus its alpha.
+    var frame = blk: {
+        const ref = try ctx.childFrame(n);
+        const yuv = d.src1.yuv orelse break :blk ref;
+        defer ref.release();
+        const out = try ctx.newFrame(ref);
+        errdefer out.release();
+        const ids = [3]c_int{ c.AVS_PLANAR_R, c.AVS_PLANAR_G, c.AVS_PLANAR_B };
+        var planes: [3][*]u8 = undefined;
+        var pitch: usize = 0;
+        for (ids, &planes) |id, *pl| {
+            const p = out.planeMut(f32, id);
+            pitch = p.pitch; // the planes of a planar RGB frame share a pitch
+            pl.* = @ptrCast(p.ptr);
+        }
+        try toRgb(ctx, yuv, ref, planes, pitch, n);
+        if (d.out_alpha) avs.copyPlane(env, out, ref, c.AVS_PLANAR_A);
+        const props = out.propsRW(env);
+        props.setInt("_Matrix", 0, .replace) catch {};
+        props.setInt("_ColorRange", 0, .replace) catch {};
+        break :blk out;
+    };
     errdefer frame.release();
     const src2 = try ctx.getFrame(d.other.get(), n);
     defer src2.release();
-    var scratch: hz.Scratch = .{};
-    defer scratch.deinit();
 
-    const w: u32 = @intCast(ctx.vi().width);
-    const h: u32 = @intCast(ctx.vi().height);
+    const in1 = try input(&d.src1, frame, &scratch);
+    const in2: filter_ssim.Input = if (d.src2.yuv) |yuv| blk: {
+        const pitch: usize = common.ceilN(w * @sizeOf(f32), 64);
+        const buf = try scratch.plane(u8, pitch * 3, h);
+        const planes = [3][*]u8{ buf.ptr, buf.ptr + pitch * h, buf.ptr + 2 * pitch * h };
+        try toRgb(ctx, yuv, src2, planes, pitch, n);
+        break :blk .{ .kind = .f32, .planes = .{ planes[0], planes[1], planes[2] }, .stride = pitch, .srgb = d.src2.srgb };
+    } else try input(&d.src2, src2, &scratch);
+
     const buf = acquireScratch(d, filter_ssim.scratchSize(w, h)) catch return ctx.fail("out of memory", .{});
     defer releaseScratch(d, buf);
-    const val = filter_ssim.process(try input(&d.src1, frame, &scratch), try input(&d.src2, src2, &scratch), w, h, buf);
+    const val = filter_ssim.process(in1, in2, w, h, buf);
 
-    const env = ctx.env();
     try ctx.makePropertyWritable(&frame);
     frame.propsRW(env).setFloat("SSIMULACRA2", val, .replace) catch return ctx.fail("could not set SSIMULACRA2.", .{});
     return frame;
@@ -110,51 +212,90 @@ fn invokeClip(ctx: *avs.Create, name: [:0]const u8, args: []const c.AVS_Value, n
     return v.takeClip(ctx.env);
 }
 
-/// Owned clip readable natively: planar RGB as-is, else converted to RGBPS.
+/// Internal stage: integer YUV/Gray(+A) to float with each frame's own
+/// `_ColorRange` (zimg's normalization: Y in [0, 1], chroma in [-0.5, 0.5];
+/// alpha as full-range data). Output frames are tagged full range.
+const Norm = struct { format: avs.Format };
+const FN = avs.Filter(Norm, filter_name);
+
+fn Normalize(comptime T: type) type {
+    return struct {
+        fn getFrame(d: *Norm, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
+            const env = ctx.env();
+            const src = try ctx.childFrame(n);
+            defer src.release();
+            const dst = try ctx.newFrame(src);
+            errdefer dst.release();
+            const f = d.format;
+            const full = src.propsRO(env).intOr("_ColorRange", 1) == 0;
+            const sh: u5 = @intCast(f.bits - 8);
+            const peak: f64 = @floatFromInt((@as(u32, 1) << @intCast(f.bits)) - 1);
+            for (0..f.numPlanes()) |p| {
+                const alpha = p >= f.color_planes;
+                const chroma = !alpha and p > 0;
+                // value = (x - lo) / span, as `x * scale + offset` in f32
+                const lo: f64, const span: f64 = if (alpha)
+                    .{ 0, peak }
+                else if (full)
+                    .{ if (chroma) @floatFromInt(@as(u32, 1) << @intCast(f.bits - 1)) else 0, peak }
+                else if (chroma)
+                    .{ @floatFromInt(@as(u32, 128) << sh), @floatFromInt(@as(u32, 224) << sh) }
+                else
+                    .{ @floatFromInt(@as(u32, 16) << sh), @floatFromInt(@as(u32, 219) << sh) };
+                const scale: f32 = @floatCast(1.0 / span);
+                const offset: f32 = @floatCast(-lo / span);
+                const id = f.planeId(p);
+                const sp = src.plane(T, id);
+                const dp = dst.planeMut(f32, id);
+                for (0..sp.height) |y| {
+                    for (dp.row(y), sp.row(y)) |*o, x| o.* = @as(f32, @floatFromInt(x)) * scale + offset;
+                }
+            }
+            dst.propsRW(env).setInt("_ColorRange", 0, .replace) catch {};
+            return dst;
+        }
+    };
+}
+
+/// Owned clip readable by the filter: planar RGB as-is, else normalized
+/// float YUV444/Gray (+A) for the per-frame conversion in getFrame.
 fn prepare(ctx: *avs.Create, clip: avs.Clip, src: *Source) !avs.Clip {
     const vi = clip.videoInfo();
     const f = try hz.planarFormat(ctx, vi);
     var out = clip.retain();
     errdefer out.release();
     if (f.family != .rgb) {
-        // The matrix comes from the clip's own `_Matrix` (and the range from
-        // `_ColorRange`), as zimg does on the VapourSynth side. Only an absent
-        // or unspecified `_Matrix` falls back to vszip's resolution guess
-        // (BT.709 above 650 lines, else BT.601), which is tagged on the clip
-        // instead of passed as `matrix=`: an explicit matrix would override
-        // the tag, and the host still applies `_ColorRange` to a tagged clip.
-        const tagged = blk: {
-            const frame = out.getFrame(0) catch break :blk false;
-            defer frame.release();
-            const m = frame.propsRO(ctx.env).intOr("_Matrix", 2);
-            break :blk m != 2;
-        };
-        if (!tagged) {
+        // Float first, then chroma upsampling, then the matrix: like zimg, no
+        // intermediate integer rounding (measured: max |diff| vs zimg 0.003
+        // instead of 0.9 when converting through 8-bit RGB). AviSynth's own
+        // ConvertBits/ConvertToPlanarRGB take range and matrix from frame 0
+        // (ConvertBits even overwrites later frames' `_ColorRange`), so the
+        // metadata-dependent steps run per frame here; ConvertToYUV444 keeps
+        // each frame's props and needs no metadata.
+        if (!f.isFloat()) {
+            var nf = f;
+            nf.bits = 32;
+            nf.sample = .f32;
+            const norm = switch (f.sample) {
+                inline .u8, .u16 => |s| FN.getFrame(Normalize(s.Type()).getFrame),
+                .f32 => unreachable,
+            };
+            const flt = try FN.create(ctx.env, out, .{ .format = f }, norm, .{ .mt_mode = .nice, .vi = hz.withFormat(vi.*, nf) });
+            out.release();
+            out = flt;
+        }
+        if (f.ssw != 0 or f.ssh != 0) {
             const cv = avs.Value.fromClip(out);
             defer cv.release();
-            const a0 = [_]c.AVS_Value{ cv.raw, c.avs_new_value_string("_Matrix"), c.avs_new_value_int(if (vi.height > 650) 1 else 6) };
-            const t = try invokeClip(ctx, "propSet", &a0, &.{ null, null, null });
+            const a1 = [_]c.AVS_Value{cv.raw};
+            const up = try invokeClip(ctx, "ConvertToYUV444", &a1, &.{null});
             out.release();
-            out = t;
+            out = up;
         }
-        // Float first, then the matrix: like zimg, no intermediate integer
-        // RGB rounding/clipping (measured: max |diff| vs zimg 0.003 instead
-        // of 0.9 when converting through 8-bit RGB).
-        const cv = avs.Value.fromClip(out);
-        defer cv.release();
-        const a1 = [_]c.AVS_Value{ cv.raw, c.avs_new_value_int(32) };
-        const flt = try invokeClip(ctx, "ConvertBits", &a1, &.{ null, null });
-        defer flt.release();
-        const fv = avs.Value.fromClip(flt);
-        defer fv.release();
-        const a2 = [_]c.AVS_Value{fv.raw};
-        const conv = try invokeClip(ctx, "ConvertToPlanarRGB", &a2, &.{null});
-        out.release();
-        out = conv;
+        src.yuv = .{ .gray = f.family == .gray, .height = vi.height };
     }
 
     const fmt = try hz.planarFormat(ctx, out.videoInfo());
-    src.format = fmt;
     src.srgb = blk: {
         const frame = out.getFrame(0) catch break :blk true;
         defer frame.release();
@@ -191,6 +332,12 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     errdefer distorted.release();
     d.other = .{ .clip = distorted };
 
-    const out = try F.create(ctx.env, reference, d, F.getFrame(getFrame), .{ .mt_mode = .nice });
+    // A YUV reference is returned converted: RGBPS, plus its alpha.
+    const out_vi: ?c.AVS_VideoInfo = if (d.src1.yuv != null) blk: {
+        const rf = try hz.planarFormat(ctx, reference.videoInfo());
+        d.out_alpha = rf.has_alpha;
+        break :blk hz.withFormat(reference.videoInfo().*, .{ .family = .rgb, .sample = .f32, .bits = 32, .color_planes = 3, .has_alpha = rf.has_alpha, .ssw = 0, .ssh = 0 });
+    } else null;
+    const out = try F.create(ctx.env, reference, d, F.getFrame(getFrame), .{ .mt_mode = .nice, .vi = out_vi });
     return avs.Create.returnClip(out);
 }
