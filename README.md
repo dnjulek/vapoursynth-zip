@@ -4,6 +4,8 @@
 
 [READ THE DOCS](https://github.com/dnjulek/vapoursynth-zip/wiki)
 
+**AviSynth+:** the same filters build as an AviSynth+ plugin with `zig build -Doptimize=fast -Davisynth=true` (`vszip_<Filter>` functions, bit-exact with vszip). See [src/avisynth/README.md](src/avisynth/README.md).
+
 # FILTERS
 - [AdaptiveBinarize](https://github.com/dnjulek/vapoursynth-zip/wiki/AdaptiveBinarize): based on [OpenCV's Adaptive Thresholding](https://docs.opencv.org/5.x/d7/d4d/tutorial_py_thresholding.html).
 - [AdaptiveGrainMask](https://github.com/dnjulek/vapoursynth-zip/wiki/AdaptiveGrainMask): Luma-adaptive grain mask, port of kageru's [adaptivegrain](https://github.com/Irrational-Encoding-Wizardry/adaptivegrain).

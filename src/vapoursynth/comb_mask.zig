@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/comb_mask.zig");
+const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
 const vapoursynth = vszip.vapoursynth;
@@ -30,7 +31,9 @@ fn CombMask(comptime metric_1: bool, comptime expand: bool, comptime motion: boo
                 if (motion) zapi.requestFrameFilter(@max(0, n - 1), d.node);
             } else if (activation_reason == .AllFramesReady) {
                 const src = zapi.initZFrame(d.node, n);
+                defer src.deinit();
                 const prv = if (motion) zapi.initZFrame(d.node, @max(0, n - 1));
+                defer if (motion) prv.deinit();
                 const dst = src.newVideoFrame();
 
                 var plane: u32 = 0;
@@ -52,11 +55,9 @@ fn CombMask(comptime metric_1: bool, comptime expand: bool, comptime motion: boo
                         metric_1,
                         expand,
                         motion,
-                    );
+                    ) catch return hz.frameOom(&zapi, filter_name, dst);
                 }
 
-                if (motion) prv.deinit();
-                src.deinit();
                 return dst.frame;
             }
 

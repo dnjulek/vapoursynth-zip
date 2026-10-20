@@ -2,10 +2,8 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/color_map.zig");
-const simd = @import("../filters/simd.zig");
 const vszip = @import("../vszip.zig");
 
-const Colors = filter.Colors;
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
 const ZAPI = vapoursynth.ZAPI;
@@ -16,7 +14,7 @@ pub const filter_name = "ColorMap";
 const Data = struct {
     node: ?*vs.Node = null,
     vi: vs.VideoInfo = .{},
-    color: [3][256]u8 = .{ @splat(0), @splat(0), @splat(0) },
+    lut: filter.Lut = undefined,
 };
 
 fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
@@ -34,45 +32,7 @@ fn colorMapGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_d
         const srcp = src.getReadSlice(0);
         const dstp = dst.getWriteSlices();
 
-        const L = simd.LutU8;
-        if (comptime L.lanes > 0) {
-            // Three 256-entry byte LUTs over the same source bytes: the scalar
-            // loop is store-commit-bound (3 byte stores + 4 loads per px); the
-            // vector LUT (simd.LutU8: vpermi2b on AVX512-VBMI, the vpshufb
-            // network on AVX2) does one full-width store per plane. Rows are
-            // padded to the frame alignment (>= the vector width), so
-            // whole-vector blocks up to the stride stay in bounds; padding
-            // bytes are don't-care.
-            const tbl = [3]L{ L.init(&d.color[0]), L.init(&d.color[1]), L.init(&d.color[2]) };
-            const wv = w - w % L.lanes;
-            var y: u32 = 0;
-            while (y < h) : (y += 1) {
-                const row = y * stride;
-                var x: u32 = 0;
-                while (x < wv) : (x += L.lanes) {
-                    const v: @Vector(L.lanes, u8) = srcp[row + x ..][0..L.lanes].*;
-                    inline for (0..3) |c| {
-                        dstp[c][row + x ..][0..L.lanes].* = tbl[c].get(v);
-                    }
-                }
-                while (x < w) : (x += 1) {
-                    const s: u8 = srcp[row + x];
-                    inline for (0..3) |c| dstp[c][row + x] = d.color[c][s];
-                }
-            }
-        } else {
-            var y: u32 = 0;
-            while (y < h) : (y += 1) {
-                var x: u32 = 0;
-                while (x < w) : (x += 1) {
-                    const idx: u32 = y * stride + x;
-                    const s: u8 = srcp[idx];
-                    dstp[0][idx] = d.color[0][s];
-                    dstp[1][idx] = d.color[1][s];
-                    dstp[2][idx] = d.color[2][s];
-                }
-            }
-        }
+        filter.mapPlane(srcp, .{ dstp[0], dstp[1], dstp[2] }, w, h, stride, &d.lut);
 
         const props = dst.getPropertiesRW();
         props.setMatrix(.RGB);
@@ -115,21 +75,7 @@ pub fn colorMapCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?
         return;
     }
 
-    const color: Colors = @fromBackingInt(@intCast(icolor));
-    const color_arr = color.getColor();
-
-    const len: usize = color_arr[0].len;
-    const lenm1: f32 = @floatFromInt(len - 1);
-    for (0..256) |i| {
-        const p: f32 = @as(f32, @floatFromInt(i)) * lenm1 / 255.0;
-        const lo: usize = @intFromFloat(@floor(p));
-        const hi: usize = @min(lo + 1, len - 1);
-        const frac: f32 = p - @as(f32, @floatFromInt(lo));
-        inline for (0..3) |c| {
-            const v: f32 = color_arr[c][lo] + (color_arr[c][hi] - color_arr[c][lo]) * frac;
-            d.color[c][i] = @trunc(@mulAdd(f32, v, 255, 0.5));
-        }
-    }
+    d.lut = filter.buildLut(@fromBackingInt(@intCast(icolor)));
 
     d.vi = in_vi.*;
     _ = zapi.getVideoFormatByID(&d.vi.format, .RGB24);

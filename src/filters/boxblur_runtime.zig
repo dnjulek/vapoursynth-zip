@@ -547,7 +547,7 @@ fn hvBlurFusedGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u
 /// sequence (same sum seed, same add/sub rows in the same row order, output
 /// rounded to T between passes), so the result is bit-identical. Requires
 /// h >= 2*vradius + 2, like hvBlurFused.
-pub fn vChainFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T)) void {
+pub fn vChainFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T)) error{OutOfMemory}!void {
     if (@typeInfo(T) == .int) {
         const hr = if ((hpasses > 0) and (hradius > 0)) hradius else 1;
         if (ct.narrowMagicFor(T, hr)) |hmg| {
@@ -560,7 +560,7 @@ pub fn vChainFused(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w:
     return vChainGo(T, srcp, dstp, stride, w, h, hradius, hpasses, vradius, vpasses, sc, {}, {});
 }
 
-fn vChainGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T), hmg: anytype, vmg: anytype) void {
+fn vChainGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, hradius: u32, hpasses: i32, vradius: u32, vpasses: u32, sc: *const Scratch(T), hmg: anytype, vmg: anytype) error{OutOfMemory}!void {
     std.debug.assert(vpasses >= 1 and h >= 2 * vradius + 2);
     const HR = HRows(T, @TypeOf(hmg));
     const Chain = struct {
@@ -645,7 +645,7 @@ fn vChainGo(comptime T: type, srcp: []const T, dstp: []T, stride: u32, w: u32, h
     };
 
     var next_buf: [64]u32 = undefined;
-    const next_heap = if (vpasses > next_buf.len) (allocator.alloc(u32, vpasses) catch unreachable) else next_buf[0..vpasses];
+    const next_heap = if (vpasses > next_buf.len) (try allocator.alloc(u32, vpasses)) else next_buf[0..vpasses];
     defer if (vpasses > next_buf.len) allocator.free(next_heap);
     @memset(next_heap, 0);
     var ch: Chain = .{
@@ -845,5 +845,114 @@ inline fn rowAddSubFloat(comptime T: type, sums: []f32, add_row: []const T, sub_
         const b: f32 = sub_row[c];
         sums[c] += (a - b) * div;
         dst_row[c] = if (T == f32) sums[c] else @floatCast(sums[c]);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Parameters and per-plane dispatch (shared by the VapourSynth and AviSynth
+// adapters)
+// --------------------------------------------------------------------------
+
+pub const Params = struct {
+    hradius: u32,
+    hpasses: i32,
+    vradius: u32,
+    vpasses: i32,
+
+    pub fn hblurOn(p: Params) bool {
+        return (p.hradius > 0) and (p.hpasses > 0);
+    }
+
+    pub fn vblurOn(p: Params) bool {
+        return (p.vradius > 0) and (p.vpasses > 0);
+    }
+
+    pub const Error = error{ Nothing, HRadius, VRadius, Magic };
+
+    /// Message for a `check` error (callers add their filter-name prefix).
+    pub fn message(e: Error) [:0]const u8 {
+        return switch (e) {
+            error.Nothing => "nothing to be performed",
+            error.HRadius => "hradius too large; 2*hradius must be < the (smallest processed) plane width.",
+            error.VRadius => "vradius too large; 2*vradius must be < the (smallest processed) plane height.",
+            error.Magic => "radius too large to divide exactly at this bit depth.",
+        };
+    }
+
+    /// vszip's create checks, in order. `int_bytes` is the integer sample
+    /// size (1 or 2), 0 for float; planes not in `planes` are not checked.
+    pub fn check(p: Params, int_bytes: u8, planes: []const bool, plane_w: []const u32, plane_h: []const u32) Error!void {
+        const hb = p.hblurOn();
+        const vb = p.vblurOn();
+        if (!vb and !hb) return error.Nothing;
+
+        for (planes, plane_w, plane_h) |on, pw, ph| {
+            if (!on) continue;
+            if (hb and (@as(u64, p.hradius) * 2 >= pw)) return error.HRadius;
+            if (vb and (@as(u64, p.vradius) * 2 >= ph)) return error.VRadius;
+        }
+
+        // The integer kernels divide the raw window sum by ksize with an exact
+        // multiply-and-shift; past radius 23331 (u16) no exact magic exists. The
+        // plane-size checks above already rule this out at any sane resolution,
+        // but reject it here rather than let getFrame silently lose precision.
+        const magic_ok = switch (int_bytes) {
+            inline 1, 2 => |b| blk: {
+                const T = if (b == 1) u8 else u16;
+                const h_ok = !hb or (ct.magicFor(T, p.hradius) != null);
+                const v_ok = !vb or (ct.magicFor(T, p.vradius) != null);
+                break :blk h_ok and v_ok;
+            },
+            else => true,
+        };
+        if (!magic_ok) return error.Magic;
+    }
+
+    /// CT (comptime-radius tap kernels) vs RT (running-sum) selection, measured
+    /// 2026-07-03 on Zen 3 (callgrind Ir at every radius + 3-rep wall-clock):
+    ///  - integer: RT wins at every radius (Ir -7..-19%, wall >= CT incl. the
+    ///    default r=1), so int always takes RT;
+    ///  - float: CT's O(ksize) tap kernels only beat the (scalar-h) running sum
+    ///    below ~r9 on this box; from r>=9 RT is 1.5-2.7x. CT therefore remains
+    ///    for float radius 1..8 only.
+    ///  - !hblur/!vblur must take RT: CT's hvBlur applies both directions
+    ///    unconditionally (an hpasses=0 request used to get h-blurred anyway).
+    /// Boundary moves change outputs slightly (CT and RT differ in pass order,
+    /// fixed-point rounding and edge-mirror convention: interior <=2 LSB int /
+    /// ~1e-5 f32, edge bands up to ~0.1% of range) — the same difference that
+    /// always existed across the old r22 boundary.
+    pub fn useRT(p: Params, is_float: bool) bool {
+        return !p.hblurOn() or !p.vblurOn() or !is_float or
+            (p.hradius != p.vradius) or (p.hradius > 8) or
+            (p.hpasses > 1) or (p.vpasses > 1);
+    }
+};
+
+/// One plane through the RT kernels. `tmp.get()` returns a full temporary
+/// plane (same stride) and is only called for the multi-pass vblur fallback
+/// on short planes, so hosts can create it lazily.
+pub fn blurPlane(comptime T: type, p: Params, srcp: []const T, dstp: []T, stride: u32, w: u32, h: u32, sc: *const Scratch(T), tmp: anytype) error{OutOfMemory}!void {
+    const hb = p.hblurOn();
+    if (p.vblurOn()) {
+        if ((p.vpasses == 1) and (!hb)) {
+            vblur(T, srcp, dstp, dstp, stride, w, h, p.vradius, 1, sc);
+        } else if ((p.vpasses == 1) and (h >= 2 * p.vradius + 2)) {
+            hvBlurFused(T, srcp, dstp, stride, w, h, p.hradius, p.hpasses, p.vradius, sc);
+        } else if (h >= 2 * p.vradius + 2) {
+            try vChainFused(T, srcp, dstp, stride, w, h, p.hradius, p.hpasses, p.vradius, @intCast(p.vpasses), sc);
+        } else {
+            // multi-pass vblur ping-pongs between full planes
+            const tmpp: []T = try tmp.get();
+            if (hb) {
+                // land the hblur result so the vblur sweeps end in dstp
+                const h_out: []T = if (@mod(p.vpasses, 2) == 1) tmpp else dstp;
+                hblur(T, srcp, h_out, stride, w, h, p.hradius, p.hpasses, sc);
+                vblur(T, h_out, tmpp, dstp, stride, w, h, p.vradius, p.vpasses, sc);
+            } else {
+                vblur(T, srcp, tmpp, dstp, stride, w, h, p.vradius, p.vpasses, sc);
+            }
+        }
+    } else {
+        hblur(T, srcp, dstp, stride, w, h, p.hradius, p.hpasses, sc);
     }
 }

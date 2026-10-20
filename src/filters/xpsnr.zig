@@ -569,7 +569,7 @@ pub fn getWSSE(
     num_comps: u8,
     frame_rate: u32,
     temporal: bool,
-) void {
+) error{OutOfMemory}!void {
     const w: u32 = width[0];
     const h: u32 = height[0];
     const wh: u32 = w * h;
@@ -581,8 +581,8 @@ pub fn getWSSE(
     const sft: u32 = math.shl(u32, 1, (2 * depth - 9));
     const avg_act: f64 = @sqrt(16.0 * @as(f64, @floatFromInt(sft)) / @sqrt(@max(0.00001, r)));
 
-    const sse_luma = allocator.alloc(f64, w_blk * h_blk) catch unreachable;
-    const weights = allocator.alloc(f64, w_blk * h_blk) catch unreachable;
+    const sse_luma = try allocator.alloc(f64, w_blk * h_blk);
+    const weights = try allocator.alloc(f64, w_blk * h_blk);
     defer allocator.free(sse_luma);
     defer allocator.free(weights);
 
@@ -703,4 +703,30 @@ pub fn getWSSE(
             wsse64[c] = if (wsse_chroma <= 0.0) 0 else math.lossyCast(u64, (wsse_chroma * avg_act + 0.5));
         }
     }
+}
+
+/// Squared peak error for `depth`-bit samples.
+pub fn maxError64(depth: u32) u64 {
+    const m = math.shl(u64, 1, depth) - 1;
+    return m * m;
+}
+
+/// Print the clip average to stdout: "XPSNR average, <n> frames  y: ...".
+/// `total` (frames in the clip) is printed when given ("<n> of <total>").
+pub fn printAverage(io: std.Io, count: u64, total: ?u64, sum_wdist: [3]f64, sum_xpsnr: [3]f64, num_comps: u32, width: [3]u32, height: [3]u32, max_error_64: u64) void {
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    if (total) |t| {
+        stdout.print("XPSNR average, {d} of {d} frames  ", .{ count, t }) catch return;
+    } else {
+        stdout.print("XPSNR average, {} frames  ", .{count}) catch return;
+    }
+    const char = [_]u8{ 'y', 'u', 'v' };
+    for (0..num_comps) |i| {
+        const xpsnr = getAvgXPSNR(sum_wdist[i], sum_xpsnr[i], width[i], height[i], max_error_64, count);
+        stdout.print("{c}: {d:.04}  ", .{ char[i], xpsnr }) catch return;
+    }
+    stdout.print("\n", .{}) catch return;
+    stdout.flush() catch {};
 }

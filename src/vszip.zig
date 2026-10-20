@@ -31,9 +31,11 @@ const ssimulacra2 = @import("vapoursynth/ssimulacra2.zig");
 const wnnm = @import("vapoursynth/wnnm.zig");
 const xpsnr = @import("vapoursynth/xpsnr.zig");
 
-pub const vec_len = std.simd.suggestVectorLength(u8) orelse 32;
-pub const alignment = std.mem.Alignment.fromByteUnits(vec_len);
-pub const io: std.Io = std.Io.Threaded.global_single_threaded.io();
+// Shared with the kernels and the AviSynth adapters (see common.zig).
+const common = @import("common.zig");
+pub const vec_len = common.vec_len;
+pub const alignment = common.alignment;
+pub const io = common.io;
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     ZAPI.Plugin.config("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", zon.version, plugin, vspapi);

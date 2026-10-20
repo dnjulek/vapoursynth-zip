@@ -1,6 +1,6 @@
 const std = @import("std");
 const math = std.math;
-const hz = @import("../helper.zig");
+const hz = @import("../common.zig");
 const simd = @import("simd.zig");
 
 const vec_len = std.simd.suggestVectorLength(i16) orelse 8;
@@ -206,4 +206,83 @@ pub fn process(
         // values (dst is never read here), avoiding a scalar tail.
         processVec(dstp, srcp_p2, srcp_p1, srcp, srcp_n1, srcp_n2, stride2, width - 2 - vec_len, thr_tmax, tmax_p1, tmax_mult, tthr2v, use_tthr2);
     }
+}
+
+// --------------------------------------------------------------------------
+// Parameters and plane driver (shared by the VapourSynth and AviSynth adapters)
+// --------------------------------------------------------------------------
+
+pub const Params = struct {
+    thr: i32,
+    tmax: i32,
+    tthr2: i32,
+    tmax_multiplier: i32 = 0,
+
+    pub const Error = error{ Tmax, Tthr2, Thr, TooSmall };
+
+    /// Message for an `init` error (callers add their filter-name prefix).
+    pub fn message(e: Error) [:0]const u8 {
+        return switch (e) {
+            error.Tmax => "tmax value should be in range [1;255].",
+            error.Tthr2 => "tthr2 should be non-negative.",
+            error.Thr => "thr value should be in range [0;255].",
+            error.TooSmall => "clip too small; every plane must be at least 3 wide and 5 tall.",
+        };
+    }
+
+    /// Validate (vszip's order); `min_w`/`min_h` are the smallest plane's.
+    pub fn init(thr: i32, tmax: i32, tthr2: i32, min_w: u32, min_h: u32) Error!Params {
+        if ((tmax < 1) or (tmax > 255)) return error.Tmax;
+        if (tthr2 < 0) return error.Tthr2;
+        if ((thr < 0) or (thr > 255)) return error.Thr;
+        if ((min_w < 3) or (min_h < 5)) return error.TooSmall;
+        // hoisted out of the per-row kernel call (was an idiv per row)
+        return .{ .thr = thr, .tmax = tmax, .tthr2 = tthr2, .tmax_multiplier = @divTrunc((1 << 13), tmax) };
+    }
+};
+
+/// One plane: the two top and bottom rows are copied, the rest filtered.
+/// All planes share `stride`; `srcp_p2`/`srcp_n2` are void without tthr2.
+pub fn processPlane(
+    comptime use_tthr2: bool,
+    dst: []u8,
+    src_p2: anytype,
+    src_p1: []const u8,
+    src: []const u8,
+    src_n1: []const u8,
+    src_n2: anytype,
+    stride: u32,
+    w: u32,
+    h: u32,
+    p: Params,
+) void {
+    const stride2 = stride << 1;
+    var dstp = dst;
+    var srcp_p1 = src_p1;
+    var srcp = src;
+    var srcp_n1 = src_n1;
+    var srcp_p2 = src_p2;
+    var srcp_n2 = src_n2;
+
+    @memcpy(dstp[0..stride2], srcp[0..stride2]);
+
+    srcp_p1 = srcp_p1[stride2..];
+    srcp = srcp[stride2..];
+    srcp_n1 = srcp_n1[stride2..];
+    dstp = dstp[stride2..];
+    srcp_p2 = if (use_tthr2) srcp_p2[stride2..];
+    srcp_n2 = if (use_tthr2) srcp_n2[stride2..];
+
+    var y: u32 = 2;
+    while (y < h - 2) : (y += 1) {
+        process(dstp, srcp_p2, srcp_p1, srcp, srcp_n1, srcp_n2, stride, w, p.thr, p.tmax, p.tmax_multiplier, p.tthr2, use_tthr2);
+        srcp_p1 = srcp_p1[stride..];
+        srcp = srcp[stride..];
+        srcp_n1 = srcp_n1[stride..];
+        dstp = dstp[stride..];
+        srcp_p2 = if (use_tthr2) srcp_p2[stride..];
+        srcp_n2 = if (use_tthr2) srcp_n2[stride..];
+    }
+
+    @memcpy(dstp[0..stride2], srcp[0..stride2]);
 }

@@ -41,7 +41,7 @@ fn CLAHE(comptime T: type, comptime clamp: bool) type {
                     const dstp = dst.getWriteSlice2(T, plane);
                     const width, const height, const stride = src.getDimensions2(T, plane);
                     const chroma = d.vi.format.colorFamily == .YUV and plane > 0;
-                    filter.applyCLAHE(T, clamp, srcp, dstp, stride, width, height, d.limit, &d.tiles, d.bits, chroma);
+                    filter.applyCLAHE(T, clamp, srcp, dstp, stride, width, height, d.limit, &d.tiles, d.bits, chroma) catch return hz.frameOom(&zapi, filter_name, dst);
                 }
 
                 const dst_prop = dst.getPropertiesRW();

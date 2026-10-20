@@ -1,5 +1,5 @@
 const std = @import("std");
-const hz = @import("../helper.zig");
+const hz = @import("../common.zig");
 const simd = @import("simd.zig");
 
 const allocator = std.heap.c_allocator;

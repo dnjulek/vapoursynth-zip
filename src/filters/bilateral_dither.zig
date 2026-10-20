@@ -358,3 +358,105 @@ pub fn processPlane(
         }
     }
 }
+
+// --------------------------------------------------------------------------
+// Configuration (shared by the VapourSynth and AviSynth adapters)
+// --------------------------------------------------------------------------
+
+/// Per-plane kernel parameters; `offsets` are owned (free with `deinit`).
+pub const Config = struct {
+    rh: [3]u32 = @splat(0),
+    rv: [3]u32 = @splat(0),
+    m: [3]f32 = @splat(0),
+    wmax: [3]f32 = @splat(0),
+    sum_w_min: [3]f32 = @splat(0),
+    // sub-sampled point lists resolved to linear cache offsets per plane
+    offsets: [3]?[]isize = .{ null, null, null },
+    k: [3]usize = @splat(0),
+    peak: f32 = 0,
+
+    pub const Args = struct {
+        is_int: bool,
+        bits: u32,
+        planes: [3]bool,
+        num_planes: u32,
+        plane_w: [3]i32,
+        plane_h: [3]i32,
+        radius: [3]i32,
+        thr: [3]f32,
+        flat: [3]f32,
+        wmin: [3]f32,
+        subspl: [3]f32,
+    };
+
+    pub const Error = error{ TooSmall, Radius, OutOfMemory };
+
+    /// Message for an `init` error (callers add their filter-name prefix).
+    pub fn message(e: Error) [:0]const u8 {
+        return switch (e) {
+            error.TooSmall => "input must be 16x16 min",
+            error.Radius => "picture size must be greater than \"radius\"",
+            error.OutOfMemory => "out of memory",
+        };
+    }
+
+    /// The frame-size check, which vszip runs before the planes argument.
+    pub fn checkSize(width: i32, height: i32) Error!void {
+        if (width < 16 or height < 16) return error.TooSmall;
+    }
+
+    pub fn init(a: Args) Error!Config {
+        const scale: f32 = if (a.is_int)
+            @floatFromInt(@as(u32, 1) << @as(u5, @intCast(a.bits - 8)))
+        else
+            1.0 / 256.0;
+        const unit: f32 = if (a.is_int) 1.0 else 1.0 / 65535.0;
+
+        var d: Config = .{};
+        d.peak = if (a.is_int) @floatFromInt((@as(u32, 1) << @as(u5, @intCast(a.bits))) - 1) else 0;
+        errdefer d.deinit();
+
+        for (0..a.num_planes) |p| {
+            if (!a.planes[p]) continue;
+            const pw = a.plane_w[p];
+            const ph = a.plane_h[p];
+            if (pw < a.radius[p] or ph < a.radius[p]) return error.Radius;
+            const rp: u32 = @intCast(a.radius[p]);
+            d.rh[p] = rp;
+            d.rv[p] = rp;
+            d.m[p] = @max(a.thr[p] * scale, unit);
+            d.wmax[p] = @max(a.thr[p] * (1.0 - a.flat[p]) * scale, unit);
+            const slot = buildSlot(rp, rp, a.subspl[p], a.wmin[p], d.wmax[p], unit) catch return error.OutOfMemory;
+            d.sum_w_min[p] = slot.sum_w_min;
+            d.k[p] = slot.k;
+            if (slot.pl) |pts| {
+                defer allocator.free(pts);
+                const offs = try allocator.alloc(isize, pts.len);
+                resolveOffsets(pts, @intCast(pw), rp, offs);
+                d.offsets[p] = offs;
+            }
+        }
+        return d;
+    }
+
+    pub fn deinit(d: *Config) void {
+        for (&d.offsets) |*o| {
+            if (o.*) |p| allocator.free(p);
+            o.* = null;
+        }
+    }
+};
+
+const SlotCfg = struct { sum_w_min: f32, pl: ?[]subspl.Coord, k: usize };
+
+fn buildSlot(rh: u32, rv: u32, subspl_arg: f32, wmin: f32, wmax: f32, unit: f32) !SlotCfg {
+    const active = (subspl_arg >= 4.0) or (subspl_arg < 1e-3);
+    if (active) {
+        const lists = try subspl.generate(@intCast(rh), @intCast(rv), @floatCast(subspl_arg));
+        const kf: f32 = @floatFromInt(lists.k);
+        return .{ .sum_w_min = @max(wmin * wmax * kf, unit), .pl = lists.pts, .k = lists.k };
+    } else {
+        const area: f32 = @floatFromInt((2 * rh - 1) * (2 * rv - 1));
+        return .{ .sum_w_min = @max(wmin * wmax * area, unit), .pl = null, .k = 0 };
+    }
+}

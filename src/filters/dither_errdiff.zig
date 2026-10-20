@@ -81,12 +81,18 @@ pub const ErrorBuffer = struct {
     line0_i16: []i16,
     line1_i16: []i16,
 
-    pub fn init(n: u32) ErrorBuffer {
+    pub fn init(n: u32) error{OutOfMemory}!ErrorBuffer {
+        const line0 = try allocator.alloc(f32, n);
+        errdefer allocator.free(line0);
+        const line1 = try allocator.alloc(f32, n);
+        errdefer allocator.free(line1);
+        const line0_i16 = try allocator.alloc(i16, n);
+        errdefer allocator.free(line0_i16);
         return .{
-            .line0 = allocator.alloc(f32, n) catch unreachable,
-            .line1 = allocator.alloc(f32, n) catch unreachable,
-            .line0_i16 = allocator.alloc(i16, n) catch unreachable,
-            .line1_i16 = allocator.alloc(i16, n) catch unreachable,
+            .line0 = line0,
+            .line1 = line1,
+            .line0_i16 = line0_i16,
+            .line1_i16 = try allocator.alloc(i16, n),
         };
     }
 

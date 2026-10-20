@@ -16,19 +16,8 @@ pub const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    peak: u16 = 0,
-    peakf: f32 = 0,
-    minthr: f32 = 0,
-    maxthr: f32 = 0,
-    hist_size: u32 = 0,
     planes: [3]bool = .{ true, false, false },
-    prop: StringProp = undefined,
-};
-
-const StringProp = struct {
-    d: [:0]u8,
-    ma: [:0]u8,
-    mi: [:0]u8,
+    k: filter.Data = .{},
 };
 
 fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) type {
@@ -45,9 +34,9 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
                 const ref = if (refb) zapi.initZFrame(d.node2, n);
                 const dst = src.copyFrame();
                 const props = dst.getPropertiesRW();
-                props.deleteKey(d.prop.d);
-                props.deleteKey(d.prop.ma);
-                props.deleteKey(d.prop.mi);
+                props.deleteKey(d.k.prop.d);
+                props.deleteKey(d.k.prop.ma);
+                props.deleteKey(d.k.prop.mi);
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -59,15 +48,19 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
                     if (refb) {
                         const refp = ref.getReadSlice2(T, plane);
                         if (no_thr) {
-                            filter.minMaxNoThrRef(T, srcp, refp, stride, &props, w, h, d);
+                            filter.minMaxNoThrRef(T, srcp, refp, stride, &props, w, h, &d.k);
                         } else {
-                            filter.minMaxRef(T, srcp, refp, stride, &props, w, h, d);
+                            filter.minMaxRef(T, srcp, refp, stride, &props, w, h, &d.k) catch {
+                                return oom(&zapi, src, ref, dst);
+                            };
                         }
                     } else {
                         if (no_thr) {
-                            filter.minMaxNoThr(T, srcp, stride, &props, w, h, d);
+                            filter.minMaxNoThr(T, srcp, stride, &props, w, h, &d.k);
                         } else {
-                            filter.minMax(T, srcp, stride, &props, w, h, d);
+                            filter.minMax(T, srcp, stride, &props, w, h, &d.k) catch {
+                                return oom(&zapi, src, ref, dst);
+                            };
                         }
                     }
                 }
@@ -83,13 +76,19 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
     };
 }
 
+fn oom(zapi: *const ZAPI, src: anytype, ref: anytype, dst: anytype) ?*const vs.Frame {
+    src.deinit();
+    if (@TypeOf(ref) != void) ref.deinit();
+    dst.deinit();
+    zapi.setFilterError(filter_name ++ ": out of memory");
+    return null;
+}
+
 fn planeMinMaxFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
 
-    allocator.free(d.prop.d);
-    allocator.free(d.prop.ma);
-    allocator.free(d.prop.mi);
+    d.k.deinit();
 
     if (d.node2) |node| zapi.freeNode(node);
     zapi.freeNode(d.node1);
@@ -113,20 +112,10 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
     }
 
     hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
-    d.hist_size = if (d.vi.format.sampleType == .Float) 65536 else math.shl(u32, 1, d.vi.format.bitsPerSample);
-    d.peak = @intCast(d.hist_size - 1);
-    d.peakf = @floatFromInt(d.peak);
-    d.maxthr = getThr(map_in, map_out, &nodes, "maxthr", &zapi) catch return;
-    d.minthr = getThr(map_in, map_out, &nodes, "minthr", &zapi) catch return;
+    const maxthr = getThr(map_in, map_out, &nodes, "maxthr", &zapi) catch return;
+    const minthr = getThr(map_in, map_out, &nodes, "minthr", &zapi) catch return;
 
-    const prop_in = map_in.getData("prop", 0) orelse "psm";
-    d.prop = .{
-        .d = allocator.printSentinel("{s}Diff", .{prop_in}, 0) catch unreachable,
-        .ma = allocator.printSentinel("{s}Max", .{prop_in}, 0) catch unreachable,
-        .mi = allocator.printSentinel("{s}Min", .{prop_in}, 0) catch unreachable,
-    };
-
-    const no_thr = d.maxthr == 0 and d.minthr == 0;
+    const no_thr = maxthr == 0 and minthr == 0;
     const do_chroma = d.planes[1] or d.planes[2];
 
     if (do_chroma and !no_thr and
@@ -138,6 +127,9 @@ pub fn planeMinMaxCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core
         if (refb) zapi.freeNode(d.node2);
         return;
     }
+
+    const prop_in = map_in.getData("prop", 0) orelse "psm";
+    d.k = filter.Data.init(d.vi.format.sampleType == .Float, @intCast(d.vi.format.bitsPerSample), minthr, maxthr, prop_in) catch unreachable;
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;

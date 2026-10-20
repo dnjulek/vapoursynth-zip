@@ -78,7 +78,7 @@ fn XPSNR(comptime T: type) type {
                     strides[c] = src1.getStride2(T, c);
                 }
 
-                filter.getWSSE(T, orgp, recp, prv1, prv2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate, d.temporal);
+                filter.getWSSE(T, orgp, recp, prv1, prv2, &wsse64, d.width, d.height, strides, d.depth, d.num_comps, d.frame_rate, d.temporal) catch return hz.frameOom(&zapi, filter_name, dst);
 
                 var i: u32 = 0;
                 while (i < d.num_comps) : (i += 1) {
@@ -112,19 +112,7 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
     const zapi = ZAPI.init(vsapi, core, null);
 
     if (d.verbose) {
-        var stdout_buffer: [1024]u8 = undefined;
-        var stdout_writer = std.Io.File.stdout().writerStreaming(vszip.io, &stdout_buffer);
-        const stdout = &stdout_writer.interface;
-        stdout.print("XPSNR average, {} frames  ", .{d.num_frames_64}) catch unreachable;
-        const char = [_]u8{ 'y', 'u', 'v' };
-
-        for (0..d.num_comps) |i| {
-            const xpsnr = filter.getAvgXPSNR(d.sum_wdist[i], d.sum_xpsnr[i], d.width[i], d.height[i], d.max_error_64, d.num_frames_64);
-            stdout.print("{c}: {d:.04}  ", .{ char[i], xpsnr }) catch unreachable;
-        }
-
-        stdout.print("\n", .{}) catch unreachable;
-        stdout.flush() catch unreachable;
+        filter.printAverage(vszip.io, d.num_frames_64, null, d.sum_wdist, d.sum_xpsnr, d.num_comps, d.width, d.height, d.max_error_64);
     }
 
     zapi.freeNode(d.node1);
@@ -176,8 +164,7 @@ pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, co
     d.verbose = map_in.getBool("verbose") orelse true;
 
     d.depth = @intCast(d.vi.format.bitsPerSample);
-    d.max_error_64 = math.shl(u64, 1, d.depth) - 1;
-    d.max_error_64 *= d.max_error_64;
+    d.max_error_64 = filter.maxError64(d.depth);
 
     d.frame_rate = if (vi2.fpsDen != 0)
         @intCast(@divTrunc(vi2.fpsNum, vi2.fpsDen))

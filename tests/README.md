@@ -4,6 +4,11 @@ The suite combines independent oracles, invariants, external references, and
 golden regression snapshots. See [TESTING_GUIDE.md](TESTING_GUIDE.md) before
 adding a filter or changing an optimized kernel.
 
+`tests/avisynth/` is the AviSynth+ plugin's differential suite (avszip vs vszip
+on identical input; see [src/avisynth/README.md](../src/avisynth/README.md)). It
+runs only when `zig build -Davisynth=true` produced `zig-out/bin/avszip.dll` and
+AviSynth+ is installed; otherwise it is skipped at collection.
+
 ---
 
 ## Quick start

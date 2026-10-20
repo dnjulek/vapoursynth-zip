@@ -87,7 +87,7 @@ pub fn applyCLAHE(
     tiles: []u32,
     bits: u5,
     chroma: bool,
-) void {
+) error{OutOfMemory}!void {
     const B = Bins(T, clamp);
     const bn = B.init(bits, chroma);
     const hist_size: u32 = bn.histSize();
@@ -99,14 +99,14 @@ pub fn applyCLAHE(
     var clip_limit: i32 = @intCast(@as(u64, limit) * tile_size_total / hist_size);
     clip_limit = @max(clip_limit, 1);
 
-    const lut = allocator.alloc(B.L, tiles[0] * tiles[1] * hist_size) catch unreachable;
+    const lut = try allocator.alloc(B.L, tiles[0] * tiles[1] * hist_size);
     defer allocator.free(lut);
 
-    calcLut(T, B, bn, srcp, stride, width, height, lut, tile_width, tile_height, tiles, clip_limit, lut_scale);
+    try calcLut(T, B, bn, srcp, stride, width, height, lut, tile_width, tile_height, tiles, clip_limit, lut_scale);
     if (T == u8) {
-        interpolateU8(srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+        try interpolateU8(srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
     } else {
-        interpolate(T, B, bn, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
+        try interpolate(T, B, bn, srcp, dstp, stride, width, height, lut, tile_width, tile_height, tiles);
     }
 }
 
@@ -124,15 +124,15 @@ fn calcLut(
     tiles: []u32,
     clip_limit: i32,
     lut_scale: f32,
-) void {
+) error{OutOfMemory}!void {
     const hist_size: u32 = bn.histSize();
     const hist_sizei: i32 = @intCast(hist_size);
     const tiles_x = tiles[0];
     const tiles_y = tiles[1];
 
-    const subs = allocator.alloc(u32, n_sub * hist_size) catch unreachable;
+    const subs = try allocator.alloc(u32, n_sub * hist_size);
     defer allocator.free(subs);
-    const tile_hist = allocator.alloc(i32, hist_size) catch unreachable;
+    const tile_hist = try allocator.alloc(i32, hist_size);
     defer allocator.free(tile_hist);
 
     // zeroed once; each tile's merge loop re-zeroes the bins it drains, so no
@@ -281,7 +281,7 @@ fn interpolate(
     tile_width: u32,
     tile_height: u32,
     tiles: []u32,
-) void {
+) error{OutOfMemory}!void {
     const hist_size: u32 = bn.histSize();
     const tiles_x: i32 = @intCast(tiles[0]);
     const tiles_y: i32 = @intCast(tiles[1]);
@@ -290,11 +290,11 @@ fn interpolate(
     const inv_th: f32 = 1.0 / @as(f32, @floatFromInt(tile_height));
 
     // x-dependent terms are the same on every row; precompute them once
-    const tx1h = allocator.alloc(u32, width) catch unreachable;
+    const tx1h = try allocator.alloc(u32, width);
     defer allocator.free(tx1h);
-    const tx2h = allocator.alloc(u32, width) catch unreachable;
+    const tx2h = try allocator.alloc(u32, width);
     defer allocator.free(tx2h);
-    const xa_arr = allocator.alloc(f32, width) catch unreachable;
+    const xa_arr = try allocator.alloc(f32, width);
     defer allocator.free(xa_arr);
 
     {
@@ -395,7 +395,7 @@ fn interpolateU8(
     tile_width: u32,
     tile_height: u32,
     tiles: []u32,
-) void {
+) error{OutOfMemory}!void {
     const hist_size: u32 = 256;
     const tiles_x: i32 = @intCast(tiles[0]);
     const tiles_y: i32 = @intCast(tiles[1]);
@@ -404,12 +404,12 @@ fn interpolateU8(
     const inv_th: f32 = 1.0 / @as(f32, @floatFromInt(tile_height));
 
     // x-dependent terms are the same on every row; precompute them once
-    const q_off = allocator.alloc(u32, width) catch unreachable;
+    const q_off = try allocator.alloc(u32, width);
     defer allocator.free(q_off);
-    const xa_arr = allocator.alloc(f32, width) catch unreachable;
+    const xa_arr = try allocator.alloc(f32, width);
     defer allocator.free(xa_arr);
     const n_slots: u32 = tiles[0] + 1;
-    const quad = allocator.alloc(u32, n_slots * hist_size) catch unreachable;
+    const quad = try allocator.alloc(u32, n_slots * hist_size);
     defer allocator.free(quad);
 
     {

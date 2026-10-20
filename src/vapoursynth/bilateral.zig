@@ -11,24 +11,13 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Bilateral";
-const max_sigma_s: f64 = 8192;
+const max_sigma_s = filter.Data.max_sigma_s;
 
 pub const Data = struct {
     node1: ?*vs.Node = null,
     node2: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    sigmaS: [3]f64 = .{ 0, 0, 0 },
-    sigmaR: [3]f64 = .{ 0, 0, 0 },
-    planes: [3]bool = .{ true, true, true },
-    algorithm: [3]i32 = .{ 0, 0, 0 },
-    PBFICnum: [3]u32 = .{ 0, 0, 0 },
-    radius: [3]u32 = .{ 0, 0, 0 },
-    samples: [3]u32 = .{ 0, 0, 0 },
-    step: [3]u32 = .{ 0, 0, 0 },
-    gr_lut: [3][]f32 = undefined,
-    gs_lut: [3][]f32 = undefined,
-    psize: u6 = 0,
-    peak: f32 = 0,
+    k: filter.Data = .{},
 };
 
 fn Bilateral(comptime T: type, comptime join: bool) type {
@@ -49,16 +38,20 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
                 const ref = if (join) zapi.initZFrame(d.node2, n) else src;
                 defer if (join) ref.deinit();
 
-                const dst = src.newVideoFrame2(d.planes);
+                const dst = src.newVideoFrame2(d.k.planes);
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    if (!(d.planes[plane])) continue;
+                    if (!(d.k.planes[plane])) continue;
 
                     const srcp = src.getReadSlice2(T, plane);
                     const refp = if (join) ref.getReadSlice2(T, plane) else srcp;
                     const dstp = dst.getWriteSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
-                    filter.bilateral(T, srcp, refp, dstp, stride, w, h, plane, join, d);
+                    filter.bilateral(T, srcp, refp, dstp, stride, w, h, plane, join, &d.k) catch {
+                        dst.deinit();
+                        zapi.setFilterError(filter_name ++ ": out of memory");
+                        return null;
+                    };
                 }
 
                 return dst.frame;
@@ -73,17 +66,7 @@ fn bilateralFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
 
-    var i: u32 = 0;
-    while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
-            allocator.free(d.gr_lut[i]);
-
-            if (d.algorithm[i] == 2) {
-                allocator.free(d.gs_lut[i]);
-            }
-        }
-    }
-
+    d.k.deinit();
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
     allocator.destroy(d);
@@ -99,9 +82,10 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     const dt = hz.DataType.select(map_out, d.node1, d.vi, filter_name, false) catch return;
 
     const yuv: bool = (d.vi.format.colorFamily == vs.ColorFamily.YUV);
-    const hist_len: u32 = hz.getHistLen(d.vi);
-    d.peak = @floatFromInt(hist_len - 1);
+    const ssw: u5 = @intCast(d.vi.format.subSamplingW);
+    const ssh: u5 = @intCast(d.vi.format.subSamplingH);
 
+    var sigma_s: [3]f64 = undefined;
     var i: u32 = 0;
     // Hand-parsed for the derived chroma default, so the shared length check
     // has to be explicit: indices >= 3 would otherwise be ignored unvalidated.
@@ -111,153 +95,71 @@ pub fn bilateralCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
     };
     const m = map_in.numElements("sigmaS") orelse 0;
     while (i < 3) : (i += 1) {
-        const ssw: i32 = d.vi.format.subSamplingW;
-        const ssh: i32 = d.vi.format.subSamplingH;
         if (i < m) {
-            d.sigmaS[i] = map_in.getFloat2(f64, "sigmaS", i).?;
-            hz.checkFinite(d.sigmaS[i], filter_name, "sigmaS", i, map_out) catch {
+            sigma_s[i] = map_in.getFloat2(f64, "sigmaS", i).?;
+            hz.checkFinite(sigma_s[i], filter_name, "sigmaS", i, map_out) catch {
                 zapi.freeNode(d.node1);
                 return;
             };
-        } else if (i == 0) {
-            d.sigmaS[0] = 3;
-        } else if ((i == 1) and yuv and (ssh != 0) and (ssw != 0)) {
-            const factor: f64 = @floatFromInt((@as(u32, 1) << @intCast(ssh)) * (@as(u32, 1) << @intCast(ssw)));
-            d.sigmaS[1] = d.sigmaS[0] / @sqrt(factor);
         } else {
-            d.sigmaS[i] = d.sigmaS[i - 1];
+            sigma_s[i] = filter.Data.sigmaSDefault(&sigma_s, i, yuv, ssw, ssh);
         }
 
-        if (d.sigmaS[i] < 0) {
+        if (sigma_s[i] < 0) {
             map_out.setError("Bilateral: Invalid \"sigmaS\" assigned, must be non-negative float number");
             zapi.freeNode(d.node1);
             return;
         }
 
-        // The spatial radius derivation below runs in i32/u32 (orad = 2*sigma,
+        // The spatial radius derivation runs in i32/u32 (orad = 2*sigma,
         // samples^2 * 4); bound sigma so none of it can overflow. 8192 means a
         // ~16k px window: far past any plane the truncated kernel accepts.
-        if (d.sigmaS[i] > max_sigma_s) {
+        if (sigma_s[i] > max_sigma_s) {
             hz.setArgError(map_out, "Bilateral: Invalid \"sigmaS\" assigned, must be at most {d}", .{max_sigma_s});
             zapi.freeNode(d.node1);
             return;
         }
     }
 
-    d.sigmaR = hz.getArray(f64, 0.02, 0, math.floatMax(f64), "sigmaR", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
-    d.algorithm = hz.getArray(i32, 0, 0, 2, "algorithm", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
-    d.PBFICnum = hz.getArray(u32, 0, 0, 256, "PBFICnum", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
-    hz.mapGetPlanes(map_in, map_out, &.{d.node1}, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
+    const sigma_r = hz.getArray(f64, 0.02, 0, math.floatMax(f64), "sigmaR", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    const algorithm = hz.getArray(i32, 0, 0, 2, "algorithm", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    const pbfic_num = hz.getArray(u32, 0, 0, 256, "PBFICnum", filter_name, map_in, map_out, &.{d.node1}, &zapi) catch return;
+    var planes: [3]bool = .{ true, true, true };
+    hz.mapGetPlanes(map_in, map_out, &.{d.node1}, &planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
 
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if ((d.sigmaS[i] == 0) or (d.sigmaR[i] == 0)) {
-            d.planes[i] = false;
-        }
+    var plane_w: [3]u32 = undefined;
+    var plane_h: [3]u32 = undefined;
+    for (0..3) |p| {
+        const sw: u5 = if (p == 0) 0 else ssw;
+        const sh: u5 = if (p == 0) 0 else ssh;
+        plane_w[p] = @as(u32, @intCast(d.vi.width)) >> sw;
+        plane_h[p] = @as(u32, @intCast(d.vi.height)) >> sh;
     }
 
-    for (d.PBFICnum) |num| {
-        if (num == 1) {
-            map_out.setError("Bilateral: Invalid \"PBFICnum\" assigned, must be integer ranges in [0,256] except 1");
-            zapi.freeNode(d.node1);
-            return;
-        }
-    }
-
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if ((d.planes[i]) and (d.PBFICnum[i] == 0)) {
-            if (d.sigmaR[i] >= 0.08) {
-                d.PBFICnum[i] = 4;
-            } else if (d.sigmaR[i] >= 0.015) {
-                d.PBFICnum[i] = @intFromFloat(@min(16.0, @trunc(4 * 0.08 / d.sigmaR[i] + 0.5)));
-            } else {
-                // clamp in float: a tiny positive sigmaR makes the quotient
-                // exceed u32 (same result as min-after-trunc for every value
-                // that fits)
-                d.PBFICnum[i] = @intFromFloat(@min(32.0, @trunc(16 * 0.015 / d.sigmaR[i] + 0.5)));
-            }
-
-            if ((i > 0) and yuv and (d.PBFICnum[i] % 2 == 0) and (d.PBFICnum[i] < 256)) {
-                d.PBFICnum[i] += 1;
-            }
-        }
-    }
-
-    i = 0;
-    var orad = [_]i32{ 0, 0, 0 };
-    while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
-            orad[i] = @max(@as(i32, @trunc(d.sigmaS[i] * 2 + 0.5)), 1);
-            if (orad[i] < 4) {
-                d.step[i] = 1;
-            } else if (orad[i] < 8) {
-                d.step[i] = 2;
-            } else {
-                d.step[i] = 3;
-            }
-
-            d.samples[i] = 1;
-            d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
-
-            while (orad[i] * 2 > d.radius[i] * 3) {
-                d.samples[i] += 1;
-                d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
-                if ((d.radius[i] >= orad[i]) and (d.samples[i] > 2)) {
-                    d.samples[i] -= 1;
-                    d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
-                    break;
-                }
-            }
-        }
-    }
-
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
-            if (d.algorithm[i] <= 0) {
-                d.algorithm[i] = if (d.step[i] == 1) 2 else (if ((d.sigmaR[i] < 0.08) and (d.samples[i] < 5)) 2 else (if (4 * d.samples[i] * d.samples[i] <= 15 * d.PBFICnum[i]) 2 else 1));
-            }
-        }
-    }
-
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if ((d.planes[i]) and (d.algorithm[i] == 2)) {
-            const sw: u5 = if (i == 0) 0 else @intCast(d.vi.format.subSamplingW);
-            const sh: u5 = if (i == 0) 0 else @intCast(d.vi.format.subSamplingH);
-            const pw: u32 = @as(u32, @intCast(d.vi.width)) >> sw;
-            const ph: u32 = @as(u32, @intCast(d.vi.height)) >> sh;
-            if ((pw <= 2 * d.radius[i]) or (ph <= 2 * d.radius[i])) {
-                map_out.setError("Bilateral: plane too small for the spatial radius derived from sigmaS; lower sigmaS or use a larger clip.");
-                zapi.freeNode(d.node1);
-                return;
-            }
-        }
-    }
-
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if ((d.planes[i]) and (d.algorithm[i] == 2)) {
-            const upper: u32 = d.radius[i] + 1;
-            d.gs_lut[i] = allocator.alloc(f32, upper * upper) catch unreachable;
-            filter.gaussianFunctionSpatialLUTGeneration(d.gs_lut[i], upper, d.sigmaS[i]);
-        }
-    }
-
-    i = 0;
-    while (i < 3) : (i += 1) {
-        if (d.planes[i]) {
-            d.gr_lut[i] = allocator.alloc(f32, hist_len) catch unreachable;
-            filter.gaussianFunctionRangeLUTGeneration(d.gr_lut[i], d.peak, d.sigmaR[i]);
-        }
-    }
+    d.k = filter.Data.init(.{
+        .sigmaS = sigma_s,
+        .sigmaR = sigma_r,
+        .algorithm = algorithm,
+        .PBFICnum = pbfic_num,
+        .planes = planes,
+        .yuv = yuv,
+        .plane_w = plane_w,
+        .plane_h = plane_h,
+        .hist_len = hz.getHistLen(d.vi),
+    }) catch |e| {
+        hz.setArgError(map_out, "{s}: {s}", .{ filter_name, filter.Data.message(e) });
+        zapi.freeNode(d.node1);
+        return;
+    };
 
     d.node2 = map_in.getNode("ref");
     const refb = d.node2 != null;
     const nodes = [_]?*vs.Node{ d.node1, d.node2 };
     if (refb) {
-        hz.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch return;
+        hz.compareNodes(map_out, &nodes, .BIGGER_THAN, filter_name, &zapi) catch {
+            d.k.deinit();
+            return;
+        };
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;

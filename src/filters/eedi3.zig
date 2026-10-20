@@ -1,10 +1,7 @@
 const std = @import("std");
 const simd = @import("simd.zig");
-const vapoursynth = @import("vapoursynth");
 
-const hz = @import("../helper.zig");
-const vs = vapoursynth.vapoursynth4;
-const vsh = vapoursynth.vshelper;
+const hz = @import("../common.zig");
 
 pub const io: std.Io = std.Io.Threaded.global_single_threaded.io();
 pub const allocator = std.heap.c_allocator;
@@ -50,12 +47,9 @@ pub const Scratch = struct {
     scpT: []align(vec_align) u8,
 };
 
+/// Kernel configuration (host-independent part of vszip's Data; the host
+/// adapter owns clips, video info and the scratch pool).
 pub const Data = struct {
-    node: ?*vs.Node = null,
-    sclip: ?*vs.Node = null,
-    mclip: ?*vs.Node = null,
-    vi: vs.VideoInfo = undefined,
-
     mdis: u8 = 0,
     nrad: u8 = 0,
     alpha: f32 = 0,
@@ -76,8 +70,82 @@ pub const Data = struct {
     rcpVthresh1: f32 = 0,
     rcpVthresh2: f32 = 0,
 
-    pool_lock: std.Io.Mutex = .init,
-    pool: std.AutoHashMap(std.Thread.Id, *Scratch) = undefined,
+    /// Parsed arguments (shared by the VapourSynth and AviSynth adapters).
+    pub const Args = struct {
+        field: i32,
+        dh: bool,
+        alpha: f32,
+        beta: f32,
+        gamma: f32,
+        nrad: i32,
+        mdis: i32,
+        hp: bool,
+        vcheck: i32,
+        vthresh0: f32,
+        vthresh1: f32,
+        vthresh2: f32,
+    };
+
+    /// vszip's argument checks, in order; the message has no filter-name
+    /// prefix. `interp_axis` is the height (EEDI3) or width (EEDI3H).
+    pub fn check(a: Args, horizontal: bool, interp_axis: i32) ?[:0]const u8 {
+        if (a.field < 0 or a.field > 3) return "field must be 0, 1, 2, or 3.";
+        if (a.dh and a.field > 1) return "field must be 0 or 1 when dh=True.";
+        if (!a.dh and (interp_axis & 1) != 0) return if (horizontal) "width must be mod 2 when dh=False." else "height must be mod 2 when dh=False.";
+        if (a.alpha < 0.0 or a.alpha > 1.0) return "alpha must be between 0.0 and 1.0 (inclusive).";
+        if (a.beta < 0.0 or a.beta > 1.0) return "beta must be between 0.0 and 1.0 (inclusive).";
+        if (a.alpha + a.beta > 1.0) return "alpha + beta must be less than or equal to 1.0.";
+        if (a.gamma < 0.0) return "gamma must be greater than or equal to 0.0.";
+        if (a.nrad < 0 or a.nrad > 3) return "nrad must be between 0 and 3 (inclusive).";
+        if (a.mdis < 1 or a.mdis > 40) return "mdis must be between 1 and 40 (inclusive).";
+        if (a.vcheck < 0 or a.vcheck > 3) return "vcheck must be 0, 1, 2, or 3.";
+        if (a.vcheck > 0 and (a.vthresh0 <= 0.0 or a.vthresh1 <= 0.0 or a.vthresh2 <= 0.0))
+            return "vthresh0, vthresh1 and vthresh2 must be greater than 0.0.";
+        return null;
+    }
+
+    /// Kernel configuration from arguments that passed `check`.
+    pub fn init(a: Args, horizontal: bool, float: bool, bits: u32) Data {
+        var d: Data = .{
+            .horizontal = horizontal,
+            .dh = a.dh,
+            .hp = a.hp,
+            .field = @intCast(a.field),
+            .mdis = @intCast(a.mdis),
+            .nrad = @intCast(a.nrad),
+            .vcheck = @intCast(a.vcheck),
+            .alpha = a.alpha,
+            .beta = a.beta,
+            .gamma = a.gamma,
+            .vthresh0 = a.vthresh0,
+            .vthresh1 = a.vthresh1,
+            .vthresh2 = a.vthresh2,
+        };
+        d.one_minus_ab = 1.0 - d.alpha - d.beta;
+        d.alpha /= 3.0;
+        // beta/gamma/vthresh0/vthresh1 are given on the 8-bit scale. The pipeline
+        // runs at the format's native scale: int formats scale the params UP by
+        // 1 << (bits - 8) (like eedi3m); float formats normalize them down to
+        // [0, 1] instead. vthresh2 is in direction units — never scaled.
+        if (!float) {
+            const b: u5 = @intCast(bits);
+            const scale: f32 = @floatFromInt(@as(u32, 1) << (b - 8));
+            d.beta *= scale;
+            d.gamma *= scale;
+            d.vthresh0 *= scale;
+            d.vthresh1 *= scale;
+            d.peak = @floatFromInt((@as(u32, 1) << b) - 1);
+        } else {
+            d.beta /= 255.0;
+            d.gamma /= 255.0;
+            d.vthresh0 /= 255.0;
+            d.vthresh1 /= 255.0;
+        }
+        d.rcpVthresh0 = 1.0 / d.vthresh0;
+        d.rcpVthresh1 = 1.0 / d.vthresh1;
+        d.rcpVthresh2 = 1.0 / d.vthresh2;
+        return d;
+    }
 };
 
 pub const mdis_max = 40;
@@ -1156,7 +1224,7 @@ pub fn vcheckLine(
 /// is @sizeOf(T) of the frame sample type; it sizes the byte buffers that hold
 /// native samples (tline/srcT/dstT/scpT).
 pub fn allocScratch(w: u32, stride: u32, n_interp: u32, hp: bool, srcT_rows: u32, dstT_rows: u32, elem_size: u32) !*Scratch {
-    const pad_buf_len = hz.ceilN(w + pad_buf_w, hz.vsFrameAlignmentT(@sizeOf(f32)));
+    const pad_buf_len = hz.ceilN(w + pad_buf_w, hz.scratchAlignmentT(@sizeOf(f32)));
     const tpitch_alloc: u32 = if (hp) tpitch_hp_max else tpitch_max;
     const s = try allocator.create(Scratch);
     s.r3p = try allocator.alignedAlloc(f32, .fromByteUnits(vec_align), pad_buf_len);
@@ -1215,4 +1283,134 @@ pub fn freeScratch(s: *Scratch) void {
     allocator.free(s.maskT);
     allocator.free(s.scpT);
     allocator.destroy(s);
+}
+
+/// Interpolate one plane in the vertical pipeline layout (`lstride` per
+/// line; the horizontal path passes transposed planes): copy the kept field,
+/// interpolate the other lines, then run vcheck.
+pub fn processPlane(
+    comptime T: type,
+    d: *const Data,
+    scratch: *Scratch,
+    srcl: []const T,
+    dstl: []T,
+    scpl: ?[]const T,
+    maskl: ?[]const u8,
+    mask_stride: u32,
+    field: u8,
+    L: u32,
+    lstride: u32,
+    n_src: u32,
+    n_dst: u32,
+) void {
+    const n_src_i: i32 = @intCast(n_src);
+    const n_interp: u32 = if (d.dh) n_src else n_src / 2;
+
+    // Copy the kept field of lines straight across (contiguous in either layout).
+    if (d.dh) {
+        var k: u32 = 0;
+        while (k < n_src) : (k += 1) {
+            const dl = 2 * k + (1 - field);
+            @memcpy(dstl[dl * lstride ..][0..L], srcl[k * lstride ..][0..L]);
+        }
+    } else {
+        var k: u32 = 1 - field;
+        while (k < n_src) : (k += 2) {
+            @memcpy(dstl[k * lstride ..][0..L], srcl[k * lstride ..][0..L]);
+        }
+    }
+
+    var p3p: []f32 = scratch.r3p;
+    var p1p: []f32 = scratch.r1p;
+    var p1n: []f32 = scratch.r1n;
+    var p3n: []f32 = scratch.r3n;
+    var interp_off: u32 = 0;
+    var line: u32 = field;
+    while (line < n_dst) : (line += 2) {
+        const line_i: i32 = @intCast(line);
+
+        if (interp_off == 0) {
+            fillPaddedRow(T, p3p, srcl[srcCol(d.dh, line_i - 3, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p1p, srcl[srcCol(d.dh, line_i - 1, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p1n, srcl[srcCol(d.dh, line_i + 1, n_src_i) * lstride ..][0..L], L);
+            fillPaddedRow(T, p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
+        } else {
+            std.mem.swap([]f32, &p3p, &p1p);
+            std.mem.swap([]f32, &p1p, &p1n);
+            std.mem.swap([]f32, &p1n, &p3n);
+            fillPaddedRow(T, p3n, srcl[srcCol(d.dh, line_i + 3, n_src_i) * lstride ..][0..L], L);
+        }
+
+        const bmask_row: ?[]const bool = if (maskl) |mp| blk: {
+            const mrow: u32 = if (d.dh) interp_off else line;
+            buildBmask(scratch.bmask, mp[mrow * mask_stride ..][0..L], L, d.mdis);
+            break :blk scratch.bmask[0..L];
+        } else null;
+
+        const out_line = dstl[line * lstride ..];
+        if (d.hp) {
+            interpLineHP(
+                T,
+                p3p,
+                p1p,
+                p1n,
+                p3n,
+                scratch.hp3p,
+                scratch.hp1p,
+                scratch.hp1n,
+                scratch.hp3n,
+                scratch.base_m,
+                scratch.base_hp,
+                scratch.win_m,
+                scratch.win_hp,
+                out_line,
+                scratch.pbackt,
+                scratch.fpath,
+                scratch.t_costs,
+                scratch.dmap[interp_off * lstride ..],
+                lstride,
+                L,
+                d.mdis,
+                d.nrad,
+                d.alpha,
+                d.beta,
+                d.gamma,
+                d.one_minus_ab,
+                d.peak,
+                bmask_row,
+            );
+        } else {
+            interpLine(
+                T,
+                p3p,
+                p1p,
+                p1n,
+                p3n,
+                out_line,
+                scratch.pbackt,
+                scratch.fpath,
+                scratch.t_base,
+                scratch.t_win,
+                scratch.t_costs,
+                scratch.dmap[interp_off * lstride ..],
+                lstride,
+                L,
+                d.mdis,
+                d.nrad,
+                d.alpha,
+                d.beta,
+                d.gamma,
+                d.one_minus_ab,
+                d.peak,
+                bmask_row,
+                scratch.block_active,
+            );
+        }
+        interp_off += 1;
+    }
+
+    if (d.vcheck > 0) {
+        const tline: []T = @alignCast(std.mem.bytesAsSlice(T, scratch.tline));
+        vcheckLine(T, srcl, dstl, scpl, scratch.dmap, tline, field, L, n_dst, n_src, lstride, n_interp, d);
+    }
 }

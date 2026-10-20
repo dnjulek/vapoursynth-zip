@@ -67,11 +67,11 @@ pub fn computeBlockDistancesWindow(
     right: u32,
     stride: u32,
     bs_rt: u32,
-) void {
+) error{OutOfMemory}!void {
     const bs = BS orelse bs_rt;
     const cx = right - left + 1;
     const rows = bottom - top + 1;
-    errs.ensureUnusedCapacity(alloc, rows * cx) catch unreachable;
+    try errs.ensureUnusedCapacity(alloc, rows * cx);
     const base = errs.items.len;
     errs.items.len = base + rows * cx;
     const out = errs.items[base..][0 .. rows * cx];
@@ -161,9 +161,9 @@ pub fn computeBlockDistancesAt(
     locations: []const Loc,
     stride: u32,
     bs_rt: u32,
-) void {
+) error{OutOfMemory}!void {
     const bs = BS orelse bs_rt;
-    errs.ensureUnusedCapacity(alloc, locations.len) catch unreachable;
+    try errs.ensureUnusedCapacity(alloc, locations.len);
     const base = errs.items.len;
     errs.items.len = base + locations.len;
     const out = errs.items[base..][0..locations.len];
@@ -254,7 +254,7 @@ pub fn generateSearchLocations(
     out: *std.ArrayList(Loc),
     scratch: *std.ArrayList(Loc),
     alloc: std.mem.Allocator,
-) void {
+) error{OutOfMemory}!void {
     out.clearRetainingCapacity();
 
     for (centers[0..num_centers]) |c| {
@@ -264,7 +264,7 @@ pub fn generateSearchLocations(
         const bottom: i32 = @min(c.y + @as(i32, @intCast(ps_range)), @as(i32, @intCast(height - bs)));
 
         scratch.clearRetainingCapacity();
-        scratch.ensureUnusedCapacity(alloc, out.items.len + @as(usize, @intCast(bottom - top + 1)) * @as(usize, @intCast(right - left + 1))) catch unreachable;
+        try scratch.ensureUnusedCapacity(alloc, out.items.len + @as(usize, @intCast(bottom - top + 1)) * @as(usize, @intCast(right - left + 1)));
 
         var i: usize = 0;
         var yy = top;
@@ -888,4 +888,389 @@ fn reconWide(
             dj[p] = s;
         }
     }
+}
+
+// --------------------------------------------------------------------------
+// Host-independent driver (shared by the VapourSynth and AviSynth adapters)
+// --------------------------------------------------------------------------
+
+const math = std.math;
+const allocator = std.heap.c_allocator;
+
+pub const max_radius = 15;
+pub const max_window = 2 * max_radius + 1;
+
+/// Validated configuration (vszip's WNNM argument rules).
+pub const Config = struct {
+    sigma: [3]f32 = undefined,
+    process: [3]bool = undefined,
+    bs: u32 = 8,
+    step: u32 = 8,
+    gs: u32 = 8,
+    bm_range: u32 = 7,
+    radius: u32 = 0,
+    ps_num: u32 = 2,
+    ps_range: u32 = 4,
+    residual: bool = false,
+    adaptive: bool = true,
+
+    lda: u32 = 64,
+    q: u32 = 8,
+    max_iw: u32 = 0,
+    max_ih: u32 = 0,
+
+    pub const Args = struct {
+        /// Per-plane sigma on the 8-bit scale (already finite).
+        sigma: [3]f32,
+        block_size: i64,
+        /// Defaults to block_size.
+        block_step: ?i64,
+        group_size: i64,
+        bm_range: i64,
+        radius: i64,
+        ps_num: i64,
+        ps_range: i64,
+        residual: bool,
+        adaptive: bool,
+        num_planes: u32,
+        plane_w: [3]u32,
+        plane_h: [3]u32,
+    };
+
+    pub const Error = error{ Sigma, BlockSize, BlockStep, GroupSize, MaxQ, BmRange, Radius, PsNum, PsRange, PlaneSize };
+
+    /// Message for an `init` error (callers add their filter-name prefix).
+    pub fn message(e: Error) [:0]const u8 {
+        return switch (e) {
+            error.Sigma => "\"sigma\" must be non-negative.",
+            error.BlockSize => "\"block_size\" must be in [1, 64].",
+            error.BlockStep => "\"block_step\" must be positive and no larger than \"block_size\".",
+            error.GroupSize => "\"group_size\" must be in [1, 256].",
+            error.MaxQ => "min(block_size^2, group_size) must be <= 64.",
+            error.BmRange => "\"bm_range\" must be non-negative.",
+            error.Radius => "\"radius\" must be in [0, 15].",
+            error.PsNum => "\"ps_num\" must be in [1, 256].",
+            error.PsRange => "\"ps_range\" must be non-negative.",
+            error.PlaneSize => "\"block_size\" must not exceed the dimensions of any processed plane.",
+        };
+    }
+
+    /// The configuration, or null when every plane is skipped (sigma 0:
+    /// the caller passes the clip through).
+    pub fn init(a: Args) Error!?Config {
+        var d: Config = .{};
+        for (0..3) |i| {
+            if (a.sigma[i] < 0.0) return error.Sigma;
+        }
+        for (0..3) |i| {
+            d.process[i] = a.sigma[i] >= math.floatEps(f32);
+            d.sigma[i] = a.sigma[i] / 255.0;
+        }
+        var skip = true;
+        for (0..a.num_planes) |i| skip = skip and !d.process[i];
+        if (skip) return null;
+
+        const bs_i = a.block_size;
+        if (bs_i < 1 or bs_i > 64) return error.BlockSize;
+        d.bs = @intCast(bs_i);
+        const step_i = a.block_step orelse bs_i;
+        if (step_i < 1 or step_i > bs_i) return error.BlockStep;
+        d.step = @intCast(step_i);
+        if (a.group_size < 1 or a.group_size > 256) return error.GroupSize;
+        d.gs = @intCast(a.group_size);
+        if (@min(@as(u32, @intCast(bs_i * bs_i)), d.gs) > max_q) return error.MaxQ;
+        if (a.bm_range < 0 or a.bm_range > math.maxInt(u32)) return error.BmRange;
+        d.bm_range = @intCast(a.bm_range);
+        if (a.radius < 0 or a.radius > max_radius) return error.Radius;
+        d.radius = @intCast(a.radius);
+        if (a.ps_num < 1 or a.ps_num > 256) return error.PsNum;
+        d.ps_num = @intCast(a.ps_num);
+        if (a.ps_range < 0 or a.ps_range > math.maxInt(u32)) return error.PsRange;
+        d.ps_range = @intCast(a.ps_range);
+        d.residual = a.residual;
+        d.adaptive = a.adaptive;
+
+        for (0..a.num_planes) |i| {
+            if (!d.process[i]) continue;
+            const pw = a.plane_w[i];
+            const ph = a.plane_h[i];
+            if (d.bs > pw or d.bs > ph) return error.PlaneSize;
+            d.max_iw = @max(d.max_iw, pw);
+            d.max_ih = @max(d.max_ih, ph);
+        }
+        const m = d.bs * d.bs;
+        d.lda = (m + 15) & ~@as(u32, 15);
+        d.q = @min(m, d.gs);
+        return d;
+    }
+};
+
+/// Per-request scratch, carved from one arena; `create`/`destroy`.
+pub const Bufs = struct {
+    arena: std.heap.ArenaAllocator,
+    cur: []align(64) f32,
+    amat: [batch_n][]align(64) f32,
+    aout: [batch_n][]align(64) f32,
+    mean: [batch_n][]align(64) f32,
+    sel: []Match,
+    selidx: []IdxErr,
+    gbatch: []f64,
+    vbatch: []f64,
+    intermediate: []align(64) f32,
+    est: Workspace(f64),
+    errsf: std.ArrayList(f32),
+    errors: std.ArrayList(Match),
+    center: std.ArrayList(Match),
+    temporal: std.ArrayList(Match),
+    locs: std.ArrayList(Loc),
+    locs_scratch: std.ArrayList(Loc),
+    alloc: std.mem.Allocator,
+
+    pub fn create(d: *const Config) error{OutOfMemory}!*Bufs {
+        const b = try allocator.create(Bufs);
+        errdefer allocator.destroy(b);
+        b.arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer b.arena.deinit();
+        const aa = b.arena.allocator();
+        const al = comptime std.mem.Alignment.fromByteUnits(64);
+        const m = d.bs * d.bs;
+        const q = d.q;
+        const nb = batch_n;
+        for (0..nb) |l| {
+            b.amat[l] = try aa.alignedAlloc(f32, al, d.lda * d.gs);
+            b.aout[l] = try aa.alignedAlloc(f32, al, d.lda * d.gs);
+            b.mean[l] = if (d.residual) try aa.alignedAlloc(f32, al, m) else &.{};
+        }
+        b.cur = try aa.alignedAlloc(f32, al, m);
+        b.sel = try aa.alloc(Match, d.gs * nb);
+        b.selidx = try aa.alloc(IdxErr, @max(d.gs, d.ps_num));
+        b.gbatch = try aa.alloc(f64, q * q * nb);
+        b.vbatch = try aa.alloc(f64, q * q * nb);
+        b.intermediate = if (d.radius == 0) try aa.alignedAlloc(f32, al, 2 * d.max_iw * d.max_ih) else &.{};
+        b.est = .{
+            .g = try aa.alloc(f64, q * q),
+            .v = try aa.alloc(f64, q * q),
+            .eig = try aa.alloc(f64, q),
+            .r = try aa.alloc(f32, q),
+            .scratch = try aa.alignedAlloc(f32, al, m * d.gs + q * q),
+            .wide = try aa.alignedAlloc(f64, al, m * d.gs),
+        };
+        b.errsf = .empty;
+        b.errors = .empty;
+        b.center = .empty;
+        b.temporal = .empty;
+        b.locs = .empty;
+        b.locs_scratch = .empty;
+        b.alloc = aa;
+        return b;
+    }
+
+    pub fn destroy(b: *Bufs) void {
+        b.arena.deinit();
+        allocator.destroy(b);
+    }
+};
+
+/// WNNM over one plane: block matching (spatial window, plus predictive
+/// search over the temporal window when radius > 0), patch estimation and
+/// col2im into `agg` (numerator/denominator slabs, `agg_stride` per row).
+pub fn processPlane(
+    comptime BS: ?u32,
+    d: *const Config,
+    b: *Bufs,
+    srcps: []const []const f32,
+    refps: []const []const f32,
+    agg: [*]f32,
+    agg_stride: u32,
+    w: u32,
+    h: u32,
+    stride: u32,
+    sigma: f32,
+) error{OutOfMemory}!void {
+    const bs = BS orelse d.bs;
+    const m = bs * bs;
+    const radius: i32 = @intCast(d.radius);
+    const center: usize = d.radius;
+    const k0: u32 = if (d.residual) 0 else 1;
+
+    const temp_r = h - bs;
+    const temp_c = w - bs;
+
+    const gsn: f32 = @floatFromInt(d.gs);
+    const c_full: f32 = 8.0 * @sqrt(2.0 * gsn) * sigma * sigma;
+    var slot: usize = 0;
+
+    var _y: u32 = 0;
+    while (_y < temp_r + d.step) : (_y += d.step) {
+        const y = @min(_y, temp_r);
+        var _x: u32 = 0;
+        while (_x < temp_c + d.step) : (_x += d.step) {
+            const x = @min(_x, temp_c);
+
+            b.errors.clearRetainingCapacity();
+
+            {
+                const refp = refps[center];
+                var py: u32 = 0;
+                while (py < bs) : (py += 1) {
+                    @memcpy(b.cur[py * bs ..][0..bs], refp[(y + py) * stride + x ..][0..bs]);
+                }
+            }
+
+            const top = y -| d.bm_range;
+            const bottom = @min(y + d.bm_range, temp_r);
+            const left = x -| d.bm_range;
+            const right = @min(x + d.bm_range, temp_c);
+            const cx = right - left + 1;
+
+            if (d.radius == 0) {
+                b.errsf.clearRetainingCapacity();
+                try computeBlockDistancesWindow(BS, &b.errsf, b.alloc, b.cur, refps[center], top, bottom, left, right, stride, bs);
+                const cnt = selectTopIdx(b.errsf.items, d.gs, b.selidx);
+                try b.errors.ensureUnusedCapacity(b.alloc, cnt);
+                for (b.selidx[0..cnt]) |ie| {
+                    b.errors.appendAssumeCapacity(.{
+                        .err = ie.err,
+                        .x = @intCast(left + ie.idx % cx),
+                        .y = @intCast(top + ie.idx / cx),
+                        .t = 0,
+                    });
+                }
+            } else {
+                b.errsf.clearRetainingCapacity();
+                try computeBlockDistancesWindow(BS, &b.errsf, b.alloc, b.cur, refps[center], top, bottom, left, right, stride, bs);
+                const active_ps_num = @min(d.ps_num, b.errsf.items.len);
+                const cnt_c = selectTopIdx(b.errsf.items, @max(d.gs, d.ps_num), b.selidx);
+                b.center.clearRetainingCapacity();
+                try b.center.ensureUnusedCapacity(b.alloc, cnt_c);
+                for (b.selidx[0..cnt_c]) |ie| {
+                    b.center.appendAssumeCapacity(.{
+                        .err = ie.err,
+                        .x = @intCast(left + ie.idx % cx),
+                        .y = @intCast(top + ie.idx / cx),
+                        .t = radius,
+                    });
+                }
+                try b.errors.appendSlice(b.alloc, b.center.items);
+
+                var direction: i32 = -1;
+                while (direction <= 1) : (direction += 2) {
+                    b.temporal.clearRetainingCapacity();
+                    try b.temporal.appendSlice(b.alloc, b.center.items);
+
+                    var i: u32 = 1;
+                    while (i <= d.radius) : (i += 1) {
+                        const t_idx = radius + direction * @as(i32, @intCast(i));
+
+                        const num_centers = @min(active_ps_num, b.temporal.items.len);
+                        try generateSearchLocations(b.temporal.items, num_centers, bs, w, h, d.ps_range, &b.locs, &b.locs_scratch, b.alloc);
+
+                        b.errsf.clearRetainingCapacity();
+                        try computeBlockDistancesAt(BS, &b.errsf, b.alloc, b.cur, refps[@intCast(t_idx)], b.locs.items, stride, bs);
+                        const cnt_t = selectTopIdx(b.errsf.items, @max(d.gs, d.ps_num), b.selidx);
+                        b.temporal.clearRetainingCapacity();
+                        try b.temporal.ensureUnusedCapacity(b.alloc, cnt_t);
+                        for (b.selidx[0..cnt_t]) |ie| {
+                            b.temporal.appendAssumeCapacity(.{
+                                .err = ie.err,
+                                .x = b.locs.items[ie.idx].x,
+                                .y = b.locs.items[ie.idx].y,
+                                .t = t_idx,
+                            });
+                        }
+                        try b.errors.appendSlice(b.alloc, b.temporal.items);
+                    }
+                }
+            }
+
+            const n: u32 = @intCast(selectTop(b.errors.items, d.gs));
+            b.errors.items.len = n;
+
+            {
+                var has_center = false;
+                for (b.errors.items) |e| {
+                    if (e.x == @as(i32, @intCast(x)) and e.y == @as(i32, @intCast(y)) and e.t == radius) {
+                        has_center = true;
+                        break;
+                    }
+                }
+                if (!has_center) {
+                    b.errors.items[0] = .{ .err = 0.0, .x = @intCast(x), .y = @intCast(y), .t = radius };
+                }
+            }
+
+            if (n == d.gs) {
+                loadPatches(BS, b.amat[slot].ptr, d.lda, if (d.residual) b.mean[slot] else null, srcps, b.errors.items, stride, bs);
+                if (d.residual) subtractMean(b.amat[slot].ptr, d.lda, b.mean[slot], m, n);
+                @memcpy(b.sel[slot * d.gs ..][0..n], b.errors.items);
+                slot += 1;
+                if (slot == batch_n) {
+                    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+                    slot = 0;
+                }
+            } else {
+                flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+                slot = 0;
+
+                loadPatches(BS, b.amat[0].ptr, d.lda, if (d.residual) b.mean[0] else null, srcps, b.errors.items, stride, bs);
+                if (d.residual) subtractMean(b.amat[0].ptr, d.lda, b.mean[0], m, n);
+
+                const nf: f32 = @floatFromInt(n);
+                const cc: f32 = 8.0 * @sqrt(2.0 * nf) * sigma * sigma;
+                const res = patchEstimate(f64, b.amat[0], b.aout[0], m, n, d.lda, cc, k0, b.est);
+                const weight: f32 = if (d.adaptive and res.k > 0) 1.0 / @as(f32, @floatFromInt(res.k)) else 1.0;
+
+                if (d.residual) addMean(b.aout[0].ptr, d.lda, b.mean[0], m, n);
+
+                col2im(BS, agg, agg_stride, b.aout[0].ptr, d.lda, b.errors.items, h, bs, weight);
+            }
+        }
+    }
+    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+}
+
+fn flushBatch(comptime BS: ?u32, d: *const Config, b: *Bufs, agg: [*]f32, agg_stride: u32, h: u32, bs: u32, m: u32, cv: f32, k0: u32, count: usize) void {
+    if (count == 0) return;
+    const n = d.gs;
+
+    var as: [batch_n][]const f32 = undefined;
+    var dsts: [batch_n][]f32 = undefined;
+    for (0..batch_n) |l| {
+        as[l] = b.amat[l];
+        dsts[l] = b.aout[l];
+    }
+
+    const ks: [batch_n]u32 = if (count == 1) blk: {
+        const res = patchEstimate(f64, b.amat[0], b.aout[0], m, n, d.lda, cv, k0, b.est);
+        var arr: [batch_n]u32 = @splat(0);
+        arr[0] = res.k;
+        break :blk arr;
+    } else patchEstimateBatch(as, dsts, count, m, n, d.lda, cv, k0, b.est, b.gbatch, b.vbatch);
+
+    for (0..count) |l| {
+        const weight: f32 = if (d.adaptive and ks[l] > 0) 1.0 / @as(f32, @floatFromInt(ks[l])) else 1.0;
+        if (d.residual) addMean(b.aout[l].ptr, d.lda, b.mean[l], m, n);
+        col2im(BS, agg, agg_stride, b.aout[l].ptr, d.lda, b.sel[l * d.gs ..][0..n], h, bs, weight);
+    }
+}
+
+// Aggregation stage (radius > 0): streaming per-lane add / divide at full
+// native width (bit-exact at any width).
+const vg_n = std.simd.suggestVectorLength(f32) orelse 8;
+const Vg = @Vector(vg_n, f32);
+
+pub fn vagAccumulate(acc: []f32, row: []const f32) void {
+    var x: usize = 0;
+    while (x + vg_n <= acc.len) : (x += vg_n) {
+        acc[x..][0..vg_n].* = @as(Vg, acc[x..][0..vg_n].*) + @as(Vg, row[x..][0..vg_n].*);
+    }
+    while (x < acc.len) : (x += 1) acc[x] += row[x];
+}
+
+pub fn vagDivide(dst: []f32, num: []const f32, den: []const f32) void {
+    var x: usize = 0;
+    while (x + vg_n <= dst.len) : (x += vg_n) {
+        dst[x..][0..vg_n].* = @as(Vg, num[x..][0..vg_n].*) / @as(Vg, den[x..][0..vg_n].*);
+    }
+    while (x < dst.len) : (x += 1) dst[x] = num[x] / den[x];
 }

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const math = std.math;
 
 const vszip = @import("vszip.zig");
+const common = @import("common.zig");
 const vapoursynth = vszip.vapoursynth;
 const vs = vapoursynth.vapoursynth4;
 const vsh = vapoursynth.vshelper;
@@ -10,6 +11,22 @@ const vsc = vapoursynth.vsconstants;
 const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
+
+// Host-independent helpers live in common.zig (shared with the AviSynth
+// adapters); re-exported so VapourSynth adapters keep using `hz.*`.
+pub const absDiff = common.absDiff;
+pub const getVal = common.getVal;
+pub const getVal2 = common.getVal2;
+pub const ceilN = common.ceilN;
+pub const ditherType = common.ditherType;
+
+/// getFrame exit for a kernel allocation failure: free `dst` and set
+/// "<name>: out of memory" as the frame error.
+pub fn frameOom(zapi: *const ZAPI, comptime name: []const u8, dst: anytype) ?*const vs.Frame {
+    dst.deinit();
+    zapi.setFilterError(name ++ ": out of memory");
+    return null;
+}
 
 pub const BPSType = enum {
     U8,
@@ -119,10 +136,6 @@ pub fn selectRefFilter(
             break :blk if (refb) &Filter(T, true).getFrame else &Filter(T, false).getFrame;
         },
     };
-}
-
-pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
-    return if (x > y) (x - y) else (y - x);
 }
 
 pub fn mapGetPlanes(in: ZAPI.ZMap(?*const vs.Map), out: ZAPI.ZMap(?*vs.Map), nodes: []const ?*vs.Node, process: []bool, num_planes: c_int, comptime name: []const u8, zapi: *const ZAPI) !void {
@@ -242,22 +255,6 @@ pub fn toRGBS(node: ?*vs.Node, zapi: *const ZAPI) ?*vs.Node {
     return out;
 }
 
-pub fn getVal(comptime T: type, ptr: anytype, dist: isize) T {
-    const adr: isize = @intCast(@intFromPtr(ptr));
-    const uadr: usize = @intCast(adr + dist);
-    const ptr2: [*]const T = @ptrFromInt(uadr);
-    return ptr2[0];
-}
-
-pub fn getVal2(comptime T: type, ptr: anytype, x: u32, y: u32) T {
-    const ix: i32 = @intCast(x);
-    const iy: i32 = @intCast(y);
-    const adr: isize = @intCast(@intFromPtr(ptr));
-    const uadr: usize = @intCast(adr + ix - iy);
-    const ptr2: [*]const T = @ptrFromInt(uadr);
-    return ptr2[0];
-}
-
 pub fn getRange(node: *vs.Node, zapi: *const ZAPI) vsc.Range {
     const frame = zapi.getFrame(0, node, null);
     defer zapi.freeFrame(frame);
@@ -278,32 +275,16 @@ pub fn getRange(node: *vs.Node, zapi: *const ZAPI) vsc.Range {
     }
 }
 
+pub fn depthOf(fmt: *const vs.VideoFormat) common.Depth {
+    return .{ .bits = @intCast(fmt.bitsPerSample), .float = fmt.sampleType == .Float };
+}
+
 pub fn getLowestValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range) f32 {
-    if (fmt.sampleType == .Float) {
-        return if (chroma) -0.5 else 0.0;
-    }
-
-    if (range == .LIMITED) {
-        return @floatFromInt(math.shl(i64, 16, fmt.bitsPerSample - 8));
-    }
-
-    return 0;
+    return common.getLowestValue(depthOf(fmt), chroma, range == .LIMITED);
 }
 
 pub fn getPeakValue(fmt: *const vs.VideoFormat, chroma: bool, range: vsc.Range) f32 {
-    if (fmt.sampleType == .Float) {
-        return if (chroma) 0.5 else 1.0;
-    }
-
-    // i64: a 32-bit integer peak overflows i32 (it used to come out as -1).
-    // The f32 result is approximate for 32-bit (2^32 - 1 rounds to 2^32);
-    // callers validating 32-bit values must use an exact peak instead.
-    if (range == .LIMITED) {
-        const a: i64 = if (chroma) 240 else 235;
-        return @floatFromInt(math.shl(i64, a, fmt.bitsPerSample - 8));
-    }
-
-    return @floatFromInt(math.shl(i64, 1, fmt.bitsPerSample) - 1);
+    return common.getPeakValue(depthOf(fmt), chroma, range == .LIMITED);
 }
 
 const ScaleValue = struct {
@@ -321,7 +302,7 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
     fmt_in.bitsPerSample = depth_in;
     fmt_in.sampleType = opt.sample_type_in;
 
-    var out_value = value;
+    const out_value = value;
     if (depth_in == fmt_out.bitsPerSample) {
         return out_value;
     }
@@ -329,17 +310,7 @@ pub fn scaleValue(value: f32, target: *vs.Node, zapi: *const ZAPI, opt: ScaleVal
     // Float clips are always full range, whatever their _Range prop says (a
     // missing prop reads as LIMITED for non-RGB): scale float targets as full.
     const range: vsc.Range = if (fmt_out.sampleType == .Float) .FULL else getRange(target, zapi);
-    const input_peak = getPeakValue(&fmt_in, chroma, range);
-    const input_lowest = getLowestValue(&fmt_in, chroma, range);
-    const output_peak = getPeakValue(&fmt_out, chroma, range);
-    const output_lowest = getLowestValue(&fmt_out, chroma, range);
-    out_value *= (output_peak - output_lowest) / (input_peak - input_lowest);
-
-    if (fmt_out.sampleType == .Integer) {
-        out_value = @max(@min(@round(out_value), getPeakValue(&fmt_out, false, .FULL)), 0);
-    }
-
-    return out_value;
+    return common.rescale(out_value, depthOf(&fmt_in), depthOf(&fmt_out), chroma, range == .LIMITED);
 }
 
 // ---------------------------------------------------------------------------
@@ -539,22 +510,6 @@ pub const Maps = struct {
     }
 };
 
-pub const ditherType = enum {
-    none,
-    ordered,
-    random,
-    error_diffusion,
-
-    pub fn toString(self: ditherType) [:0]const u8 {
-        return switch (self) {
-            .none => "none",
-            .ordered => "ordered",
-            .random => "random",
-            .error_diffusion => "error_diffusion",
-        };
-    }
-};
-
 pub fn bitDepth(bitdepth: u32, node: *vs.Node, dither: ditherType, zapi: *const ZAPI) *vs.Node {
     const vf = zapi.getVideoInfo(node).format;
     if (vf.bitsPerSample == bitdepth) {
@@ -644,8 +599,4 @@ fn getXCR0() u32 {
         : [_] "={eax}" (-> u32),
         :
         : .{ .edx = true, .ecx = true });
-}
-
-pub inline fn ceilN(x: u32, n: u32) u32 {
-    return (x + (n - 1)) & ~(n - 1);
 }

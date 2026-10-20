@@ -11,6 +11,14 @@
             .hash = "vapoursynth-4.0.0-jLYMQ3PmAgAVuS7eVi3E1g8dbA165g8YgSbFKguenIyS",
         },
 
+        .avisynth = .{
+            // Only for `zig build -Davisynth=true`. Local checkout while
+            // avisynth-zig's convenience layer is unreleased; once pushed:
+            // zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
+            .path = "../..",
+            .lazy = true,
+        },
+
         .zigimg = .{
             // zig fetch --save git+https://github.com/zigimg/zigimg.git
             .url = "git+https://github.com/zigimg/zigimg.git#c8ab20d57487768ee121d4d05e69b10968f10115",

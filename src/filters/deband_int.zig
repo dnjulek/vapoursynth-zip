@@ -3,17 +3,9 @@ const simd = @import("simd.zig");
 const math = std.math;
 const allocator = std.heap.c_allocator;
 
-const hz = @import("../helper.zig");
-const plugin = @import("../vapoursynth/deband.zig");
-const vszip = @import("../vszip.zig");
+const hz = @import("../common.zig");
 const vcl = @import("../vcl.zig");
-
-const vapoursynth = vszip.vapoursynth;
-const vs = vapoursynth.vapoursynth4;
-const vsh = vapoursynth.vshelper;
-const ZAPI = vapoursynth.ZAPI;
-const Mode = plugin.Mode;
-const Data = plugin.Data;
+const Mode = @import("deband_setup.zig").Mode;
 
 const vec_len = std.simd.suggestVectorLength(i32) orelse 8;
 const i32v = @Vector(vec_len, i32);
@@ -38,60 +30,7 @@ const vec_eps_f32: f32v = @splat(1e-5);
 const vec_pi_f32: f32v = @splat(std.math.pi);
 const vec_scaled_eps: f32v = @splat(0.01 * 3.0);
 
-pub fn F3KDB(comptime mode: Mode, comptime blur_first: bool, comptime add_grain: [3]bool, np: comptime_int) type {
-    return struct {
-        pub fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
-            const d: *Data = @ptrCast(@alignCast(instance_data));
-            const zapi = ZAPI.init(vsapi, core, frame_ctx);
-            if (activation_reason == .Initial) {
-                zapi.requestFrameFilter(n, d.node);
-            } else if (activation_reason == .AllFramesReady) {
-                const src = zapi.initZFrame(d.node, n);
-                defer src.deinit();
-                const dst = src.newVideoFrame();
-
-                inline for (0..np) |plane| {
-                    const src_slice = src.getReadSlice2(u16, plane);
-                    const dst_slice = dst.getWriteSlice2(u16, plane);
-                    const stride = src.getStride(plane) >> 1;
-                    const width = src.getWidth(plane);
-                    const height = src.getHeight(plane);
-                    var grain = if (add_grain[plane]) d.tb.grain_int[plane];
-                    if (add_grain[plane] and d.dynamic_grain) {
-                        const offset = d.tb.grain_offsets[@intCast(n)];
-                        grain = grain[offset..];
-                    }
-
-                    processPlane(
-                        src_slice,
-                        dst_slice,
-                        d.tb.ref1[plane],
-                        d.tb.ref2[plane],
-                        grain,
-                        stride,
-                        width,
-                        height,
-                        d.thr.u[plane],
-                        d.thr1.u[plane],
-                        d.thr2.u[plane],
-                        d.pixel_min[plane],
-                        d.pixel_max[plane],
-                        d.angle_boost,
-                        d.max_angle,
-                        mode,
-                        blur_first,
-                        add_grain[plane],
-                    );
-                }
-
-                return dst.frame;
-            }
-            return null;
-        }
-    };
-}
-
-fn processPlane(
+pub fn processPlane(
     src: []const u16,
     dst: []u16,
     ref1: []const i32,
@@ -123,7 +62,7 @@ fn processPlane(
     // precomputed cell with no clamping — making the lookup bit-identical to the
     // per-pixel computation (calculateGradientAngle itself is unchanged).
     const ANGLE_PAD: u32 = 128;
-    const ang_stride: u32 = if (mode == .m7) hz.ceilN(width + 2 * ANGLE_PAD, hz.vsFrameAlignmentT(@sizeOf(f32))) else 0;
+    const ang_stride: u32 = if (mode == .m7) hz.ceilN(width + 2 * ANGLE_PAD, hz.scratchAlignmentT(@sizeOf(f32))) else 0;
     const angle_buf: []f32 = if (mode == .m7)
         (allocator.alloc(f32, (height + 2 * ANGLE_PAD) * ang_stride) catch {
             var yy: u32 = 0; // graceful passthrough on OOM

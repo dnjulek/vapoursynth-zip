@@ -394,3 +394,139 @@ pub fn Convert(comptime T: type, comptime U: type) type {
         }
     };
 }
+
+// --------------------------------------------------------------------------
+// Configuration (shared by the VapourSynth and AviSynth adapters)
+// --------------------------------------------------------------------------
+
+const errdiff = @import("dither_errdiff.zig");
+
+/// `dither_type` values.
+pub const Mode = enum(i32) {
+    round = 0,
+    zimg_ordered = 1,
+    zimg_random = 2,
+    zimg_error_diffusion = 3,
+    fmtc_ordered_bayer = 4,
+    fmtc_filter_lite = 5,
+    fmtc_stucki = 6,
+    fmtc_atkinson = 7,
+    fmtc_floyd = 8,
+    fmtc_ostro = 9,
+    fmtc_void_cluster = 10,
+    fmtc_quasirnd = 11,
+
+    pub fn ordered(self: Mode) ?OrderedMode {
+        return switch (self) {
+            .round => .round,
+            .zimg_ordered => .zimg_ordered,
+            .zimg_random => .zimg_random,
+            .fmtc_ordered_bayer => .fmtc_bayer,
+            .fmtc_void_cluster => .fmtc_void,
+            .fmtc_quasirnd => .fmtc_quasi,
+            else => null,
+        };
+    }
+
+    pub fn fmtcErrdiff(self: Mode) ?errdiff.FmtcMode {
+        return switch (self) {
+            .fmtc_filter_lite => .filter_lite,
+            .fmtc_stucki => .stucki,
+            .fmtc_atkinson => .atkinson,
+            .fmtc_floyd => .floyd,
+            .fmtc_ostro => .ostro,
+            else => null,
+        };
+    }
+};
+
+const PlaneFmt = struct {
+    bits: u6,
+    is_float: bool,
+    full: bool,
+    chroma: bool,
+
+    fn span(self: PlaneFmt) f64 {
+        if (self.is_float) return 1.0;
+        const bits: u5 = @intCast(self.bits);
+        if (self.full) return @floatFromInt((@as(u32, 1) << bits) - 1);
+        const base: u32 = if (self.chroma) 224 else 219;
+        return @floatFromInt(base << @intCast(bits - 8));
+    }
+
+    fn min(self: PlaneFmt) f64 {
+        if (self.is_float) return if (self.chroma) -0.5 else 0.0;
+        if (self.full) return if (self.chroma) 0.5 else 0.0;
+        return @floatFromInt(@as(u32, 16) << @intCast(self.bits - 8));
+    }
+};
+
+const GainAdd = struct { gain: f64, add: f64 };
+
+fn gainAdd(src: PlaneFmt, dst: PlaneFmt) GainAdd {
+    const gain = dst.span() / src.span();
+    return .{ .gain = gain, .add = dst.min() - src.min() * gain };
+}
+
+/// Per-plane scale/offset and kernel selection for one conversion.
+pub const Config = struct {
+    sc: [3]ScaleOffset,
+    int_kernel: [3]bool,
+    bits_in: u6,
+    bits_out: u6,
+    peak_out: f32,
+    gain_up: u16,
+    add_up: [3]u16,
+    err_buf_len: u32,
+    /// Integer up-conversion that is an exact multiply-add (MulAddUp).
+    upconv: bool,
+    /// Same depth, sample type and range: the frames pass through.
+    identity: bool,
+
+    pub const Args = struct {
+        bits_in: u32,
+        src_float: bool,
+        bits_out: u32,
+        dst_float: bool,
+        fulls: bool,
+        fulld: bool,
+        mode: Mode,
+        is_yuv: bool,
+        width: u32,
+    };
+
+    pub fn init(a: Args) Config {
+        var d: Config = undefined;
+        d.bits_in = @intCast(a.bits_in);
+        d.bits_out = @intCast(a.bits_out);
+        d.peak_out = if (a.dst_float) 0.0 else @floatFromInt((@as(u32, 1) << @intCast(d.bits_out)) - 1);
+
+        const int_up = !a.src_float and !a.dst_float and d.bits_out > d.bits_in;
+        const both_limited = !a.fulls and !a.fulld;
+        const full_upshift = a.fulls and a.fulld and d.bits_in == 8 and d.bits_out == 16 and a.mode == .round;
+        d.upconv = int_up and (both_limited or full_upshift);
+        for (0..3) |plane| {
+            const chroma = a.is_yuv and plane > 0;
+            const pf_in: PlaneFmt = .{ .bits = d.bits_in, .is_float = a.src_float, .full = a.fulls, .chroma = chroma };
+            const pf_out: PlaneFmt = .{ .bits = d.bits_out, .is_float = a.dst_float, .full = a.fulld, .chroma = chroma };
+            const ga = gainAdd(pf_in, pf_out);
+            d.sc[plane] = .{ .scale = @floatCast(ga.gain), .offset = @floatCast(ga.add) };
+            d.int_kernel[plane] = !a.src_float and !a.dst_float and d.bits_in > d.bits_out and
+                @abs(ga.gain * @as(f64, @floatFromInt(@as(u32, 1) << @intCast(d.bits_in - d.bits_out))) - 1.0) < 1e-6 and
+                @abs(ga.add) < 1e-6;
+        }
+
+        d.gain_up = 1;
+        d.add_up = .{ 0, 0, 0 };
+        if (d.upconv) {
+            d.gain_up = @intFromFloat(@round(d.sc[0].scale));
+            for (0..3) |plane| d.add_up[plane] = @intFromFloat(@round(-d.sc[plane].offset));
+            const cmax: f64 = @floatFromInt((@as(u32, 1) << @intCast(d.bits_in)) - 1);
+            std.debug.assert(cmax * @as(f64, @floatFromInt(d.gain_up)) <= @as(f64, d.peak_out));
+        }
+
+        d.err_buf_len = a.width + 4;
+        d.identity = d.bits_in == d.bits_out and a.src_float == a.dst_float and a.fulls == a.fulld;
+        return d;
+    }
+};

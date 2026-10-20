@@ -6,43 +6,95 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addLibrary(.{
-        .name = "vszip",
-        .linkage = .dynamic,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/vszip.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-
-    lib.use_llvm = true;
+    // The VapourSynth plugin is the default product (pip/hatch builds run a
+    // plain `zig build`); the AviSynth+ plugin is opt-in.
+    const build_vs = b.option(bool, "vapoursynth", "Build the VapourSynth plugin (default: true)") orelse true;
+    const build_avs = b.option(bool, "avisynth", "Build the AviSynth+ plugin (default: false)") orelse false;
 
     const options = b.addOptions();
     const version = try std.SemanticVersion.parse(zon.version);
     options.addOption(std.SemanticVersion, "version", version);
-    lib.root_module.addOptions("zon", options);
 
     const zigimg_dependency = b.dependency("zigimg", .{
         .target = target,
         .optimize = optimize,
     });
 
-    lib.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
+    if (build_vs) {
+        const lib = b.addLibrary(.{
+            .name = "vszip",
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/vszip.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
 
-    const vapoursynth_dep = b.dependency("vapoursynth", .{
-        .target = target,
-        .optimize = optimize,
-    });
+        lib.use_llvm = true;
+        lib.root_module.addOptions("zon", options);
+        lib.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
 
-    lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
-    lib.root_module.link_libc = true;
+        const vapoursynth_dep = b.dependency("vapoursynth", .{
+            .target = target,
+            .optimize = optimize,
+        });
 
-    if (lib.root_module.optimize == .fast) {
-        lib.root_module.strip = true;
+        lib.root_module.addImport("vapoursynth", vapoursynth_dep.module("vapoursynth"));
+        lib.root_module.link_libc = true;
+
+        if (lib.root_module.optimize == .fast) {
+            lib.root_module.strip = true;
+        }
+
+        b.installArtifact(lib);
     }
 
-    b.installArtifact(lib);
+    if (build_avs) {
+        // Lazy: fetched only for -Davisynth builds, so VapourSynth-only builds
+        // (and the sdist/wheel builds) never need it.
+        if (b.lazyDependency("avisynth", .{
+            .target = target,
+            .optimize = optimize,
+        })) |avisynth_dep| {
+            const avisynth_mod = avisynth_dep.builder.modules.get("avisynth") orelse {
+                std.log.err("-Davisynth: the avisynth dependency (build.zig.zon) has no \"avisynth\" module; point it at an avisynth-zig checkout or `zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git`", .{});
+                return error.MissingAvisynthModule;
+            };
+            const lib = b.addLibrary(.{
+                .name = "avszip",
+                .linkage = .dynamic,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/avszip.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+
+            lib.use_llvm = true;
+            lib.root_module.addOptions("zon", options);
+            lib.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
+            lib.root_module.addImport("avisynth", avisynth_mod);
+            lib.root_module.link_libc = true;
+
+            if (lib.root_module.optimize == .fast) {
+                lib.root_module.strip = true;
+            }
+
+            b.installArtifact(lib);
+        }
+    }
+
+    // Host-free unit tests: every shared kernel compiles without a host binding.
+    const unit = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    unit.root_module.link_libc = true;
+    unit.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
+    const test_step = b.step("test", "Run host-free kernel tests");
+    test_step.dependOn(&b.addRunArtifact(unit).step);
 }
 
 fn ensureZigVersion(min_zig_version: std.SemanticVersion) !void {

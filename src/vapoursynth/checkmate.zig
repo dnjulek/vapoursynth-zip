@@ -16,10 +16,7 @@ const Data = struct {
     node: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
 
-    thr: i32 = 0,
-    tmax: i32 = 0,
-    tmax_multiplier: i32 = 0,
-    tthr2: i32 = 0,
+    p: filter.Params = undefined,
 };
 
 fn Checkmate(comptime use_tthr2: bool) type {
@@ -47,38 +44,10 @@ fn Checkmate(comptime use_tthr2: bool) type {
 
                 var plane: u32 = 0;
                 while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                    var srcp_p1 = src_p1.getReadSlice(plane);
-                    var srcp = src.getReadSlice(plane);
-                    var srcp_n1 = src_n1.getReadSlice(plane);
-                    var dstp = dst.getWriteSlice(plane);
-
-                    var srcp_p2 = if (use_tthr2) src_p2.getReadSlice(plane);
-                    var srcp_n2 = if (use_tthr2) src_n2.getReadSlice(plane);
-
+                    const srcp_p2 = if (use_tthr2) src_p2.getReadSlice(plane);
+                    const srcp_n2 = if (use_tthr2) src_n2.getReadSlice(plane);
                     const w, const h, const stride = src.getDimensions(plane);
-                    const stride2 = stride << 1;
-
-                    @memcpy(dstp[0..stride2], srcp[0..stride2]);
-
-                    srcp_p1 = srcp_p1[stride2..];
-                    srcp = srcp[stride2..];
-                    srcp_n1 = srcp_n1[stride2..];
-                    dstp = dstp[stride2..];
-                    srcp_p2 = if (use_tthr2) srcp_p2[stride2..];
-                    srcp_n2 = if (use_tthr2) srcp_n2[stride2..];
-
-                    var y: u32 = 2;
-                    while (y < h - 2) : (y += 1) {
-                        filter.process(dstp, srcp_p2, srcp_p1, srcp, srcp_n1, srcp_n2, stride, w, d.thr, d.tmax, d.tmax_multiplier, d.tthr2, use_tthr2);
-                        srcp_p1 = srcp_p1[stride..];
-                        srcp = srcp[stride..];
-                        srcp_n1 = srcp_n1[stride..];
-                        dstp = dstp[stride..];
-                        srcp_p2 = if (use_tthr2) srcp_p2[stride..];
-                        srcp_n2 = if (use_tthr2) srcp_n2[stride..];
-                    }
-
-                    @memcpy(dstp[0..stride2], srcp[0..stride2]);
+                    filter.processPlane(use_tthr2, dst.getWriteSlice(plane), srcp_p2, src_p1.getReadSlice(plane), src.getReadSlice(plane), src_n1.getReadSlice(plane), srcp_n2, stride, w, h, d.p);
                 }
 
                 src_p1.deinit();
@@ -119,42 +88,19 @@ pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         return;
     }
 
-    d.thr = map_in.getValue(i32, "thr") orelse 12;
-    d.tmax = map_in.getValue(i32, "tmax") orelse 12;
-    d.tthr2 = map_in.getValue(i32, "tthr2") orelse 0;
-
-    if ((d.tmax < 1) or (d.tmax > 255)) {
-        map_out.setError(filter_name ++ ": tmax value should be in range [1;255].");
+    const ssw: u5 = @intCast(d.vi.format.subSamplingW);
+    const ssh: u5 = @intCast(d.vi.format.subSamplingH);
+    d.p = filter.Params.init(
+        map_in.getValue(i32, "thr") orelse 12,
+        map_in.getValue(i32, "tmax") orelse 12,
+        map_in.getValue(i32, "tthr2") orelse 0,
+        @as(u32, @intCast(d.vi.width)) >> ssw,
+        @as(u32, @intCast(d.vi.height)) >> ssh,
+    ) catch |e| {
+        hz.setArgError(map_out, "{s}: {s}", .{ filter_name, filter.Params.message(e) });
         zapi.freeNode(d.node);
         return;
-    }
-
-    if (d.tthr2 < 0) {
-        map_out.setError(filter_name ++ ": tthr2 should be non-negative.");
-        zapi.freeNode(d.node);
-        return;
-    }
-
-    if ((d.thr < 0) or (d.thr > 255)) {
-        map_out.setError(filter_name ++ ": thr value should be in range [0;255].");
-        zapi.freeNode(d.node);
-        return;
-    }
-
-    {
-        const ssw: u5 = @intCast(d.vi.format.subSamplingW);
-        const ssh: u5 = @intCast(d.vi.format.subSamplingH);
-        const min_w: u32 = @as(u32, @intCast(d.vi.width)) >> ssw;
-        const min_h: u32 = @as(u32, @intCast(d.vi.height)) >> ssh;
-        if ((min_w < 3) or (min_h < 5)) {
-            map_out.setError(filter_name ++ ": clip too small; every plane must be at least 3 wide and 5 tall.");
-            zapi.freeNode(d.node);
-            return;
-        }
-    }
-
-    // hoisted out of the per-row kernel call (was an idiv per row)
-    d.tmax_multiplier = @divTrunc((1 << 13), d.tmax);
+    };
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
@@ -163,6 +109,6 @@ pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: 
         .{ .source = d.node, .requestPattern = .General },
     };
 
-    const getFrame = if (d.tthr2 > 0) &Checkmate(true).getFrame else &Checkmate(false).getFrame;
+    const getFrame = if (d.p.tthr2 > 0) &Checkmate(true).getFrame else &Checkmate(false).getFrame;
     zapi.createVideoFilter(out, filter_name, d.vi, getFrame, checkmateFree, .Parallel, &deps, data);
 }

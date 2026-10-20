@@ -16,10 +16,7 @@ pub const filter_name = "BoxBlur";
 pub const Data = struct {
     node: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    hradius: u32 = 0,
-    vradius: u32 = 0,
-    hpasses: i32 = 0,
-    vpasses: i32 = 0,
+    p: boxblur_rt.Params = undefined,
     tmp_size: u32 = 0,
     planes: [3]bool = .{ true, true, true },
 };
@@ -44,7 +41,7 @@ pub fn BoxBlurCT(comptime T: type, radius: comptime_int) type {
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
-                    boxblur_ct.hvBlur(T, radius, srcp, dstp, stride, w, h);
+                    boxblur_ct.hvBlur(T, radius, srcp, dstp, stride, w, h) catch return hz.frameOom(&zapi, filter_name, dst);
                 }
 
                 return dst.frame;
@@ -69,15 +66,12 @@ fn BoxBlurRT(comptime T: type) type {
                 defer src.deinit();
 
                 // one scratch block per frame, shared by every plane (plane 0 is the widest)
-                const sc = boxblur_rt.Scratch(T).init(@intCast(d.vi.width), d.tmp_size, d.vradius, @intCast(@max(d.vpasses, 1))) catch {
+                const sc = boxblur_rt.Scratch(T).init(@intCast(d.vi.width), d.tmp_size, d.p.vradius, @intCast(@max(d.p.vpasses, 1))) catch {
                     dst.deinit();
                     zapi.setFilterError(filter_name ++ ": out of memory");
                     return null;
                 };
                 defer sc.deinit();
-
-                const hb = (d.hradius > 0) and (d.hpasses > 0);
-                const vb = (d.vradius > 0) and (d.vpasses > 0);
 
                 // multi-pass vblur ping-pongs between full planes; a VS frame
                 // serves as the scratch plane (the core pools frame memory).
@@ -92,29 +86,17 @@ fn BoxBlurRT(comptime T: type) type {
                     const srcp = src.getReadSlice2(T, plane);
                     const dstp = dst.getWriteSlice2(T, plane);
                     const w, const h, const stride = src.getDimensions2(T, plane);
+                    const tmp = struct {
+                        scratch: *?@TypeOf(dst),
+                        src: @TypeOf(src),
+                        plane: u32,
 
-                    if (vb) {
-                        if ((d.vpasses == 1) and (!hb)) {
-                            boxblur_rt.vblur(T, srcp, dstp, dstp, stride, w, h, d.vradius, 1, &sc);
-                        } else if ((d.vpasses == 1) and (h >= 2 * d.vradius + 2)) {
-                            boxblur_rt.hvBlurFused(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, d.vradius, &sc);
-                        } else if (h >= 2 * d.vradius + 2) {
-                            boxblur_rt.vChainFused(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, d.vradius, @intCast(d.vpasses), &sc);
-                        } else {
-                            if (scratch == null) scratch = src.newVideoFrame();
-                            const tmpp = scratch.?.getWriteSlice2(T, plane);
-                            if (hb) {
-                                // land the hblur result so the vblur sweeps end in dstp
-                                const h_out: []T = if (@mod(d.vpasses, 2) == 1) tmpp else dstp;
-                                boxblur_rt.hblur(T, srcp, h_out, stride, w, h, d.hradius, d.hpasses, &sc);
-                                boxblur_rt.vblur(T, h_out, tmpp, dstp, stride, w, h, d.vradius, d.vpasses, &sc);
-                            } else {
-                                boxblur_rt.vblur(T, srcp, tmpp, dstp, stride, w, h, d.vradius, d.vpasses, &sc);
-                            }
+                        pub fn get(self: @This()) error{}![]T {
+                            if (self.scratch.* == null) self.scratch.* = self.src.newVideoFrame();
+                            return self.scratch.*.?.getWriteSlice2(T, self.plane);
                         }
-                    } else {
-                        boxblur_rt.hblur(T, srcp, dstp, stride, w, h, d.hradius, d.hpasses, &sc);
-                    }
+                    }{ .scratch = &scratch, .src = src, .plane = plane };
+                    boxblur_rt.blurPlane(T, d.p, srcp, dstp, stride, w, h, &sc, tmp) catch return hz.frameOom(&zapi, filter_name, dst);
                 }
 
                 return dst.frame;
@@ -147,61 +129,33 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     var nodes = [_]?*vs.Node{d.node};
     hz.mapGetPlanes(map_in, map_out, &nodes, &d.planes, d.vi.format.numPlanes, filter_name, &zapi) catch return;
 
-    d.hradius = map_in.getValue(u32, "hradius") orelse 1;
-    d.vradius = map_in.getValue(u32, "vradius") orelse 1;
-    d.hpasses = map_in.getValue(i32, "hpasses") orelse 1;
-    d.vpasses = map_in.getValue(i32, "vpasses") orelse 1;
-
-    const vblur = (d.vradius > 0) and (d.vpasses > 0);
-    const hblur = (d.hradius > 0) and (d.hpasses > 0);
-    if (!vblur and !hblur) {
-        map_out.setError(filter_name ++ ": nothing to be performed");
-        zapi.freeNode(d.node);
-        return;
-    }
+    d.p = .{
+        .hradius = map_in.getValue(u32, "hradius") orelse 1,
+        .vradius = map_in.getValue(u32, "vradius") orelse 1,
+        .hpasses = map_in.getValue(i32, "hpasses") orelse 1,
+        .vpasses = map_in.getValue(i32, "vpasses") orelse 1,
+    };
 
     {
+        const num_planes: u32 = @intCast(d.vi.format.numPlanes);
         const ssw: u5 = @intCast(d.vi.format.subSamplingW);
         const ssh: u5 = @intCast(d.vi.format.subSamplingH);
-        var p: u32 = 0;
-        while (p < d.vi.format.numPlanes) : (p += 1) {
-            if (!d.planes[p]) continue;
-            const sw: u5 = if (p == 0) 0 else ssw;
-            const sh: u5 = if (p == 0) 0 else ssh;
-            const pw: u32 = @as(u32, @intCast(d.vi.width)) >> sw;
-            const ph: u32 = @as(u32, @intCast(d.vi.height)) >> sh;
-            if (hblur and (@as(u64, d.hradius) * 2 >= pw)) {
-                map_out.setError(filter_name ++ ": hradius too large; 2*hradius must be < the (smallest processed) plane width.");
-                zapi.freeNode(d.node);
-                return;
-            }
-            if (vblur and (@as(u64, d.vradius) * 2 >= ph)) {
-                map_out.setError(filter_name ++ ": vradius too large; 2*vradius must be < the (smallest processed) plane height.");
-                zapi.freeNode(d.node);
-                return;
-            }
+        var pw: [3]u32 = undefined;
+        var ph: [3]u32 = undefined;
+        for (0..num_planes) |p| {
+            pw[p] = @as(u32, @intCast(d.vi.width)) >> if (p == 0) 0 else ssw;
+            ph[p] = @as(u32, @intCast(d.vi.height)) >> if (p == 0) 0 else ssh;
         }
-    }
-
-    // The integer kernels divide the raw window sum by ksize with an exact
-    // multiply-and-shift; past radius 23331 (u16) no exact magic exists. The
-    // plane-size checks above already rule this out at any sane resolution, but
-    // reject it here rather than let getFrame silently lose precision.
-    {
-        const magic_ok = switch (dt) {
-            inline .U8, .U16 => |t| blk: {
-                const T = if (t == .U8) u8 else u16;
-                const h_ok = !hblur or (boxblur_ct.magicFor(T, d.hradius) != null);
-                const v_ok = !vblur or (boxblur_ct.magicFor(T, d.vradius) != null);
-                break :blk h_ok and v_ok;
-            },
-            else => true,
+        const int_bytes: u8 = switch (dt) {
+            .U8 => 1,
+            .U16 => 2,
+            else => 0,
         };
-        if (!magic_ok) {
-            map_out.setError(filter_name ++ ": radius too large to divide exactly at this bit depth.");
+        d.p.check(int_bytes, d.planes[0..num_planes], pw[0..num_planes], ph[0..num_planes]) catch |e| {
+            hz.setArgError(map_out, "{s}: {s}", .{ filter_name, boxblur_rt.Params.message(e) });
             zapi.freeNode(d.node);
             return;
-        }
+        };
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
@@ -211,23 +165,9 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
         .{ .source = d.node, .requestPattern = .StrictSpatial },
     };
 
-    // CT (comptime-radius tap kernels) vs RT (running-sum) selection, measured
-    // 2026-07-03 on Zen 3 (callgrind Ir at every radius + 3-rep wall-clock):
-    //  - integer: RT wins at every radius (Ir -7..-19%, wall >= CT incl. the
-    //    default r=1), so int always takes RT;
-    //  - float: CT's O(ksize) tap kernels only beat the (scalar-h) running sum
-    //    below ~r9 on this box; from r>=9 RT is 1.5-2.7x. CT therefore remains
-    //    for float radius 1..8 only.
-    //  - !hblur/!vblur must take RT: CT's hvBlur applies both directions
-    //    unconditionally (an hpasses=0 request used to get h-blurred anyway).
-    // Boundary moves change outputs slightly (CT and RT differ in pass order,
-    // fixed-point rounding and edge-mirror convention: interior <=2 LSB int /
-    // ~1e-5 f32, edge bands up to ~0.1% of range) — the same difference that
-    // always existed across the old r22 boundary.
+    // CT vs RT: see boxblur_rt.Params.useRT.
     const is_float = (dt == .F16) or (dt == .F32);
-    const use_rt: bool = !hblur or !vblur or !is_float or
-        (d.hradius != d.vradius) or (d.hradius > 8) or
-        (d.hpasses > 1) or (d.vpasses > 1);
+    const use_rt = d.p.useRT(is_float);
     var get_frame: vs.FilterGetFrame = undefined;
     if (use_rt) {
         get_frame = switch (dt) {
@@ -238,7 +178,7 @@ pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
             .U32 => unreachable,
         };
     } else {
-        get_frame = switch (d.hradius) {
+        get_frame = switch (d.p.hradius) {
             inline 1...8 => |r| switch (dt) {
                 .F16 => &BoxBlurCT(f16, r).getFrame,
                 .F32 => &BoxBlurCT(f32, r).getFrame,

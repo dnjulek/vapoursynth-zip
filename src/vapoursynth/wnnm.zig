@@ -12,299 +12,34 @@ const ZAPI = vapoursynth.ZAPI;
 const allocator = std.heap.c_allocator;
 pub const filter_name = "WNNM";
 
-const max_radius = 15;
-const max_window = 2 * max_radius + 1;
+const max_radius = filter.max_radius;
+const max_window = filter.max_window;
+const Config = filter.Config;
+const Bufs = filter.Bufs;
+const processPlane = filter.processPlane;
 
 const Data = struct {
     node: ?*vs.Node = null,
     ref_node: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
     vi_raw: vs.VideoInfo = undefined,
-
-    sigma: [3]f32 = undefined,
-    process: [3]bool = undefined,
-    bs: u32 = 8,
-    step: u32 = 8,
-    gs: u32 = 8,
-    bm_range: u32 = 7,
-    radius: u32 = 0,
-    ps_num: u32 = 2,
-    ps_range: u32 = 4,
-    residual: bool = false,
-    adaptive: bool = true,
-
-    lda: u32 = 64,
-    q: u32 = 8,
-    max_iw: u32 = 0,
-    max_ih: u32 = 0,
+    cfg: Config = .{},
 
     pool_lock: std.Io.Mutex = .init,
     pool: std.AutoHashMap(std.Thread.Id, *Bufs) = undefined,
 };
 
-const Bufs = struct {
-    arena: std.heap.ArenaAllocator,
-    cur: []align(64) f32,
-    amat: [filter.batch_n][]align(64) f32,
-    aout: [filter.batch_n][]align(64) f32,
-    mean: [filter.batch_n][]align(64) f32,
-    sel: []filter.Match,
-    selidx: []filter.IdxErr,
-    gbatch: []f64,
-    vbatch: []f64,
-    intermediate: []align(64) f32,
-    est: filter.Workspace(f64),
-    errsf: std.ArrayList(f32),
-    errors: std.ArrayList(filter.Match),
-    center: std.ArrayList(filter.Match),
-    temporal: std.ArrayList(filter.Match),
-    locs: std.ArrayList(filter.Loc),
-    locs_scratch: std.ArrayList(filter.Loc),
-    alloc: std.mem.Allocator,
-
-    fn create(d: *const Data) *Bufs {
-        const b = allocator.create(Bufs) catch unreachable;
-        b.arena = std.heap.ArenaAllocator.init(allocator);
-        const aa = b.arena.allocator();
-        const al = comptime std.mem.Alignment.fromByteUnits(64);
-        const m = d.bs * d.bs;
-        const q = d.q;
-        const nb = filter.batch_n;
-        for (0..nb) |l| {
-            b.amat[l] = aa.alignedAlloc(f32, al, d.lda * d.gs) catch unreachable;
-            b.aout[l] = aa.alignedAlloc(f32, al, d.lda * d.gs) catch unreachable;
-            b.mean[l] = if (d.residual) aa.alignedAlloc(f32, al, m) catch unreachable else &.{};
-        }
-        b.cur = aa.alignedAlloc(f32, al, m) catch unreachable;
-        b.sel = aa.alloc(filter.Match, d.gs * nb) catch unreachable;
-        b.selidx = aa.alloc(filter.IdxErr, @max(d.gs, d.ps_num)) catch unreachable;
-        b.gbatch = aa.alloc(f64, q * q * nb) catch unreachable;
-        b.vbatch = aa.alloc(f64, q * q * nb) catch unreachable;
-        b.intermediate = if (d.radius == 0) aa.alignedAlloc(f32, al, 2 * d.max_iw * d.max_ih) catch unreachable else &.{};
-        b.est = .{
-            .g = aa.alloc(f64, q * q) catch unreachable,
-            .v = aa.alloc(f64, q * q) catch unreachable,
-            .eig = aa.alloc(f64, q) catch unreachable,
-            .r = aa.alloc(f32, q) catch unreachable,
-            .scratch = aa.alignedAlloc(f32, al, m * d.gs + q * q) catch unreachable,
-            .wide = aa.alignedAlloc(f64, al, m * d.gs) catch unreachable,
-        };
-        b.errsf = .empty;
-        b.errors = .empty;
-        b.center = .empty;
-        b.temporal = .empty;
-        b.locs = .empty;
-        b.locs_scratch = .empty;
-        b.alloc = aa;
-        return b;
-    }
-
-    fn destroy(b: *Bufs) void {
-        b.arena.deinit();
-        allocator.destroy(b);
-    }
-};
-
-fn acquireBufs(d: *Data) *Bufs {
+fn acquireBufs(d: *Data) ?*Bufs {
     const tid = std.Thread.getCurrentId();
     d.pool_lock.lockUncancelable(vszip.io);
     defer d.pool_lock.unlock(vszip.io);
     if (d.pool.get(tid)) |b| return b;
-    const b = Bufs.create(d);
-    d.pool.put(tid, b) catch unreachable;
+    const b = Bufs.create(&d.cfg) catch return null;
+    d.pool.put(tid, b) catch {
+        b.destroy();
+        return null;
+    };
     return b;
-}
-
-fn processPlane(
-    comptime BS: ?u32,
-    d: *const Data,
-    b: *Bufs,
-    srcps: []const []const f32,
-    refps: []const []const f32,
-    agg: [*]f32,
-    agg_stride: u32,
-    w: u32,
-    h: u32,
-    stride: u32,
-    sigma: f32,
-) void {
-    const bs = BS orelse d.bs;
-    const m = bs * bs;
-    const radius: i32 = @intCast(d.radius);
-    const center: usize = d.radius;
-    const k0: u32 = if (d.residual) 0 else 1;
-
-    const temp_r = h - bs;
-    const temp_c = w - bs;
-
-    const gsn: f32 = @floatFromInt(d.gs);
-    const c_full: f32 = 8.0 * @sqrt(2.0 * gsn) * sigma * sigma;
-    var slot: usize = 0;
-
-    var _y: u32 = 0;
-    while (_y < temp_r + d.step) : (_y += d.step) {
-        const y = @min(_y, temp_r);
-        var _x: u32 = 0;
-        while (_x < temp_c + d.step) : (_x += d.step) {
-            const x = @min(_x, temp_c);
-
-            b.errors.clearRetainingCapacity();
-
-            {
-                const refp = refps[center];
-                var py: u32 = 0;
-                while (py < bs) : (py += 1) {
-                    @memcpy(b.cur[py * bs ..][0..bs], refp[(y + py) * stride + x ..][0..bs]);
-                }
-            }
-
-            const top = y -| d.bm_range;
-            const bottom = @min(y + d.bm_range, temp_r);
-            const left = x -| d.bm_range;
-            const right = @min(x + d.bm_range, temp_c);
-            const cx = right - left + 1;
-
-            if (d.radius == 0) {
-                b.errsf.clearRetainingCapacity();
-                filter.computeBlockDistancesWindow(BS, &b.errsf, b.alloc, b.cur, refps[center], top, bottom, left, right, stride, bs);
-                const cnt = filter.selectTopIdx(b.errsf.items, d.gs, b.selidx);
-                b.errors.ensureUnusedCapacity(b.alloc, cnt) catch unreachable;
-                for (b.selidx[0..cnt]) |ie| {
-                    b.errors.appendAssumeCapacity(.{
-                        .err = ie.err,
-                        .x = @intCast(left + ie.idx % cx),
-                        .y = @intCast(top + ie.idx / cx),
-                        .t = 0,
-                    });
-                }
-            } else {
-                b.errsf.clearRetainingCapacity();
-                filter.computeBlockDistancesWindow(BS, &b.errsf, b.alloc, b.cur, refps[center], top, bottom, left, right, stride, bs);
-                const active_ps_num = @min(d.ps_num, b.errsf.items.len);
-                const cnt_c = filter.selectTopIdx(b.errsf.items, @max(d.gs, d.ps_num), b.selidx);
-                b.center.clearRetainingCapacity();
-                b.center.ensureUnusedCapacity(b.alloc, cnt_c) catch unreachable;
-                for (b.selidx[0..cnt_c]) |ie| {
-                    b.center.appendAssumeCapacity(.{
-                        .err = ie.err,
-                        .x = @intCast(left + ie.idx % cx),
-                        .y = @intCast(top + ie.idx / cx),
-                        .t = radius,
-                    });
-                }
-                b.errors.appendSlice(b.alloc, b.center.items) catch unreachable;
-
-                var direction: i32 = -1;
-                while (direction <= 1) : (direction += 2) {
-                    b.temporal.clearRetainingCapacity();
-                    b.temporal.appendSlice(b.alloc, b.center.items) catch unreachable;
-
-                    var i: u32 = 1;
-                    while (i <= d.radius) : (i += 1) {
-                        const t_idx = radius + direction * @as(i32, @intCast(i));
-
-                        const num_centers = @min(active_ps_num, b.temporal.items.len);
-                        filter.generateSearchLocations(b.temporal.items, num_centers, bs, w, h, d.ps_range, &b.locs, &b.locs_scratch, b.alloc);
-
-                        b.errsf.clearRetainingCapacity();
-                        filter.computeBlockDistancesAt(BS, &b.errsf, b.alloc, b.cur, refps[@intCast(t_idx)], b.locs.items, stride, bs);
-                        const cnt_t = filter.selectTopIdx(b.errsf.items, @max(d.gs, d.ps_num), b.selidx);
-                        b.temporal.clearRetainingCapacity();
-                        b.temporal.ensureUnusedCapacity(b.alloc, cnt_t) catch unreachable;
-                        for (b.selidx[0..cnt_t]) |ie| {
-                            b.temporal.appendAssumeCapacity(.{
-                                .err = ie.err,
-                                .x = b.locs.items[ie.idx].x,
-                                .y = b.locs.items[ie.idx].y,
-                                .t = t_idx,
-                            });
-                        }
-                        b.errors.appendSlice(b.alloc, b.temporal.items) catch unreachable;
-                    }
-                }
-            }
-
-            const n: u32 = @intCast(filter.selectTop(b.errors.items, d.gs));
-            b.errors.items.len = n;
-
-            {
-                var has_center = false;
-                for (b.errors.items) |e| {
-                    if (e.x == @as(i32, @intCast(x)) and e.y == @as(i32, @intCast(y)) and e.t == radius) {
-                        has_center = true;
-                        break;
-                    }
-                }
-                if (!has_center) {
-                    b.errors.items[0] = .{ .err = 0.0, .x = @intCast(x), .y = @intCast(y), .t = radius };
-                }
-            }
-
-            if (n == d.gs) {
-                filter.loadPatches(BS, b.amat[slot].ptr, d.lda, if (d.residual) b.mean[slot] else null, srcps, b.errors.items, stride, bs);
-                if (d.residual) filter.subtractMean(b.amat[slot].ptr, d.lda, b.mean[slot], m, n);
-                @memcpy(b.sel[slot * d.gs ..][0..n], b.errors.items);
-                slot += 1;
-                if (slot == filter.batch_n) {
-                    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
-                    slot = 0;
-                }
-            } else {
-                flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
-                slot = 0;
-
-                filter.loadPatches(BS, b.amat[0].ptr, d.lda, if (d.residual) b.mean[0] else null, srcps, b.errors.items, stride, bs);
-                if (d.residual) filter.subtractMean(b.amat[0].ptr, d.lda, b.mean[0], m, n);
-
-                const nf: f32 = @floatFromInt(n);
-                const c: f32 = 8.0 * @sqrt(2.0 * nf) * sigma * sigma;
-                const res = filter.patchEstimate(f64, b.amat[0], b.aout[0], m, n, d.lda, c, k0, b.est);
-                const weight: f32 = if (d.adaptive and res.k > 0) 1.0 / @as(f32, @floatFromInt(res.k)) else 1.0;
-
-                if (d.residual) filter.addMean(b.aout[0].ptr, d.lda, b.mean[0], m, n);
-
-                filter.col2im(BS, agg, agg_stride, b.aout[0].ptr, d.lda, b.errors.items, h, bs, weight);
-            }
-        }
-    }
-    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
-}
-
-fn flushBatch(
-    comptime BS: ?u32,
-    d: *const Data,
-    b: *Bufs,
-    agg: [*]f32,
-    agg_stride: u32,
-    h: u32,
-    bs: u32,
-    m: u32,
-    c: f32,
-    k0: u32,
-    count: usize,
-) void {
-    if (count == 0) return;
-    const n = d.gs;
-
-    var as: [filter.batch_n][]const f32 = undefined;
-    var dsts: [filter.batch_n][]f32 = undefined;
-    for (0..filter.batch_n) |l| {
-        as[l] = b.amat[l];
-        dsts[l] = b.aout[l];
-    }
-
-    const ks: [filter.batch_n]u32 = if (count == 1) blk: {
-        const res = filter.patchEstimate(f64, b.amat[0], b.aout[0], m, n, d.lda, c, k0, b.est);
-        var arr: [filter.batch_n]u32 = @splat(0);
-        arr[0] = res.k;
-        break :blk arr;
-    } else filter.patchEstimateBatch(as, dsts, count, m, n, d.lda, c, k0, b.est, b.gbatch, b.vbatch);
-
-    for (0..count) |l| {
-        const weight: f32 = if (d.adaptive and ks[l] > 0) 1.0 / @as(f32, @floatFromInt(ks[l])) else 1.0;
-        if (d.residual) filter.addMean(b.aout[l].ptr, d.lda, b.mean[l], m, n);
-        filter.col2im(BS, agg, agg_stride, b.aout[l].ptr, d.lda, b.sel[l * d.gs ..][0..n], h, bs, weight);
-    }
 }
 
 fn Wnnm(comptime BS: ?u32) type {
@@ -324,13 +59,13 @@ fn Wnnm(comptime BS: ?u32) type {
             defer src.deinit();
             const ref = if (d.ref_node != null) zapi.initZFrame(d.ref_node, n) else src.addFrameRef();
             defer ref.deinit();
-            const dst = src.newVideoFrame2(d.process);
+            const dst = src.newVideoFrame2(d.cfg.process);
 
-            const bufs = acquireBufs(d);
+            const bufs = acquireBufs(d) orelse return hz.frameOom(&zapi, filter_name, dst);
 
             var plane: u32 = 0;
             while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                if (!d.process[plane]) continue;
+                if (!d.cfg.process[plane]) continue;
 
                 const w, const h, const stride = src.getDimensions2(f32, plane);
                 const srcp = src.getReadSlice2(f32, plane);
@@ -340,7 +75,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 const intermediate = bufs.intermediate[0 .. 2 * h * w];
                 @memset(intermediate, 0.0);
 
-                processPlane(BS, d, bufs, &.{srcp}, &.{refp}, intermediate.ptr, w, w, h, stride, d.sigma[plane]);
+                processPlane(BS, &d.cfg, bufs, &.{srcp}, &.{refp}, intermediate.ptr, w, w, h, stride, d.cfg.sigma[plane]) catch return hz.frameOom(&zapi, filter_name, dst);
                 filter.aggregation(dstp, intermediate, w, h, stride);
             }
 
@@ -350,8 +85,8 @@ fn Wnnm(comptime BS: ?u32) type {
         pub fn getFrameRaw(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
-            const radius: i32 = @intCast(d.radius);
-            const num_frames = 2 * d.radius + 1;
+            const radius: i32 = @intCast(d.cfg.radius);
+            const num_frames = 2 * d.cfg.radius + 1;
 
             if (activation_reason == .Initial) {
                 var i: i32 = -radius;
@@ -377,18 +112,18 @@ fn Wnnm(comptime BS: ?u32) type {
                 refs[i].deinit();
             };
 
-            const dst = zapi.initZFrameFromVi(&d.vi_raw, srcs[d.radius].frame);
+            const dst = zapi.initZFrameFromVi(&d.vi_raw, srcs[d.cfg.radius].frame);
 
-            const bufs = acquireBufs(d);
+            const bufs = acquireBufs(d) orelse return hz.frameOom(&zapi, filter_name, dst);
 
             var srcps: [max_window][]const f32 = undefined;
             var refps: [max_window][]const f32 = undefined;
 
             var plane: u32 = 0;
             while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                if (!d.process[plane]) continue;
+                if (!d.cfg.process[plane]) continue;
 
-                const w, const h, const stride = srcs[d.radius].getDimensions2(f32, plane);
+                const w, const h, const stride = srcs[d.cfg.radius].getDimensions2(f32, plane);
                 for (0..num_frames) |i| {
                     srcps[i] = srcs[i].getReadSlice2(f32, plane);
                     refps[i] = refs[i].getReadSlice2(f32, plane);
@@ -396,7 +131,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 const dstp = dst.getWriteSlice2(f32, plane);
                 @memset(dstp[0 .. 2 * num_frames * h * stride], 0.0);
 
-                processPlane(BS, d, bufs, srcps[0..num_frames], refps[0..num_frames], dstp.ptr, stride, w, h, stride, d.sigma[plane]);
+                processPlane(BS, &d.cfg, bufs, srcps[0..num_frames], refps[0..num_frames], dstp.ptr, stride, w, h, stride, d.cfg.sigma[plane]) catch return hz.frameOom(&zapi, filter_name, dst);
             }
 
             return dst.frame;
@@ -429,13 +164,16 @@ const VagData = struct {
     pool: std.AutoHashMap(std.Thread.Id, []align(64) f32) = undefined,
 };
 
-fn vagAcquireBuffer(d: *VagData) []align(64) f32 {
+fn vagAcquireBuffer(d: *VagData) ?[]align(64) f32 {
     const tid = std.Thread.getCurrentId();
     d.pool_lock.lockUncancelable(vszip.io);
     defer d.pool_lock.unlock(vszip.io);
     if (d.pool.get(tid)) |b| return b;
-    const b: []align(64) f32 = allocator.alignedAlloc(f32, comptime std.mem.Alignment.fromByteUnits(64), 2 * d.max_w) catch unreachable;
-    d.pool.put(tid, b) catch unreachable;
+    const b: []align(64) f32 = allocator.alignedAlloc(f32, comptime std.mem.Alignment.fromByteUnits(64), 2 * d.max_w) catch return null;
+    d.pool.put(tid, b) catch {
+        allocator.free(b);
+        return null;
+    };
     return b;
 }
 
@@ -467,7 +205,7 @@ fn vagGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: 
 
     const dst = src.newVideoFrame2(d.process);
 
-    const buffer = vagAcquireBuffer(d);
+    const buffer = vagAcquireBuffer(d) orelse return hz.frameOom(&zapi, filter_name, dst);
 
     var plane: u32 = 0;
     while (plane < d.vi.format.numPlanes) : (plane += 1) {
@@ -493,34 +231,14 @@ fn vagGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: 
                 const base = (@as(usize, @intCast(slab)) * 2 * h + y) * stride;
                 const nrow = raw[base..][0..w];
                 const drow = raw[base + h * stride ..][0..w];
-                vagAccumulate(num, nrow);
-                vagAccumulate(den, drow);
+                filter.vagAccumulate(num, nrow);
+                filter.vagAccumulate(den, drow);
             }
-            vagDivide(dstp[y * stride ..][0..w], num, den);
+            filter.vagDivide(dstp[y * stride ..][0..w], num, den);
         }
     }
 
     return dst.frame;
-}
-
-// streaming per-lane add / divide: full native width (bit-exact at any)
-const vg_n = std.simd.suggestVectorLength(f32) orelse 8;
-const Vg = @Vector(vg_n, f32);
-
-fn vagAccumulate(acc: []f32, row: []const f32) void {
-    var x: usize = 0;
-    while (x + vg_n <= acc.len) : (x += vg_n) {
-        acc[x..][0..vg_n].* = @as(Vg, acc[x..][0..vg_n].*) + @as(Vg, row[x..][0..vg_n].*);
-    }
-    while (x < acc.len) : (x += 1) acc[x] += row[x];
-}
-
-fn vagDivide(dst: []f32, num: []const f32, den: []const f32) void {
-    var x: usize = 0;
-    while (x + vg_n <= dst.len) : (x += vg_n) {
-        dst[x..][0..vg_n].* = @as(Vg, num[x..][0..vg_n].*) / @as(Vg, den[x..][0..vg_n].*);
-    }
-    while (x < dst.len) : (x += 1) dst[x] = num[x] / den[x];
 }
 
 fn vagFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
@@ -564,101 +282,61 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
     // bounded to f32 before narrowing. The sign keeps its own message.
     const fmax = math.floatMax(f32);
     const raw_sigma = hz.getArray(f32, 3.0, -fmax, fmax, "sigma", filter_name, map_in, map_out, &.{d.node}, &zapi) catch return;
-    for (0..3) |i| {
-        if (raw_sigma[i] < 0.0) {
-            map_out.setError(filter_name ++ ": \"sigma\" must be non-negative.");
-            zapi.freeNode(d.node);
-            return;
-        }
-    }
-    for (0..3) |i| {
-        d.process[i] = raw_sigma[i] >= math.floatEps(f32);
-        d.sigma[i] = raw_sigma[i] / 255.0;
-    }
 
-    var skip = true;
-    for (0..@intCast(d.vi.format.numPlanes)) |i| skip = skip and !d.process[i];
-    if (skip) {
-        _ = map_out.setNode("clip", d.node, .Replace);
-        zapi.freeNode(d.node);
-        return;
-    }
-
-    const err = struct {
-        fn set(mo: anytype, za: *const ZAPI, dd: *Data, comptime msg: [:0]const u8) void {
-            mo.setError(filter_name ++ ": " ++ msg);
-            za.freeNode(dd.node);
-            za.freeNode(dd.ref_node);
-        }
-    }.set;
-
-    const bs_i = map_in.getValue(i32, "block_size") orelse 8;
-    if (bs_i < 1 or bs_i > 64) return err(map_out, &zapi, &d, "\"block_size\" must be in [1, 64].");
-    d.bs = @intCast(bs_i);
-
-    const step_i = map_in.getValue(i32, "block_step") orelse bs_i;
-    if (step_i < 1 or step_i > bs_i) return err(map_out, &zapi, &d, "\"block_step\" must be positive and no larger than \"block_size\".");
-    d.step = @intCast(step_i);
-
-    const gs_i = map_in.getValue(i32, "group_size") orelse 8;
-    if (gs_i < 1 or gs_i > 256) return err(map_out, &zapi, &d, "\"group_size\" must be in [1, 256].");
-    d.gs = @intCast(gs_i);
-    if (@min(@as(u32, @intCast(bs_i * bs_i)), d.gs) > filter.max_q) {
-        return err(map_out, &zapi, &d, "min(block_size^2, group_size) must be <= 64.");
-    }
-
-    const bm_i = map_in.getValue(i32, "bm_range") orelse 7;
-    if (bm_i < 0) return err(map_out, &zapi, &d, "\"bm_range\" must be non-negative.");
-    d.bm_range = @intCast(bm_i);
-
-    const radius_i = map_in.getValue(i32, "radius") orelse 0;
-    if (radius_i < 0 or radius_i > max_radius) return err(map_out, &zapi, &d, "\"radius\" must be in [0, 15].");
-    d.radius = @intCast(radius_i);
-
-    const ps_num_i = map_in.getValue(i32, "ps_num") orelse 2;
-    if (ps_num_i < 1 or ps_num_i > 256) return err(map_out, &zapi, &d, "\"ps_num\" must be in [1, 256].");
-    d.ps_num = @intCast(ps_num_i);
-
-    const ps_range_i = map_in.getValue(i32, "ps_range") orelse 4;
-    if (ps_range_i < 0) return err(map_out, &zapi, &d, "\"ps_range\" must be non-negative.");
-    d.ps_range = @intCast(ps_range_i);
-
-    d.residual = map_in.getBool("residual") orelse false;
-    d.adaptive = map_in.getBool("adaptive_aggregation") orelse true;
-
+    const num_planes: u32 = @intCast(d.vi.format.numPlanes);
+    var plane_w: [3]u32 = @splat(0);
+    var plane_h: [3]u32 = @splat(0);
     {
         const ssw: u5 = @intCast(d.vi.format.subSamplingW);
         const ssh: u5 = @intCast(d.vi.format.subSamplingH);
-        for (0..@intCast(d.vi.format.numPlanes)) |i| {
-            if (!d.process[i]) continue;
-            const pw: u32 = if (i == 0) @intCast(d.vi.width) else @as(u32, @intCast(d.vi.width)) >> ssw;
-            const ph: u32 = if (i == 0) @intCast(d.vi.height) else @as(u32, @intCast(d.vi.height)) >> ssh;
-            if (d.bs > pw or d.bs > ph) {
-                return err(map_out, &zapi, &d, "\"block_size\" must not exceed the dimensions of any processed plane.");
-            }
-            d.max_iw = @max(d.max_iw, pw);
-            d.max_ih = @max(d.max_ih, ph);
+        for (0..num_planes) |i| {
+            plane_w[i] = if (i == 0) @intCast(d.vi.width) else @as(u32, @intCast(d.vi.width)) >> ssw;
+            plane_h[i] = if (i == 0) @intCast(d.vi.height) else @as(u32, @intCast(d.vi.height)) >> ssh;
         }
     }
+
+    const cfg = Config.init(.{
+        .sigma = raw_sigma,
+        .block_size = map_in.getValue(i32, "block_size") orelse 8,
+        .block_step = if (map_in.getValue(i32, "block_step")) |v| v else null,
+        .group_size = map_in.getValue(i32, "group_size") orelse 8,
+        .bm_range = map_in.getValue(i32, "bm_range") orelse 7,
+        .radius = map_in.getValue(i32, "radius") orelse 0,
+        .ps_num = map_in.getValue(i32, "ps_num") orelse 2,
+        .ps_range = map_in.getValue(i32, "ps_range") orelse 4,
+        .residual = map_in.getBool("residual") orelse false,
+        .adaptive = map_in.getBool("adaptive_aggregation") orelse true,
+        .num_planes = num_planes,
+        .plane_w = plane_w,
+        .plane_h = plane_h,
+    }) catch |e| {
+        hz.setArgError(map_out, "{s}: {s}", .{ filter_name, Config.message(e) });
+        zapi.freeNode(d.node);
+        return;
+    };
+    d.cfg = cfg orelse {
+        _ = map_out.setNode("clip", d.node, .Replace);
+        zapi.freeNode(d.node);
+        return;
+    };
 
     d.ref_node = map_in.getNode("rclip");
     if (d.ref_node != null) {
         const ref_vi = zapi.getVideoInfo(d.ref_node);
         if (!vapoursynth.vshelper.isSameVideoInfo(d.vi, ref_vi) or ref_vi.numFrames != d.vi.numFrames) {
-            return err(map_out, &zapi, &d, "\"rclip\" must be of the same format, dimensions and number of frames as \"clip\".");
+            map_out.setError(filter_name ++ ": \"rclip\" must be of the same format, dimensions and number of frames as \"clip\".");
+            zapi.freeNode(d.node);
+            zapi.freeNode(d.ref_node);
+            return;
         }
     }
-
-    const m = d.bs * d.bs;
-    d.lda = hz.ceilN(m, 16);
-    d.q = @min(m, d.gs);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
     data.pool_lock = .init;
     data.pool = std.AutoHashMap(std.Thread.Id, *Bufs).init(allocator);
 
-    if (d.radius == 0) {
+    if (d.cfg.radius == 0) {
         var deps_buf: [2]vs.FilterDependency = undefined;
         var n_deps: usize = 1;
         deps_buf[0] = .{ .source = d.node, .requestPattern = .StrictSpatial };
@@ -666,13 +344,13 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
             deps_buf[1] = .{ .source = d.ref_node, .requestPattern = .StrictSpatial };
             n_deps = 2;
         }
-        zapi.createVideoFilter(out, filter_name, d.vi, selectGetFrame(d.bs, 0), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
+        zapi.createVideoFilter(out, filter_name, d.vi, selectGetFrame(d.cfg.bs, 0), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
         if (map_out.getError() != null) wnnmFree(data, core, vsapi);
         return;
     }
 
     data.vi_raw = d.vi.*;
-    data.vi_raw.height *= @intCast(2 * (2 * d.radius + 1));
+    data.vi_raw.height *= @intCast(2 * (2 * d.cfg.radius + 1));
 
     var deps_buf: [2]vs.FilterDependency = undefined;
     var n_deps: usize = 1;
@@ -684,7 +362,7 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
 
     const src_node2 = zapi.addNodeRef(d.node);
 
-    const raw_node = zapi.createVideoFilter2("WNNMRaw", &data.vi_raw, selectGetFrame(d.bs, d.radius), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
+    const raw_node = zapi.createVideoFilter2("WNNMRaw", &data.vi_raw, selectGetFrame(d.cfg.bs, d.cfg.radius), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
     if (raw_node == null) {
         map_out.setError(filter_name ++ ": failed to create internal WNNMRaw filter.");
         zapi.freeNode(src_node2);
@@ -697,9 +375,9 @@ pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.
         .node = raw_node,
         .src_node = src_node2,
         .vi = data.vi,
-        .radius = d.radius,
-        .process = d.process,
-        .max_w = d.max_iw,
+        .radius = d.cfg.radius,
+        .process = d.cfg.process,
+        .max_w = d.cfg.max_iw,
     };
     vag.pool_lock = .init;
     vag.pool = std.AutoHashMap(std.Thread.Id, []align(64) f32).init(allocator);

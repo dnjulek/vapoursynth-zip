@@ -2,12 +2,54 @@ const std = @import("std");
 const math = std.math;
 const allocator = std.heap.c_allocator;
 
-const Data = @import("../vapoursynth/planeminmax.zig").Data;
 const simd = @import("simd.zig");
-const vszip = @import("../vszip.zig");
-const vapoursynth = vszip.vapoursynth;
-const vs = vapoursynth.vapoursynth4;
-const ZAPI = vapoursynth.ZAPI;
+const vszip = @import("../common.zig");
+
+/// Kernel configuration (host-independent part of vszip's adapter Data).
+/// `props` arguments are any sink with `setInt(key, i64, mode)` and
+/// `setFloat(key, f64, mode)` methods (mode is the enum literal `.Append`).
+pub const Data = struct {
+    peak: u16 = 0,
+    peakf: f32 = 0,
+    minthr: f32 = 0,
+    maxthr: f32 = 0,
+    hist_size: u32 = 0,
+    prop: StringProp = .{},
+
+    /// Histogram geometry for the format and the owned property names
+    /// `<prop>Diff`/`<prop>Max`/`<prop>Min`; free with `deinit`.
+    pub fn init(float: bool, bits: u32, minthr: f32, maxthr: f32, prop: []const u8) error{OutOfMemory}!Data {
+        var d: Data = .{ .minthr = minthr, .maxthr = maxthr };
+        d.hist_size = if (float) 65536 else math.shl(u32, 1, bits);
+        d.peak = @intCast(d.hist_size - 1);
+        d.peakf = @floatFromInt(d.peak);
+        errdefer d.deinit();
+        d.prop.d = try allocator.printSentinel("{s}Diff", .{prop}, 0);
+        d.prop.ma = try allocator.printSentinel("{s}Max", .{prop}, 0);
+        d.prop.mi = try allocator.printSentinel("{s}Min", .{prop}, 0);
+        return d;
+    }
+
+    pub fn deinit(d: *Data) void {
+        // Unset names are the static "" (never freed); set ones are never
+        // empty (they end in a suffix).
+        inline for (.{ &d.prop.d, &d.prop.ma, &d.prop.mi }) |name| {
+            if (name.len != 0) allocator.free(name.*);
+        }
+        d.prop = .{};
+    }
+
+    /// Both thresholds zero: the plain min/max kernels apply.
+    pub fn noThr(d: *const Data) bool {
+        return d.maxthr == 0 and d.minthr == 0;
+    }
+};
+
+pub const StringProp = struct {
+    d: [:0]const u8 = "",
+    ma: [:0]const u8 = "",
+    mi: [:0]const u8 = "",
+};
 
 /// Zero the histogram with explicit vector stores: @memset lowers to a call
 /// into Zig's compiler_rt.memset (a scalar word loop, ~1.4 Ir/byte — 360K Ir
@@ -49,7 +91,7 @@ inline fn floatIdxVec(comptime T: type, comptime n: comptime_int, p: *const [n]T
     return @intCast(@as(@Vector(n, i32), @intFromFloat(c)));
 }
 
-inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, ref: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) error{OutOfMemory}!void {
     const is_int = @typeInfo(T) == .int;
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
@@ -59,7 +101,7 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
     // above 2^bits-1 (only 0..d.hist_size is ever scanned, but the scatter
     // must stay in bounds) and the float index saturates at 65535.
     const hist_len: usize = if (T == u8) 256 else 65536;
-    const accum_buf: []align(vszip.vec_len) u32 = allocator.alignedAlloc(u32, vszip.alignment, hist_len) catch unreachable;
+    const accum_buf: []align(vszip.vec_len) u32 = try allocator.alignedAlloc(u32, vszip.alignment, hist_len);
     defer allocator.free(accum_buf);
 
     zeroHist(accum_buf);
@@ -163,12 +205,12 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
     }
 }
 
-pub fn minMax(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
-    minMaxImpl(T, false, src, &.{}, stride, props, w, h, d);
+pub fn minMax(comptime T: type, src: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) error{OutOfMemory}!void {
+    return minMaxImpl(T, false, src, &.{}, stride, props, w, h, d);
 }
 
-pub fn minMaxRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
-    minMaxImpl(T, true, src, ref, stride, props, w, h, d);
+pub fn minMaxRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) error{OutOfMemory}!void {
+    return minMaxImpl(T, true, src, ref, stride, props, w, h, d);
 }
 
 /// Accumulator element type: f16 lanes are widened to f32 — exact (f32 is a
@@ -239,7 +281,7 @@ fn minMaxPlane(comptime T: type, src: []const T, stride: u32, w: u32, h: u32) Mi
         .{ .min = rmin, .max = rmax };
 }
 
-fn setMinMaxProps(comptime T: type, props: *const ZAPI.ZMap(*vs.Map), d: *Data, mm: MinMax) void {
+fn setMinMaxProps(comptime T: type, props: anytype, d: *Data, mm: MinMax) void {
     if (@typeInfo(T) == .int) {
         props.setInt(d.prop.mi, @intFromFloat(mm.min), .Append);
         props.setInt(d.prop.ma, @intFromFloat(mm.max), .Append);
@@ -249,7 +291,7 @@ fn setMinMaxProps(comptime T: type, props: *const ZAPI.ZMap(*vs.Map), d: *Data, 
     }
 }
 
-pub fn minMaxNoThr(comptime T: type, src: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+pub fn minMaxNoThr(comptime T: type, src: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) void {
     setMinMaxProps(T, props, d, minMaxPlane(T, src, stride, w, h));
 }
 
@@ -284,7 +326,7 @@ fn absDiffSumInt(comptime T: type, src: []const T, ref: []const T, stride: u32, 
     return acc;
 }
 
-pub fn minMaxNoThrRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: *const ZAPI.ZMap(*vs.Map), w: u32, h: u32, d: *Data) void {
+pub fn minMaxNoThrRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) void {
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
 

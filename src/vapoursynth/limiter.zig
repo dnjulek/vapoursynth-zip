@@ -81,6 +81,65 @@ pub fn Limiter(comptime T: type, rng: anytype, np: comptime_int, idx: comptime_i
     };
 }
 
+fn selectGetFrame(use_rt: bool, tv_range: bool, yuv: bool, num_planes: i32, bps: hz.BPSType, idx: u32) vs.FilterGetFrame {
+    var get_frame: vs.FilterGetFrame = undefined;
+    if (use_rt) {
+        get_frame = switch (num_planes) {
+            inline 1...3 => |np| switch (idx) {
+                inline 0...(comptime_planes.len - 1) => |i| switch (bps) {
+                    .U8 => &LimiterRT(u8, np, i).getFrame,
+                    .U9, .U10, .U12, .U14, .U16 => &LimiterRT(u16, np, i).getFrame,
+                    .U32 => &LimiterRT(u32, np, i).getFrame,
+                    .F16 => &LimiterRT(f16, np, i).getFrame,
+                    .F32 => &LimiterRT(f32, np, i).getFrame,
+                },
+                else => unreachable,
+            },
+            else => unreachable,
+        };
+    } else {
+        if (tv_range) {
+            get_frame = switch (num_planes) {
+                inline 1...3 => |np| switch (idx) {
+                    inline 0...(comptime_planes.len - 1) => |i| switch (bps) {
+                        .U8 => if (yuv) &Limiter(u8, filter.yuv8, np, i).getFrame else &Limiter(u8, filter.rgb8, np, i).getFrame,
+                        .U9 => if (yuv) &Limiter(u16, filter.yuv9, np, i).getFrame else &Limiter(u16, filter.rgb9, np, i).getFrame,
+                        .U10 => if (yuv) &Limiter(u16, filter.yuv10, np, i).getFrame else &Limiter(u16, filter.rgb10, np, i).getFrame,
+                        .U12 => if (yuv) &Limiter(u16, filter.yuv12, np, i).getFrame else &Limiter(u16, filter.rgb12, np, i).getFrame,
+                        .U14 => if (yuv) &Limiter(u16, filter.yuv14, np, i).getFrame else &Limiter(u16, filter.rgb14, np, i).getFrame,
+                        .U16 => if (yuv) &Limiter(u16, filter.yuv16, np, i).getFrame else &Limiter(u16, filter.rgb16, np, i).getFrame,
+                        .U32 => if (yuv) &Limiter(u32, filter.yuv32, np, i).getFrame else &Limiter(u32, filter.rgb32, np, i).getFrame,
+                        .F16 => if (yuv) &Limiter(f16, filter.yuvf, np, i).getFrame else &Limiter(f16, filter.rgbf, np, i).getFrame,
+                        .F32 => if (yuv) &Limiter(f32, filter.yuvf, np, i).getFrame else &Limiter(f32, filter.rgbf, np, i).getFrame,
+                    },
+                    else => unreachable,
+                },
+                else => unreachable,
+            };
+        } else {
+            get_frame = switch (num_planes) {
+                inline 1...3 => |np| switch (idx) {
+                    inline 0...(comptime_planes.len - 1) => |i| switch (bps) {
+                        .U8 => &Limiter(u8, filter.full8, np, i).getFrame,
+                        .U9 => &Limiter(u16, filter.full9, np, i).getFrame,
+                        .U10 => &Limiter(u16, filter.full10, np, i).getFrame,
+                        .U12 => &Limiter(u16, filter.full12, np, i).getFrame,
+                        .U14 => &Limiter(u16, filter.full14, np, i).getFrame,
+                        .U16 => &Limiter(u16, filter.full16, np, i).getFrame,
+                        .U32 => &Limiter(u32, filter.full32, np, i).getFrame,
+                        .F16 => if (yuv) &Limiter(f16, filter.yuvf, np, i).getFrame else &Limiter(f16, filter.rgbf, np, i).getFrame,
+                        .F32 => if (yuv) &Limiter(f32, filter.yuvf, np, i).getFrame else &Limiter(f32, filter.rgbf, np, i).getFrame,
+                    },
+                    else => unreachable,
+                },
+                else => unreachable,
+            };
+        }
+    }
+
+    return get_frame;
+}
+
 fn limiterFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
@@ -221,7 +280,7 @@ pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*
     const tv_range = map_in.getBool("tv_range") orelse false;
     const mask = map_in.getBool("mask") orelse false;
     const yuv = (d.vi.format.colorFamily == .YUV) and !mask;
-    const get_frame: vs.FilterGetFrame = filter.getFrame(has_min, tv_range, yuv, num_planes, bps, idx);
+    const get_frame: vs.FilterGetFrame = selectGetFrame(has_min, tv_range, yuv, num_planes, bps, idx);
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;

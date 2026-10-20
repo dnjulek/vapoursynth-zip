@@ -19,36 +19,8 @@ pub const Data = struct {
     vi: *const vs.VideoInfo,
     num_planes: u32,
     planes: [3]bool,
-    rh: [3]u32,
-    rv: [3]u32,
-    m: [3]f32,
-    wmax: [3]f32,
-    sum_w_min: [3]f32,
-    // sub-sampled point lists resolved to linear cache offsets per plane
-    offsets: [3]?[]isize,
-    k: [3]usize,
-    peak: f32,
+    cfg: filter.Config,
 };
-
-fn freeOffsets(d: *Data) void {
-    for (d.offsets) |o| {
-        if (o) |p| allocator.free(p);
-    }
-}
-
-const SlotCfg = struct { sum_w_min: f32, pl: ?[]subspl.Coord, k: usize };
-
-fn buildSlot(rh: u32, rv: u32, subspl_arg: f32, wmin: f32, wmax: f32, unit: f32) !SlotCfg {
-    const active = (subspl_arg >= 4.0) or (subspl_arg < 1e-3);
-    if (active) {
-        const lists = try subspl.generate(@intCast(rh), @intCast(rv), @floatCast(subspl_arg));
-        const kf: f32 = @floatFromInt(lists.k);
-        return .{ .sum_w_min = @max(wmin * wmax * kf, unit), .pl = lists.pts, .k = lists.k };
-    } else {
-        const area: f32 = @floatFromInt((2 * rh - 1) * (2 * rv - 1));
-        return .{ .sum_w_min = @max(wmin * wmax * area, unit), .pl = null, .k = 0 };
-    }
-}
 
 fn GetFrame(comptime T: type) type {
     return struct {
@@ -92,14 +64,14 @@ fn GetFrame(comptime T: type) type {
                         w,
                         h,
                         stride,
-                        d.rh[plane],
-                        d.rv[plane],
-                        d.m[plane],
-                        d.wmax[plane],
-                        d.sum_w_min[plane],
-                        d.peak,
-                        d.offsets[plane],
-                        d.k[plane],
+                        d.cfg.rh[plane],
+                        d.cfg.rv[plane],
+                        d.cfg.m[plane],
+                        d.cfg.wmax[plane],
+                        d.cfg.sum_w_min[plane],
+                        d.cfg.peak,
+                        d.cfg.offsets[plane],
+                        d.cfg.k[plane],
                     );
                 }
 
@@ -114,7 +86,7 @@ fn free(instance: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c)
     const d: *Data = @ptrCast(@alignCast(instance));
     vsapi.?.freeNode.?(d.node);
     if (d.ref) |refn| vsapi.?.freeNode.?(refn);
-    freeOffsets(d);
+    d.cfg.deinit();
     allocator.destroy(d);
 }
 
@@ -155,75 +127,50 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     const wmin = hz.getArray(f32, 0, 0, 65535, "wmin", filter_name, zin, zout, &nodes, &zapi) catch return;
     const subspl_arg = hz.getArray(f32, 0, 0, 4096, "subspl", filter_name, zin, zout, &nodes, &zapi) catch return;
 
-    if (d.vi.width < 16 or d.vi.height < 16) {
-        zout.setError(filter_name ++ ": input must be 16x16 min");
+    filter.Config.checkSize(d.vi.width, d.vi.height) catch |e| {
+        hz.setArgError(zout, "{s}: {s}", .{ filter_name, filter.Config.message(e) });
         zapi.freeNode(d.node);
         return;
-    }
-
-    const scale: f32 = if (is_int)
-        @floatFromInt(@as(u32, 1) << @as(u5, @intCast(fmt.bitsPerSample - 8)))
-    else
-        1.0 / 256.0;
-
-    const unit: f32 = if (is_int) 1.0 else 1.0 / 65535.0;
-    d.peak = if (is_int)
-        @floatFromInt((@as(u32, 1) << @as(u5, @intCast(fmt.bitsPerSample))) - 1)
-    else
-        0;
+    };
 
     const np: u32 = @intCast(fmt.numPlanes);
     d.num_planes = np;
-    d.offsets = .{ null, null, null };
 
     d.planes = .{ true, true, true };
     hz.mapGetPlanes(zin, zout, &nodes, &d.planes, fmt.numPlanes, filter_name, &zapi) catch return;
 
     const ssw: u5 = @intCast(fmt.subSamplingW);
     const ssh: u5 = @intCast(fmt.subSamplingH);
-
-    var p: u32 = 0;
-    while (p < np) : (p += 1) {
-        if (!d.planes[p]) continue;
-        const pw: i32 = if (p > 0) d.vi.width >> ssw else d.vi.width;
-        const ph: i32 = if (p > 0) d.vi.height >> ssh else d.vi.height;
-        if (pw < radius[p] or ph < radius[p]) {
-            zout.setError(filter_name ++ ": picture size must be greater than \"radius\"");
-            freeOffsets(&d);
-            zapi.freeNode(d.node);
-            return;
-        }
-        const rp: u32 = @intCast(radius[p]);
-        d.rh[p] = rp;
-        d.rv[p] = rp;
-        d.m[p] = @max(thr[p] * scale, unit);
-        d.wmax[p] = @max(thr[p] * (1.0 - flat[p]) * scale, unit);
-        const slot = buildSlot(rp, rp, subspl_arg[p], wmin[p], d.wmax[p], unit) catch {
-            zout.setError(filter_name ++ ": out of memory");
-            freeOffsets(&d);
-            zapi.freeNode(d.node);
-            return;
-        };
-        d.sum_w_min[p] = slot.sum_w_min;
-        d.k[p] = slot.k;
-        if (slot.pl) |pts| {
-            defer allocator.free(pts);
-            const offs = allocator.alloc(isize, pts.len) catch {
-                zout.setError(filter_name ++ ": out of memory");
-                freeOffsets(&d);
-                zapi.freeNode(d.node);
-                return;
-            };
-            filter.resolveOffsets(pts, @intCast(pw), rp, offs);
-            d.offsets[p] = offs;
-        }
+    var plane_w: [3]i32 = @splat(0);
+    var plane_h: [3]i32 = @splat(0);
+    for (0..np) |p| {
+        plane_w[p] = if (p > 0) d.vi.width >> ssw else d.vi.width;
+        plane_h[p] = if (p > 0) d.vi.height >> ssh else d.vi.height;
     }
+
+    d.cfg = filter.Config.init(.{
+        .is_int = is_int,
+        .bits = @intCast(fmt.bitsPerSample),
+        .planes = d.planes,
+        .num_planes = np,
+        .plane_w = plane_w,
+        .plane_h = plane_h,
+        .radius = radius,
+        .thr = thr,
+        .flat = flat,
+        .wmin = wmin,
+        .subspl = subspl_arg,
+    }) catch |e| {
+        hz.setArgError(zout, "{s}: {s}", .{ filter_name, filter.Config.message(e) });
+        zapi.freeNode(d.node);
+        return;
+    };
 
     d.ref = zin.getNode("ref");
     if (d.ref) |refn| {
         if (!vsh.isSameVideoInfo(zapi.getVideoInfo(refn), d.vi)) {
             zout.setError(filter_name ++ ": \"ref\" must have the same format and dimensions as \"clip\"");
-            freeOffsets(&d);
+            d.cfg.deinit();
             zapi.freeNode(d.node);
             zapi.freeNode(refn);
             return;

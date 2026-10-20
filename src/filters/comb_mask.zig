@@ -1,6 +1,6 @@
 const std = @import("std");
 const math = std.math;
-const vszip = @import("../vszip.zig");
+const vszip = @import("../common.zig");
 
 const vec_len = std.simd.suggestVectorLength(i16) orelse 1;
 const V = @Vector(vec_len, i16);
@@ -30,7 +30,7 @@ pub fn process(
     comptime metric_1: bool,
     comptime expand: bool,
     comptime motion: bool,
-) void {
+) error{OutOfMemory}!void {
     // metric taps: rows y-2..y+2 (metric 0) or y-1..y+1 (metric 1), mirrored
     var sa = src.ptr + (stride << 1);
     var sb = src.ptr + stride;
@@ -38,9 +38,9 @@ pub fn process(
     var sd = sb;
     var se = sa;
 
-    const ring = if (motion) allocator.alignedAlloc(u8, vszip.alignment, 3 * stride) catch unreachable;
+    const ring = if (motion) try allocator.alignedAlloc(u8, vszip.alignment, 3 * stride);
     defer if (motion) allocator.free(ring);
-    const ebuf = if (expand) allocator.alloc(u8, w) catch unreachable;
+    const ebuf = if (expand) try allocator.alloc(u8, w);
     defer if (expand) allocator.free(ebuf);
     const mthresh_v: @Vector(vec_len, u16) = @splat(mthresh);
     if (motion) diffRow(src, prv, ring[0..stride], w, mthresh_v);

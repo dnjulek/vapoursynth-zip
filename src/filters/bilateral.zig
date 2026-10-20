@@ -1,9 +1,163 @@
 const std = @import("std");
 const math = std.math;
 
-const hz = @import("../helper.zig");
-const Data = @import("../vapoursynth/bilateral.zig").Data;
-const vszip = @import("../vszip.zig");
+const hz = @import("../common.zig");
+
+/// Kernel configuration, derived by `Data.init` from the parsed arguments
+/// (shared by the VapourSynth and AviSynth adapters).
+pub const Data = struct {
+    sigmaS: [3]f64 = .{ 0, 0, 0 },
+    sigmaR: [3]f64 = .{ 0, 0, 0 },
+    planes: [3]bool = .{ true, true, true },
+    algorithm: [3]i32 = .{ 0, 0, 0 },
+    PBFICnum: [3]u32 = .{ 0, 0, 0 },
+    radius: [3]u32 = .{ 0, 0, 0 },
+    samples: [3]u32 = .{ 0, 0, 0 },
+    step: [3]u32 = .{ 0, 0, 0 },
+    gr_lut: [3][]f32 = .{ &.{}, &.{}, &.{} },
+    gs_lut: [3][]f32 = .{ &.{}, &.{}, &.{} },
+    psize: u6 = 0,
+    peak: f32 = 0,
+
+    pub const max_sigma_s: f64 = 8192;
+
+    /// Parsed arguments. `sigmaS` is already resolved per plane (see
+    /// `sigmaSDefault`); `planes` already reflects the `planes` argument.
+    pub const Args = struct {
+        sigmaS: [3]f64,
+        sigmaR: [3]f64,
+        algorithm: [3]i32,
+        PBFICnum: [3]u32,
+        planes: [3]bool,
+        yuv: bool,
+        /// Plane dimensions of planes 0..2.
+        plane_w: [3]u32,
+        plane_h: [3]u32,
+        /// 2^bits for integer formats, 65536 for float.
+        hist_len: u32,
+    };
+
+    pub const Error = error{ PBFICnum, PlaneTooSmall, OutOfMemory };
+
+    /// Message for an `init` error (callers add their filter-name prefix).
+    pub fn message(e: Error) [:0]const u8 {
+        return switch (e) {
+            error.PBFICnum => "Invalid \"PBFICnum\" assigned, must be integer ranges in [0,256] except 1",
+            error.PlaneTooSmall => "plane too small for the spatial radius derived from sigmaS; lower sigmaS or use a larger clip.",
+            error.OutOfMemory => "out of memory",
+        };
+    }
+
+    /// vszip's default for an unset sigmaS entry `i`: 3 for luma, scaled by the
+    /// subsampling for 4:2:x chroma, else the previous plane's value.
+    pub fn sigmaSDefault(prev: []const f64, i: usize, yuv: bool, ssw: u5, ssh: u5) f64 {
+        if (i == 0) return 3;
+        if ((i == 1) and yuv and (ssh != 0) and (ssw != 0)) {
+            const factor: f64 = @floatFromInt((@as(u32, 1) << ssh) * (@as(u32, 1) << ssw));
+            return prev[0] / @sqrt(factor);
+        }
+        return prev[i - 1];
+    }
+
+    /// Derive PBFIC counts, radii and algorithms and build the LUTs.
+    pub fn init(a: Args) Error!Data {
+        var d: Data = .{ .sigmaS = a.sigmaS, .sigmaR = a.sigmaR, .algorithm = a.algorithm, .PBFICnum = a.PBFICnum, .planes = a.planes };
+        d.peak = @floatFromInt(a.hist_len - 1);
+
+        for (0..3) |i| {
+            if ((d.sigmaS[i] == 0) or (d.sigmaR[i] == 0)) d.planes[i] = false;
+        }
+        for (d.PBFICnum) |num| {
+            if (num == 1) return error.PBFICnum;
+        }
+
+        for (0..3) |i| {
+            if ((d.planes[i]) and (d.PBFICnum[i] == 0)) {
+                if (d.sigmaR[i] >= 0.08) {
+                    d.PBFICnum[i] = 4;
+                } else if (d.sigmaR[i] >= 0.015) {
+                    d.PBFICnum[i] = @intFromFloat(@min(16.0, @trunc(4 * 0.08 / d.sigmaR[i] + 0.5)));
+                } else {
+                    // clamp in float: a tiny positive sigmaR makes the quotient
+                    // exceed u32 (same result as min-after-trunc for every value
+                    // that fits)
+                    d.PBFICnum[i] = @intFromFloat(@min(32.0, @trunc(16 * 0.015 / d.sigmaR[i] + 0.5)));
+                }
+
+                if ((i > 0) and a.yuv and (d.PBFICnum[i] % 2 == 0) and (d.PBFICnum[i] < 256)) {
+                    d.PBFICnum[i] += 1;
+                }
+            }
+        }
+
+        var orad = [_]i32{ 0, 0, 0 };
+        for (0..3) |i| {
+            if (!d.planes[i]) continue;
+            orad[i] = @max(@as(i32, @trunc(d.sigmaS[i] * 2 + 0.5)), 1);
+            if (orad[i] < 4) {
+                d.step[i] = 1;
+            } else if (orad[i] < 8) {
+                d.step[i] = 2;
+            } else {
+                d.step[i] = 3;
+            }
+
+            d.samples[i] = 1;
+            d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
+
+            while (orad[i] * 2 > d.radius[i] * 3) {
+                d.samples[i] += 1;
+                d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
+                if ((d.radius[i] >= orad[i]) and (d.samples[i] > 2)) {
+                    d.samples[i] -= 1;
+                    d.radius[i] = 1 + (d.samples[i] - 1) * d.step[i];
+                    break;
+                }
+            }
+        }
+
+        for (0..3) |i| {
+            if ((d.planes[i]) and (d.algorithm[i] <= 0)) {
+                d.algorithm[i] = if (d.step[i] == 1) 2 else (if ((d.sigmaR[i] < 0.08) and (d.samples[i] < 5)) 2 else (if (4 * d.samples[i] * d.samples[i] <= 15 * d.PBFICnum[i]) 2 else 1));
+            }
+        }
+
+        for (0..3) |i| {
+            if ((d.planes[i]) and (d.algorithm[i] == 2)) {
+                if ((a.plane_w[i] <= 2 * d.radius[i]) or (a.plane_h[i] <= 2 * d.radius[i])) return error.PlaneTooSmall;
+            }
+        }
+
+        errdefer d.deinit();
+        for (0..3) |i| {
+            if ((d.planes[i]) and (d.algorithm[i] == 2)) {
+                const upper: u32 = d.radius[i] + 1;
+                d.gs_lut[i] = try allocator.alloc(f32, upper * upper);
+                gaussianFunctionSpatialLUTGeneration(d.gs_lut[i], upper, d.sigmaS[i]);
+            }
+        }
+        for (0..3) |i| {
+            if (d.planes[i]) {
+                d.gr_lut[i] = try allocator.alloc(f32, a.hist_len);
+                gaussianFunctionRangeLUTGeneration(d.gr_lut[i], d.peak, d.sigmaR[i]);
+            }
+        }
+        return d;
+    }
+
+    /// Free the LUTs (unallocated slots are empty slices).
+    pub fn deinit(d: *Data) void {
+        for (&d.gr_lut) |*l| {
+            allocator.free(l.*);
+            l.* = &.{};
+        }
+        for (&d.gs_lut) |*l| {
+            allocator.free(l.*);
+            l.* = &.{};
+        }
+    }
+};
+const vszip = @import("../common.zig");
 
 const allocator = std.heap.c_allocator;
 const AlignedF32 = []align(vszip.vec_len) f32;
@@ -87,23 +241,23 @@ inline fn vFinalize(comptime T: type, sum: Vf, wsum: Vf, peakv: Vf) Vec(T) {
     }
 }
 
-pub fn bilateral(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, w: u32, h: u32, plane: u32, comptime join: bool, d: *Data) void {
+pub fn bilateral(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, w: u32, h: u32, plane: u32, comptime join: bool, d: *Data) error{OutOfMemory}!void {
     _ = join; // refp already aliases srcp when there is no joint clip
     if (d.algorithm[plane] == 1) {
-        pbfic(T, srcp, refp, dstp, stride, w, h, plane, d);
+        try pbfic(T, srcp, refp, dstp, stride, w, h, plane, d);
     } else {
         truncated(T, srcp, refp, dstp, d.gs_lut[plane], d.gr_lut[plane], stride, w, h, d.radius[plane], d.step[plane], d.peak);
     }
 }
 
 // O(1) cross/joint bilateral (PBFIC) — "Real-Time O(1) Bilateral Filtering", Yang et al.
-fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, width: u32, height: u32, plane: u32, d: *Data) void {
+fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, width: u32, height: u32, plane: u32, d: *Data) error{OutOfMemory}!void {
     const is_float = @typeInfo(T) == .float;
     const num = d.PBFICnum[plane];
     const pcount: u32 = stride * height;
     const gr_lut = d.gr_lut[plane];
 
-    const pbfick = allocator.alloc(T, num) catch unreachable;
+    const pbfick = try allocator.alloc(T, num);
     defer allocator.free(pbfick);
     if (is_float) {
         const denom: T = @floatFromInt(num - 1);
@@ -123,10 +277,10 @@ fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: 
     recursiveGaussianParameters(d.sigmaS[plane], &b, &b1, &b2, &b3);
 
     // One contiguous backing buffer for all PBFICs (num * pcount), plus Wk/Jk scratch.
-    const pbfic_buf: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, num * pcount) catch unreachable;
+    const pbfic_buf: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, num * pcount);
     defer allocator.free(pbfic_buf);
-    const wk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
-    const jk: AlignedF32 = allocator.alignedAlloc(f32, vszip.alignment, pcount) catch unreachable;
+    const wk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
+    const jk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
     defer allocator.free(wk);
     defer allocator.free(jk);
 

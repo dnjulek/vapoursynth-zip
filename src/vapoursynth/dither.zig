@@ -14,86 +14,15 @@ const ZAPI = vapoursynth.ZAPI;
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Dither";
 
-pub const Mode = enum(i32) {
-    round = 0,
-    zimg_ordered = 1,
-    zimg_random = 2,
-    zimg_error_diffusion = 3,
-    fmtc_ordered_bayer = 4,
-    fmtc_filter_lite = 5,
-    fmtc_stucki = 6,
-    fmtc_atkinson = 7,
-    fmtc_floyd = 8,
-    fmtc_ostro = 9,
-    fmtc_void_cluster = 10,
-    fmtc_quasirnd = 11,
-
-    fn ordered(self: Mode) ?filter.OrderedMode {
-        return switch (self) {
-            .round => .round,
-            .zimg_ordered => .zimg_ordered,
-            .zimg_random => .zimg_random,
-            .fmtc_ordered_bayer => .fmtc_bayer,
-            .fmtc_void_cluster => .fmtc_void,
-            .fmtc_quasirnd => .fmtc_quasi,
-            else => null,
-        };
-    }
-
-    fn fmtcErrdiff(self: Mode) ?errdiff.FmtcMode {
-        return switch (self) {
-            .fmtc_filter_lite => .filter_lite,
-            .fmtc_stucki => .stucki,
-            .fmtc_atkinson => .atkinson,
-            .fmtc_floyd => .floyd,
-            .fmtc_ostro => .ostro,
-            else => null,
-        };
-    }
-};
+pub const Mode = filter.Mode;
 
 const Data = struct {
     node: *vs.Node,
     vi_out: vs.VideoInfo,
     num_planes: u32,
-    sc: [3]filter.ScaleOffset,
-    int_kernel: [3]bool,
-    bits_in: u6,
-    bits_out: u6,
-    peak_out: f32,
-    gain_up: u16,
-    add_up: [3]u16,
-    err_buf_len: u32,
+    cfg: filter.Config,
     stamp_range: ?vsc.Range,
 };
-
-const PlaneFmt = struct {
-    bits: u6,
-    is_float: bool,
-    full: bool,
-    chroma: bool,
-
-    fn span(self: PlaneFmt) f64 {
-        if (self.is_float) return 1.0;
-        const bits: u5 = @intCast(self.bits);
-        if (self.full) return @floatFromInt((@as(u32, 1) << bits) - 1);
-        const base: u32 = if (self.chroma) 224 else 219;
-        return @floatFromInt(base << @intCast(bits - 8));
-    }
-
-    fn min(self: PlaneFmt) f64 {
-        if (self.is_float) return if (self.chroma) -0.5 else 0.0;
-        if (self.full) return if (self.chroma) 0.5 else 0.0;
-        return @floatFromInt(@as(u32, 16) << @intCast(self.bits - 8));
-    }
-};
-
-const GainAdd = struct { gain: f64, add: f64 };
-
-fn gainAdd(src: PlaneFmt, dst: PlaneFmt) GainAdd {
-    const gain = dst.span() / src.span();
-    return .{ .gain = gain, .add = dst.min() - src.min() * gain };
-}
 
 fn stampRange(dst: anytype, d: *const Data) void {
     if (d.stamp_range) |r| {
@@ -122,7 +51,7 @@ fn OrderedFilter(comptime T: type, comptime U: type, comptime mode: filter.Order
                     const w, const h, const src_stride = src.getDimensions2(T, plane);
                     _, _, const dst_stride = dst.getDimensions2(U, plane);
 
-                    filter.Ordered(T, U, mode).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.sc[plane], d.peak_out, plane, d.bits_in, d.bits_out, d.int_kernel[plane]);
+                    filter.Ordered(T, U, mode).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.cfg.sc[plane], d.cfg.peak_out, plane, d.cfg.bits_in, d.cfg.bits_out, d.cfg.int_kernel[plane]);
                 }
 
                 stampRange(dst, d);
@@ -147,7 +76,7 @@ fn ErrdiffFilter(comptime T: type, comptime U: type, comptime mode: errdiff.Fmtc
                 defer src.deinit();
                 const dst = src.newVideoFrame3(.{ .format = &d.vi_out.format });
 
-                const err_buf = errdiff.ErrorBuffer.init(d.err_buf_len);
+                const err_buf = errdiff.ErrorBuffer.init(d.cfg.err_buf_len) catch return hz.frameOom(&zapi, filter_name, dst);
                 defer err_buf.deinit();
 
                 var plane: u32 = 0;
@@ -158,11 +87,11 @@ fn ErrdiffFilter(comptime T: type, comptime U: type, comptime mode: errdiff.Fmtc
                     _, _, const dst_stride = dst.getDimensions2(U, plane);
                     err_buf.clear();
 
-                    if (@typeInfo(T) == .int and d.int_kernel[plane]) {
-                        errdiff.Fmtc(T, U, mode).processPlaneInt(srcp, dstp, w, h, src_stride, dst_stride, errdiff.IntQuant.init(d.bits_in, d.bits_out), &err_buf);
+                    if (@typeInfo(T) == .int and d.cfg.int_kernel[plane]) {
+                        errdiff.Fmtc(T, U, mode).processPlaneInt(srcp, dstp, w, h, src_stride, dst_stride, errdiff.IntQuant.init(d.cfg.bits_in, d.cfg.bits_out), &err_buf);
                     } else {
-                        const dif_bits = @as(i32, d.bits_in) - @as(i32, d.bits_out);
-                        errdiff.Fmtc(T, U, mode).processPlaneFloat(srcp, dstp, w, h, src_stride, dst_stride, d.sc[plane].scale, d.sc[plane].offset, d.peak_out, dif_bits, &err_buf);
+                        const dif_bits = @as(i32, d.cfg.bits_in) - @as(i32, d.cfg.bits_out);
+                        errdiff.Fmtc(T, U, mode).processPlaneFloat(srcp, dstp, w, h, src_stride, dst_stride, d.cfg.sc[plane].scale, d.cfg.sc[plane].offset, d.cfg.peak_out, dif_bits, &err_buf);
                     }
                 }
 
@@ -188,9 +117,9 @@ fn ZimgErrdiffFilter(comptime T: type, comptime U: type) type {
                 defer src.deinit();
                 const dst = src.newVideoFrame3(.{ .format = &d.vi_out.format });
 
-                const error_top = allocator.alloc(f32, d.err_buf_len) catch unreachable;
+                const error_top = allocator.alloc(f32, d.cfg.err_buf_len) catch unreachable;
                 defer allocator.free(error_top);
-                const error_cur = allocator.alloc(f32, d.err_buf_len) catch unreachable;
+                const error_cur = allocator.alloc(f32, d.cfg.err_buf_len) catch unreachable;
                 defer allocator.free(error_cur);
 
                 var plane: u32 = 0;
@@ -200,7 +129,7 @@ fn ZimgErrdiffFilter(comptime T: type, comptime U: type) type {
                     const w, const h, const src_stride = src.getDimensions2(T, plane);
                     _, _, const dst_stride = dst.getDimensions2(U, plane);
 
-                    errdiff.Zimg(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.sc[plane].scale, d.sc[plane].offset, d.peak_out, error_top, error_cur);
+                    errdiff.Zimg(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.cfg.sc[plane].scale, d.cfg.sc[plane].offset, d.cfg.peak_out, error_top, error_cur);
                 }
 
                 stampRange(dst, d);
@@ -232,7 +161,7 @@ fn MulAddUpFilter(comptime T: type, comptime U: type) type {
                     const w, const h, const src_stride = src.getDimensions2(T, plane);
                     _, _, const dst_stride = dst.getDimensions2(U, plane);
 
-                    filter.MulAddUp(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.gain_up, d.add_up[plane]);
+                    filter.MulAddUp(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.cfg.gain_up, d.cfg.add_up[plane]);
                 }
 
                 stampRange(dst, d);
@@ -264,7 +193,7 @@ fn ConvertFilter(comptime T: type, comptime U: type) type {
                     const w, const h, const src_stride = src.getDimensions2(T, plane);
                     _, _, const dst_stride = dst.getDimensions2(U, plane);
 
-                    filter.Convert(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.sc[plane]);
+                    filter.Convert(T, U).processPlane(srcp, dstp, w, h, src_stride, dst_stride, d.cfg.sc[plane]);
                 }
 
                 stampRange(dst, d);
@@ -378,10 +307,7 @@ pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*v
     const mode: Mode = @fromBackingInt(@intCast(imode));
 
     const src_float = vi.format.sampleType == .Float;
-    d.bits_in = @intCast(vi.format.bitsPerSample);
-    d.bits_out = @intCast(bitdepth);
     d.num_planes = @intCast(vi.format.numPlanes);
-    d.peak_out = if (dst_float) 0.0 else @floatFromInt((@as(u32, 1) << @intCast(d.bits_out)) - 1);
 
     d.vi_out = vi.*;
     _ = zapi.queryVideoFormat(
@@ -409,38 +335,22 @@ pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*v
     else
         null;
 
-    const int_up = !src_float and !dst_float and d.bits_out > d.bits_in;
-    const both_limited = !fulls and !fulld;
-    const full_upshift = fulls and fulld and d.bits_in == 8 and d.bits_out == 16 and mode == .round;
-    const upconv = int_up and (both_limited or full_upshift);
-    const is_yuv = vi.format.colorFamily == .YUV;
-    for (0..3) |plane| {
-        const chroma = is_yuv and plane > 0;
-        const pf_in: PlaneFmt = .{ .bits = d.bits_in, .is_float = src_float, .full = fulls, .chroma = chroma };
-        const pf_out: PlaneFmt = .{ .bits = d.bits_out, .is_float = dst_float, .full = fulld, .chroma = chroma };
-        const ga = gainAdd(pf_in, pf_out);
-        d.sc[plane] = .{ .scale = @floatCast(ga.gain), .offset = @floatCast(ga.add) };
-        d.int_kernel[plane] = !src_float and !dst_float and d.bits_in > d.bits_out and
-            @abs(ga.gain * @as(f64, @floatFromInt(@as(u32, 1) << @intCast(d.bits_in - d.bits_out))) - 1.0) < 1e-6 and
-            @abs(ga.add) < 1e-6;
-    }
-
-    d.gain_up = 1;
-    d.add_up = .{ 0, 0, 0 };
-    if (upconv) {
-        d.gain_up = @intFromFloat(@round(d.sc[0].scale));
-        for (0..3) |plane| d.add_up[plane] = @intFromFloat(@round(-d.sc[plane].offset));
-        const cmax: f64 = @floatFromInt((@as(u32, 1) << @intCast(d.bits_in)) - 1);
-        std.debug.assert(cmax * @as(f64, @floatFromInt(d.gain_up)) <= @as(f64, d.peak_out));
-    }
-
-    d.err_buf_len = @as(u32, @intCast(vi.width)) + 4;
+    d.cfg = filter.Config.init(.{
+        .bits_in = @intCast(vi.format.bitsPerSample),
+        .src_float = src_float,
+        .bits_out = @intCast(bitdepth),
+        .dst_float = dst_float,
+        .fulls = fulls,
+        .fulld = fulld,
+        .mode = mode,
+        .is_yuv = vi.format.colorFamily == .YUV,
+        .width = @intCast(vi.width),
+    });
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
-    const identity = d.bits_in == d.bits_out and src_float == dst_float and fulls == fulld;
-    const gf = if (identity) &passGetFrame else selectGetFrame(dt_in, dt_out, mode, upconv);
+    const gf = if (d.cfg.identity) &passGetFrame else selectGetFrame(dt_in, dt_out, mode, d.cfg.upconv);
 
     const deps = [_]vs.FilterDependency{
         .{ .source = d.node, .requestPattern = .StrictSpatial },

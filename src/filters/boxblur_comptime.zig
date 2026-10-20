@@ -104,16 +104,16 @@ pub inline fn scaleVec(comptime T: type, comptime n: usize, s: @Vector(n, u32), 
     return @intCast((@as(U64V, @intCast(s)) * @as(U64V, @intCast(mulv32))) >> sh);
 }
 
-pub fn hvBlur(comptime T: type, comptime radius: u32, src: []const T, dst: []T, stride: u32, w: u32, h: u32) void {
+pub fn hvBlur(comptime T: type, comptime radius: u32, src: []const T, dst: []T, stride: u32, w: u32, h: u32) error{OutOfMemory}!void {
     const ksize: u32 = (radius << 1) + 1;
     const iradius: i32 = @bitCast(radius);
     const ih: i32 = @bitCast(h);
 
-    const tmp = allocator.alloc(T, w) catch unreachable;
+    const tmp = try allocator.alloc(T, w);
     defer allocator.free(tmp);
 
     // raw vertical column sums; max ksize * 65535 < 2^22 fits u32
-    const col: []u32 = if (@typeInfo(T) == .int) allocator.alloc(u32, w) catch unreachable else &.{};
+    const col: []u32 = if (@typeInfo(T) == .int) try allocator.alloc(u32, w) else &.{};
     defer if (@typeInfo(T) == .int) allocator.free(col);
 
     var i: i32 = 0;
