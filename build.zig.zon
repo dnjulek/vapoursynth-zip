@@ -5,24 +5,22 @@
     .fingerprint = 0x7466a154dbe09310,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        .avisynth = .{
+            // zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
+            .url = "git+https://github.com/dnjulek/avisynth-zig.git#9baa17a8d5d8dc025d883d7eaadff822f346f1ce",
+            .hash = "avisynth-0.2.0-o4p8CzZdAgBBhSVZnu0NVVNubl9aOKH_pwGE1fz_kvfF",
+        },
+
         .vapoursynth = .{
             // zig fetch --save git+https://github.com/dnjulek/vapoursynth-zig.git
             .url = "git+https://github.com/dnjulek/vapoursynth-zig.git#07137c2f5e336b9cedd9afd74af889ae2cff09d9",
             .hash = "vapoursynth-4.0.0-jLYMQ3PmAgAVuS7eVi3E1g8dbA165g8YgSbFKguenIyS",
         },
 
-        .avisynth = .{
-            // Only for `zig build -Davisynth=true`. Local checkout while
-            // avisynth-zig's convenience layer is unreleased; once pushed:
-            // zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
-            .path = "../..",
-            .lazy = true,
-        },
-
         .zigimg = .{
             // zig fetch --save git+https://github.com/zigimg/zigimg.git
-            .url = "git+https://github.com/zigimg/zigimg.git#c8ab20d57487768ee121d4d05e69b10968f10115",
-            .hash = "zigimg-0.1.0-8_eo2j5lGAD6CsSJLnfXJikIjFDPG7V8blUGOPDiEZ4-",
+            .url = "git+https://github.com/zigimg/zigimg.git#083d0304840a3f5fd547c2e2005148a18886c401",
+            .hash = "zigimg-0.1.0-8_eo2j1pGAA3ArMKhXcipNR-tdjmeWmByLJhOff2A_X4",
         },
     },
 }
