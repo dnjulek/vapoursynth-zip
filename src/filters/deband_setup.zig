@@ -5,6 +5,7 @@
 const std = @import("std");
 const math = std.math;
 const hz = @import("../common.zig");
+const angle = @import("deband_angle.zig");
 
 const allocator = hz.kernel_allocator;
 
@@ -162,6 +163,8 @@ pub const TempBuff = struct {
     grain_int: [3][]i16 = .{ &.{}, &.{}, &.{} },
     grain_float: [3][]f32 = .{ &.{}, &.{}, &.{} },
     grain_offsets: []u32 = &.{},
+    /// mode 7's angle-plane scratch, shared by concurrent requests
+    angles: angle.Pool = .{},
 
     pub fn init(d: *const Data) !TempBuff {
         var tb = TempBuff{};
@@ -331,6 +334,7 @@ pub const TempBuff = struct {
     }
 
     pub fn deinit(self: *TempBuff, d: *const Data) void {
+        self.angles.deinit();
         if (d.dynamic_grain) allocator.free(self.grain_offsets);
         for (0..2) |i| {
             allocator.free(self.ref1[i]);

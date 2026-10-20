@@ -19,6 +19,7 @@ const kernels = .{
     @import("filters/comb_mask.zig"),
     @import("filters/comb_mask_mt.zig"),
     @import("filters/compress.zig"),
+    @import("filters/deband_angle.zig"),
     @import("filters/deband_float.zig"),
     @import("filters/deband_int.zig"),
     @import("filters/deband_setup.zig"),

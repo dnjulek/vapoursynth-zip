@@ -72,9 +72,9 @@ fn F3KDB(comptime T: type, comptime mode: Mode, comptime blur_first: bool, compt
                 }
 
                 if (T == f32) {
-                    filter_float.processPlane(sp.fullSlice(), dst_slice, k.tb.ref1[plane], k.tb.ref2[plane], grain, stride, dpl.width, dpl.height, k.thr.f[plane], k.thr1.f[plane], k.thr2.f[plane], k.angle_boost, k.max_angle, k.pixel_minf[plane], k.pixel_maxf[plane], mode, blur_first, add_grain[plane]);
+                    filter_float.processPlane(sp.fullSlice(), dst_slice, k.tb.ref1[plane], k.tb.ref2[plane], grain, stride, dpl.width, dpl.height, k.thr.f[plane], k.thr1.f[plane], k.thr2.f[plane], k.angle_boost, k.max_angle, &k.tb.angles, k.pixel_minf[plane], k.pixel_maxf[plane], mode, blur_first, add_grain[plane]);
                 } else {
-                    filter_int.processPlane(sp.fullSlice(), dst_slice, k.tb.ref1[plane], k.tb.ref2[plane], grain, stride, dpl.width, dpl.height, k.thr.u[plane], k.thr1.u[plane], k.thr2.u[plane], k.pixel_min[plane], k.pixel_max[plane], k.angle_boost, k.max_angle, mode, blur_first, add_grain[plane]);
+                    filter_int.processPlane(sp.fullSlice(), dst_slice, k.tb.ref1[plane], k.tb.ref2[plane], grain, stride, dpl.width, dpl.height, k.thr.u[plane], k.thr1.u[plane], k.thr2.u[plane], k.pixel_min[plane], k.pixel_max[plane], k.angle_boost, k.max_angle, &k.tb.angles, mode, blur_first, add_grain[plane]);
                 }
 
                 if (!direct) {

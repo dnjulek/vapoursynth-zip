@@ -4,6 +4,7 @@ const allocator = std.heap.c_allocator;
 
 const hz = @import("../common.zig");
 const vcl = @import("../vcl.zig");
+const angle = @import("deband_angle.zig");
 const Mode = @import("deband_setup.zig").Mode;
 
 const vec_len = std.simd.suggestVectorLength(f32) orelse 8;
@@ -38,6 +39,8 @@ pub fn processPlane(
     thr2: f32,
     angle_boost: f32,
     max_angle: f32,
+    /// mode 7's scratch (unused by other modes)
+    angle_pool: *angle.Pool,
     pixel_min: f32,
     pixel_max: f32,
     comptime mode: Mode,
@@ -51,23 +54,18 @@ pub fn processPlane(
     const thr1_32: f32v = @splat(thr1);
     const thr2_32: f32v = @splat(thr2);
 
-    // Mode 7: precompute the gradient angle once for every (padded) pixel and
-    // turn the 5 per-pixel evaluations (org + 4 ref-offset reads) into cheap
-    // lookups. PAD covers the max |ref offset| (i8-bounded, <=128) so every
-    // offset read lands on a precomputed cell with no clamping — bit-identical
-    // to calculateGradientAngle on the fly (which clamps its own reads).
-    const ANGLE_PAD: u32 = 128;
-    const ang_stride: u32 = if (mode == .m7) hz.ceilN(width + 2 * ANGLE_PAD, hz.scratchAlignmentT(@sizeOf(f32))) else 0;
-    const angle_buf: []f32 = if (mode == .m7)
-        (allocator.alloc(f32, (height + 2 * ANGLE_PAD) * ang_stride) catch {
+    // Mode 7: the gradient angle of every pixel the 4 reference reads can
+    // address, computed once per plane (see deband_angle.zig).
+    const angles: angle.Plane = if (mode == .m7)
+        (angle.Plane.init(f32, src, stride, width, height, angle_pool) catch {
             var yy: u32 = 0; // graceful passthrough on OOM
             while (yy < height) : (yy += 1) @memcpy(dst[yy * stride ..][0..width], src[yy * stride ..][0..width]);
             return;
         })
     else
-        &.{};
-    defer if (mode == .m7) allocator.free(angle_buf);
-    if (mode == .m7) fillAnglePlane(src, stride, width, height, angle_buf, ang_stride, ANGLE_PAD);
+        undefined;
+    defer if (mode == .m7) angles.deinit(angle_pool);
+    const inv_stride: f32 = 1.0 / @as(f32, @floatFromInt(stride));
 
     const grain_stride: u32 = hz.ceilN(width, 32 / @sizeOf(f32));
     var y: u32 = 0;
@@ -168,39 +166,7 @@ pub fn processPlane(
 
                     if (mode == .m7) {
                         const angle_boost_v: f32v = @splat(angle_boost);
-                        const max_angle_v: f32v = @splat(max_angle);
-
-                        const stride_i: i32 = @intCast(stride);
-                        var y_offsets: i32v = undefined;
-                        var x_offsets: i32v = undefined;
-                        inline for (0..vec_len) |i| {
-                            y_offsets[i] = @divTrunc(ref1_row[x + i], stride_i);
-                            x_offsets[i] = ref2_row[x + i];
-                        }
-
-                        const astride_i: i32 = @intCast(ang_stride);
-                        const pad_i: i32 = @intCast(ANGLE_PAD);
-                        const yi: i32 = @intCast(y);
-                        const angle_org: f32v = angle_buf[(y + ANGLE_PAD) * ang_stride + (x + ANGLE_PAD) ..][0..vec_len].*;
-                        var angle_ref1_h: f32v = undefined;
-                        var angle_ref2_h: f32v = undefined;
-                        var angle_ref1_w: f32v = undefined;
-                        var angle_ref2_w: f32v = undefined;
-                        inline for (0..vec_len) |i| {
-                            const bx: i32 = @intCast(x + i);
-                            const yo = y_offsets[i];
-                            const xo = x_offsets[i];
-                            const col: i32 = bx + pad_i;
-                            const row_y: i32 = (yi + pad_i) * astride_i;
-                            angle_ref1_h[i] = angle_buf[@intCast((yi + yo + pad_i) * astride_i + col)];
-                            angle_ref2_h[i] = angle_buf[@intCast((yi - yo + pad_i) * astride_i + col)];
-                            angle_ref1_w[i] = angle_buf[@intCast(row_y + (bx + xo + pad_i))];
-                            angle_ref2_w[i] = angle_buf[@intCast(row_y + (bx - xo + pad_i))];
-                        }
-
-                        var max_angle_diff = @max(@abs(angle_ref1_h - angle_org), @abs(angle_ref2_h - angle_org));
-                        max_angle_diff = @max(max_angle_diff, @max(@abs(angle_ref1_w - angle_org), @abs(angle_ref2_w - angle_org)));
-                        const use_boost: boolv = max_angle_diff <= max_angle_v;
+                        const use_boost: boolv = angles.boost(y, x, ref1_row[x..][0..vec_len].*, ref2_row[x..][0..vec_len].*, inv_stride, @splat(max_angle));
                         t_avg = @select(f32, use_boost, t_avg * angle_boost_v, t_avg);
                         t_max = @select(f32, use_boost, t_max * angle_boost_v, t_max);
                         t_mid = @select(f32, use_boost, t_mid * angle_boost_v, t_mid);
@@ -248,61 +214,4 @@ pub fn processPlane(
 
 fn saturate(x: f32v) f32v {
     return @max(vec0_f32, @min(x, vec1_f32));
-}
-
-/// Precompute the gradient angle for every padded pixel: the angle for source
-/// coordinate (Y,X) lives at buf[(Y+PAD)*ang_stride + (X+PAD)]. Uses the exact
-/// same calculateGradientAngle as the per-pixel path (which clamps its own
-/// neighbour reads), so a lookup is bit-identical to recomputing on the fly.
-fn fillAnglePlane(src: []const f32, stride: u32, width: u32, height: u32, buf: []f32, ang_stride: u32, comptime PAD: u32) void {
-    const padded_w = width + 2 * PAD;
-    const padded_h = height + 2 * PAD;
-    var yy: u32 = 0;
-    while (yy < padded_h) : (yy += 1) {
-        const yc: i32v = @splat(@as(i32, @intCast(yy)) - @as(i32, @intCast(PAD)));
-        const row = yy * ang_stride;
-        var xx: u32 = 0;
-        while (xx < padded_w) : (xx += vec_len) {
-            var xc: i32v = undefined;
-            inline for (0..vec_len) |i| {
-                xc[i] = @as(i32, @intCast(xx + i)) - @as(i32, @intCast(PAD));
-            }
-            buf[row + xx ..][0..vec_len].* = calculateGradientAngle(src, stride, width, height, yc, xc, 20);
-        }
-    }
-}
-
-fn gatherPixelValues(src: []const f32, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v) f32v {
-    const width_i: i32v = @splat(@intCast(width - 1));
-    const height_i: i32v = @splat(@intCast(height - 1));
-    const stride_i: i32v = @splat(@intCast(stride));
-    const zero_i: i32v = @splat(0);
-    const clamped_y = @max(zero_i, @min(y_coords, height_i));
-    const clamped_x = @max(zero_i, @min(x_coords, width_i));
-    const offsets: @Vector(vec_len, u32) = @intCast(clamped_y * stride_i + clamped_x);
-
-    var result_arr: [vec_len]f32 align(32) = undefined;
-    inline for (0..vec_len) |i| {
-        result_arr[i] = src[offsets[i]];
-    }
-    return result_arr;
-}
-
-fn calculateGradientAngle(src: []const f32, stride: u32, width: u32, height: u32, y_coords: i32v, x_coords: i32v, read_distance: comptime_int) f32v {
-    const rd: i32v = @splat(read_distance);
-    const p00 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords - rd);
-    const p10 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords);
-    const p20 = gatherPixelValues(src, stride, width, height, y_coords - rd, x_coords + rd);
-    const p01 = gatherPixelValues(src, stride, width, height, y_coords, x_coords - rd);
-    const p21 = gatherPixelValues(src, stride, width, height, y_coords, x_coords + rd);
-    const p02 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords - rd);
-    const p12 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords);
-    const p22 = gatherPixelValues(src, stride, width, height, y_coords + rd, x_coords + rd);
-
-    const gx = (p20 + vec2_f32 * p21 + p22) - (p00 + vec2_f32 * p01 + p02);
-    const gy = (p00 + vec2_f32 * p10 + p20) - (p02 + vec2_f32 * p12 + p22);
-    const gx_is_small: boolv = @abs(gx) < vec_scaled_eps;
-    const angle_raw = vcl.atan(gy / gx);
-    const angle_normalized = angle_raw / vec_pi_f32 + vec05_f32;
-    return @select(f32, gx_is_small, vec1_f32, angle_normalized);
 }
