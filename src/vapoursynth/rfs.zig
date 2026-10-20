@@ -8,6 +8,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "RFS";
+pub const params = "clipa:vnode;clipb:vnode;frames:int[];mismatch:int:opt;planes:int[]:opt;";
 
 const Data = struct {
     node1: *vs.Node = undefined,
@@ -38,7 +39,7 @@ fn rfsFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) c
     allocator.destroy(d);
 }
 
-pub fn rfsCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

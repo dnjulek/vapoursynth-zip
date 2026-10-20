@@ -60,7 +60,7 @@ inline fn searchMagic(ksize: u64, nmax: u64, comptime narrow: bool, lo: u6, hi: 
 }
 
 /// Wide magic for a box of `radius`, or null when none exists (u16 runs out at
-/// radius 23332; `boxBlurCreate` rejects that rather than letting getFrame lose
+/// radius 23332; the adapters' create rejects that rather than letting getFrame lose
 /// precision). The shift >= 32 search window is the one verified exhaustively
 /// over the full N range at every radius; smaller shifts also divide exactly at
 /// some radii but buy nothing (same instructions either way).

@@ -13,6 +13,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Dither";
+pub const params = "clip:vnode;bitdepth:int;dither_type:int:opt;sample_type:int:opt;fulls:int:opt;fulld:int:opt;";
 
 pub const Mode = filter.Mode;
 
@@ -271,7 +272,7 @@ fn ditherFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API
     allocator.destroy(d);
 }
 
-pub fn ditherCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = undefined;
     const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);

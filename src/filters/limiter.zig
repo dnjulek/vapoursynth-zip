@@ -11,7 +11,7 @@ pub fn clampSlice(comptime T: type, dstp: []T, srcp: []const T, min: T, max: T) 
     std.debug.assert(dstp.len == srcp.len);
     if (comptime @typeInfo(T) == .float) {
         // Precondition for simd.clampV's bare-vmaxps/vminps form: the runtime
-        // bounds must be non-NaN. limiterCreate rejects NaN min/max, so this
+        // bounds must be non-NaN. Create rejects NaN min/max, so this
         // always holds; the assert documents and (in debug/safe builds)
         // enforces it. See simd.clampV for why the bare form is bit-identical
         // to @min(@max(min_v, v), max_v) under this precondition.

@@ -12,6 +12,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "BoxBlur";
+pub const params = "clip:vnode;planes:int[]:opt;hradius:int:opt;hpasses:int:opt;vradius:int:opt;vpasses:int:opt";
 
 pub const Data = struct {
     node: ?*vs.Node = null,
@@ -115,7 +116,7 @@ fn boxBlurFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.AP
     allocator.destroy(d);
 }
 
-pub fn boxBlurCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

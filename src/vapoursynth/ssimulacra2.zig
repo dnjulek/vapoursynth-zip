@@ -13,6 +13,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "SSIMULACRA2";
+pub const params = "reference:vnode;distorted:vnode;";
 const Scratch = []align(vszip.vec_len) f32;
 
 /// How one clip's frames are read: native RGB (int via LUT, or f32), or the
@@ -101,7 +102,7 @@ fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs
     allocator.destroy(d);
 }
 
-pub fn ssimulacraCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

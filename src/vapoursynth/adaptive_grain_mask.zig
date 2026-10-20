@@ -12,6 +12,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "AdaptiveGrainMask";
+pub const params = "clip:vnode;luma_scaling:float:opt;";
 
 const Data = struct {
     node: *vs.Node,
@@ -69,7 +70,7 @@ fn adaptiveGrainMaskFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*c
     allocator.destroy(d);
 }
 
-pub fn adaptiveGrainMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = undefined;
     const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);

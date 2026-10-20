@@ -14,6 +14,7 @@ const Mutex = std.Io.Mutex;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "XPSNR";
+pub const params = "reference:vnode;distorted:vnode;temporal:int:opt;verbose:int:opt;";
 
 pub const Data = struct {
     node1: *vs.Node = undefined,
@@ -120,7 +121,7 @@ fn xpsnrFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API)
     allocator.destroy(d);
 }
 
-pub fn xpsnrCreate(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, user_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     _ = user_data;
     var d: Data = .{};
     const zapi = ZAPI.init(vsapi, core, null);

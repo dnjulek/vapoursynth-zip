@@ -12,6 +12,7 @@ const hz = @import("../helper.zig");
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "BilateralDither";
+pub const params = "clip:vnode;ref:vnode:opt;radius:int[]:opt;thr:float[]:opt;flat:float[]:opt;wmin:float[]:opt;subspl:float[]:opt;planes:int[]:opt;";
 
 pub const Data = struct {
     node: *vs.Node,

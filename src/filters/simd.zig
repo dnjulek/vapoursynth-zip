@@ -243,7 +243,7 @@ pub inline fn interleaveF32(comptime n: comptime_int, e: @Vector(n, f32), o: @Ve
 /// non-NaN and get the bare form). An `assume(!isNan)` from std.debug.assert
 /// does NOT reach the late SelectionDAG minnum/maxnum lowering (verified: the
 /// blends remained), so the bare form is pinned here in asm.
-/// PRECONDITION: min_v and max_v contain no NaN lane (limiterCreate rejects
+/// PRECONDITION: min_v and max_v contain no NaN lane (Limiter's create rejects
 /// NaN bounds; callers std.debug.assert it). Under that precondition this is
 /// bit-identical to the portable twin for every input, NaN pixels included:
 /// vmaxps takes v as src1, and VMAXPS returns src2 when either operand is NaN,

@@ -12,7 +12,7 @@ const vec_len = std.simd.suggestVectorLength(u32) orelse 8;
 // The narrow/wide divide is picked per plane and threaded on as a *type*, so
 // the choice costs one branch per plane rather than one per pixel, and the
 // kernels below take it as `mg: anytype`. Float planes are handed `{}` -- their
-// kernels never look at it. boxBlurCreate has already rejected any radius with
+// kernels never look at it. Create has already rejected any radius with
 // no exact magic, hence the unreachables.
 
 /// The running sum is the *raw* window sum, seeded with +radius. ksize is odd,

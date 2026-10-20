@@ -8,6 +8,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "PackRGB";
+pub const params = "clip:vnode;";
 
 const Data = struct {
     node: ?*vs.Node,
@@ -85,7 +86,7 @@ fn packrgbFree(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) 
     allocator.destroy(d);
 }
 
-pub fn packrgbCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = undefined;
 
     const zapi = ZAPI.init(vsapi, core, null);

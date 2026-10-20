@@ -1,35 +1,12 @@
-const std = @import("std");
+//! vszip: VapourSynth Zig Image Process.
+//!
+//! Every function is registered in the `vszip` namespace; the AviSynth+ port
+//! (`avszip.zig`) registers the same filters as `vszip_<Filter>`.
+
 pub const vapoursynth = @import("vapoursynth");
 const vs = vapoursynth.vapoursynth4;
 const ZAPI = vapoursynth.ZAPI;
-pub const zigimg = @import("zigimg");
 const zon = @import("zon");
-
-const adaptive_binarize = @import("vapoursynth/adaptive_binarize.zig");
-const adaptive_grain_mask = @import("vapoursynth/adaptive_grain_mask.zig");
-const bilateral = @import("vapoursynth/bilateral.zig");
-const bilateral_dither = @import("vapoursynth/bilateral_dither.zig");
-const boxblur = @import("vapoursynth/boxblur.zig");
-const checkmate = @import("vapoursynth/checkmate.zig");
-const clahe = @import("vapoursynth/clahe.zig");
-const color_map = @import("vapoursynth/color_map.zig");
-const compress = @import("vapoursynth/compress.zig");
-const comb_mask_mt = @import("vapoursynth/comb_mask_mt.zig");
-const comb_mask = @import("vapoursynth/comb_mask.zig");
-const deband = @import("vapoursynth/deband.zig");
-const dither = @import("vapoursynth/dither.zig");
-const eedi3 = @import("vapoursynth/eedi3.zig");
-const image_read = @import("vapoursynth/image_read.zig");
-const limit_filter = @import("vapoursynth/limit_filter.zig");
-const limiter = @import("vapoursynth/limiter.zig");
-const mosquito_nr = @import("vapoursynth/mosquito_nr.zig");
-const packrgb = @import("vapoursynth/packrgb.zig");
-const pavg = @import("vapoursynth/planeaverage.zig");
-const pmm = @import("vapoursynth/planeminmax.zig");
-const rfs = @import("vapoursynth/rfs.zig");
-const ssimulacra2 = @import("vapoursynth/ssimulacra2.zig");
-const wnnm = @import("vapoursynth/wnnm.zig");
-const xpsnr = @import("vapoursynth/xpsnr.zig");
 
 // Shared with the kernels and the AviSynth adapters (see common.zig).
 const common = @import("common.zig");
@@ -37,219 +14,37 @@ pub const vec_len = common.vec_len;
 pub const alignment = common.alignment;
 pub const io = common.io;
 
+/// Adapter modules; each declares `filter_name`, `params` and `create`.
+const modules = .{
+    @import("vapoursynth/adaptive_binarize.zig"),
+    @import("vapoursynth/adaptive_grain_mask.zig"),
+    @import("vapoursynth/bilateral.zig"),
+    @import("vapoursynth/bilateral_dither.zig"),
+    @import("vapoursynth/boxblur.zig"),
+    @import("vapoursynth/checkmate.zig"),
+    @import("vapoursynth/clahe.zig"),
+    @import("vapoursynth/color_map.zig"),
+    @import("vapoursynth/compress.zig"),
+    @import("vapoursynth/comb_mask_mt.zig"),
+    @import("vapoursynth/comb_mask.zig"),
+    @import("vapoursynth/deband.zig"),
+    @import("vapoursynth/dither.zig"),
+    @import("vapoursynth/eedi3.zig").V,
+    @import("vapoursynth/eedi3.zig").H,
+    @import("vapoursynth/image_read.zig"),
+    @import("vapoursynth/limit_filter.zig"),
+    @import("vapoursynth/limiter.zig"),
+    @import("vapoursynth/mosquito_nr.zig"),
+    @import("vapoursynth/packrgb.zig"),
+    @import("vapoursynth/planeaverage.zig"),
+    @import("vapoursynth/planeminmax.zig"),
+    @import("vapoursynth/rfs.zig"),
+    @import("vapoursynth/ssimulacra2.zig"),
+    @import("vapoursynth/wnnm.zig"),
+    @import("vapoursynth/xpsnr.zig"),
+};
+
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     ZAPI.Plugin.config("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", zon.version, plugin, vspapi);
-
-    ZAPI.Plugin.function(
-        adaptive_binarize.filter_name,
-        "clip:vnode;clip2:vnode;c:int:opt;",
-        "clip:vnode;",
-        adaptive_binarize.adaptiveBinarizeCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        adaptive_grain_mask.filter_name,
-        "clip:vnode;luma_scaling:float:opt;",
-        "clip:vnode;",
-        adaptive_grain_mask.adaptiveGrainMaskCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        bilateral.filter_name,
-        "clip:vnode;ref:vnode:opt;sigmaS:float[]:opt;sigmaR:float[]:opt;planes:int[]:opt;algorithm:int[]:opt;PBFICnum:int[]:opt",
-        "clip:vnode;",
-        bilateral.bilateralCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        bilateral_dither.filter_name,
-        "clip:vnode;ref:vnode:opt;radius:int[]:opt;thr:float[]:opt;flat:float[]:opt;wmin:float[]:opt;subspl:float[]:opt;planes:int[]:opt;",
-        "clip:vnode;",
-        bilateral_dither.create,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        boxblur.filter_name,
-        "clip:vnode;planes:int[]:opt;hradius:int:opt;hpasses:int:opt;vradius:int:opt;vpasses:int:opt",
-        "clip:vnode;",
-        boxblur.boxBlurCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        checkmate.filter_name,
-        "clip:vnode;thr:int:opt;tmax:int:opt;tthr2:int:opt;",
-        "clip:vnode;",
-        checkmate.checkmateCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        clahe.filter_name,
-        "clip:vnode;limit:int:opt;tiles:int[]:opt",
-        "clip:vnode;",
-        clahe.claheCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        color_map.filter_name,
-        "clip:vnode;color:int:opt;",
-        "clip:vnode;",
-        color_map.colorMapCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        compress.filter_name,
-        "clip:vnode;codec:int:opt;qscale:int:opt;quality:int:opt;dc_prec:int:opt;chroma:int:opt;",
-        "clip:vnode;",
-        compress.compressCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        comb_mask_mt.filter_name,
-        "clip:vnode;thY1:int:opt;thY2:int:opt;",
-        "clip:vnode;",
-        comb_mask_mt.combMaskMTCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        comb_mask.filter_name,
-        "clip:vnode;cthresh:int:opt;mthresh:int:opt;expand:int:opt;metric:int:opt;",
-        "clip:vnode;",
-        comb_mask.combMaskCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        deband.filter_name,
-        "clip:vnode;range:int:opt;thr:float[]:opt;grain:float[]:opt;sample_mode:int:opt;seed:int:opt;blur_first:int:opt;dynamic_grain:int:opt;" ++
-            "keep_tv_range:int:opt;random_algo_ref:int:opt;random_algo_grain:int:opt;random_param_ref:float:opt;random_param_grain:float:opt;" ++
-            "thr1:float[]:opt;thr2:float[]:opt;angle_boost:float:opt;max_angle:float:opt;",
-        "clip:vnode;",
-        deband.create,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        dither.filter_name,
-        "clip:vnode;bitdepth:int;dither_type:int:opt;sample_type:int:opt;fulls:int:opt;fulld:int:opt;",
-        "clip:vnode;",
-        dither.ditherCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        "EEDI3",
-        eedi3.args_string,
-        "clip:vnode;",
-        eedi3.createEEDI3,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        "EEDI3H",
-        eedi3.args_string,
-        "clip:vnode;",
-        eedi3.createEEDI3H,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        image_read.filter_name,
-        "path:data[];validate:int:opt;",
-        "clip:vnode;",
-        image_read.readCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        limit_filter.filter_name,
-        "flt:vnode;src:vnode;ref:vnode:opt;dark_thr:float[]:opt;bright_thr:float[]:opt;elast:float[]:opt;planes:int[]:opt;",
-        "clip:vnode;",
-        limit_filter.limitFilterCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        limiter.filter_name,
-        "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;mask:int:opt;planes:int[]:opt;",
-        "clip:vnode;",
-        limiter.limiterCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        mosquito_nr.filter_name,
-        "clip:vnode;strength:int[]:opt;restore:int[]:opt;radius:int[]:opt;planes:int[]:opt;",
-        "clip:vnode;",
-        mosquito_nr.create,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        packrgb.filter_name,
-        "clip:vnode;",
-        "clip:vnode;",
-        packrgb.packrgbCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        pavg.filter_name,
-        "clipa:vnode;exclude:int[];clipb:vnode:opt;planes:int[]:opt;prop:data:opt;",
-        "clip:vnode;",
-        pavg.planeAverageCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        pmm.filter_name,
-        "clipa:vnode;minthr:float:opt;maxthr:float:opt;clipb:vnode:opt;planes:int[]:opt;prop:data:opt;",
-        "clip:vnode;",
-        pmm.planeMinMaxCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        rfs.filter_name,
-        "clipa:vnode;clipb:vnode;frames:int[];mismatch:int:opt;planes:int[]:opt;",
-        "clip:vnode;",
-        rfs.rfsCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        ssimulacra2.filter_name,
-        "reference:vnode;distorted:vnode;",
-        "clip:vnode;",
-        ssimulacra2.ssimulacraCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        wnnm.filter_name,
-        "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;" ++
-            "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;" ++
-            "residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;",
-        "clip:vnode;",
-        wnnm.wnnmCreate,
-        plugin,
-        vspapi,
-    );
-    ZAPI.Plugin.function(
-        xpsnr.filter_name,
-        "reference:vnode;distorted:vnode;temporal:int:opt;verbose:int:opt;",
-        "clip:vnode;",
-        xpsnr.xpsnrCreate,
-        plugin,
-        vspapi,
-    );
+    inline for (modules) |m| ZAPI.Plugin.function(m.filter_name, m.params, "clip:vnode;", m.create, plugin, vspapi);
 }

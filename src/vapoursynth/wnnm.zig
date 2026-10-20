@@ -11,6 +11,9 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "WNNM";
+pub const params = "clip:vnode;sigma:float[]:opt;block_size:int:opt;block_step:int:opt;group_size:int:opt;" ++
+    "bm_range:int:opt;radius:int:opt;ps_num:int:opt;ps_range:int:opt;" ++
+    "residual:int:opt;adaptive_aggregation:int:opt;rclip:vnode:opt;";
 
 const max_radius = filter.max_radius;
 const max_window = filter.max_window;
@@ -264,7 +267,7 @@ fn selectGetFrame(bs: u32, radius: u32) vs.FilterGetFrame {
     };
 }
 
-pub fn wnnmCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

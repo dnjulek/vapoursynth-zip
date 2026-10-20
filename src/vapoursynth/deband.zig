@@ -16,6 +16,9 @@ const Maps = hz.Maps;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Deband";
+pub const params = "clip:vnode;range:int:opt;thr:float[]:opt;grain:float[]:opt;sample_mode:int:opt;seed:int:opt;blur_first:int:opt;dynamic_grain:int:opt;" ++
+    "keep_tv_range:int:opt;random_algo_ref:int:opt;random_algo_grain:int:opt;random_param_ref:float:opt;random_param_grain:float:opt;" ++
+    "thr1:float[]:opt;thr2:float[]:opt;angle_boost:float:opt;max_angle:float:opt;";
 
 const Mode = setup.Mode;
 

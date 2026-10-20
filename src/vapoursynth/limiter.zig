@@ -12,6 +12,7 @@ const BPSType = hz.BPSType;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Limiter";
+pub const params = "clip:vnode;min:float[]:opt;max:float[]:opt;tv_range:int:opt;mask:int:opt;planes:int[]:opt;";
 
 const Data = struct {
     node: ?*vs.Node = null,
@@ -187,7 +188,7 @@ fn parseBounds(
     }
 }
 
-pub fn limiterCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

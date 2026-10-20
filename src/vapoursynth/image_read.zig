@@ -13,6 +13,7 @@ const loadImage = ir.loadImage;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "ImageRead";
+pub const params = "path:data[];validate:int:opt;";
 
 const Data = struct {
     vi: vs.VideoInfo = undefined,
@@ -107,7 +108,7 @@ fn readFree(instance_data: ?*anyopaque, _: ?*vs.Core, _: ?*const vs.API) callcon
     allocator.destroy(d);
 }
 
-pub fn readCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

@@ -11,6 +11,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "CombMask";
+pub const params = "clip:vnode;cthresh:int:opt;mthresh:int:opt;expand:int:opt;metric:int:opt;";
 
 const Data = struct {
     node: ?*vs.Node = null,
@@ -74,7 +75,7 @@ fn combMaskFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.A
     allocator.destroy(d);
 }
 
-pub fn combMaskCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

@@ -11,6 +11,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Checkmate";
+pub const params = "clip:vnode;thr:int:opt;tmax:int:opt;tthr2:int:opt;";
 
 const Data = struct {
     node: ?*vs.Node = null,
@@ -74,7 +75,7 @@ fn checkmateFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.
     allocator.destroy(d);
 }
 
-pub fn checkmateCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);

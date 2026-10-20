@@ -12,6 +12,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "MosquitoNR";
+pub const params = "clip:vnode;strength:int[]:opt;restore:int[]:opt;radius:int[]:opt;planes:int[]:opt;";
 
 const Data = struct {
     node: ?*vs.Node,

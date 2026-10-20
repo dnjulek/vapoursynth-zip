@@ -176,17 +176,24 @@ fn free(instance_data: ?*anyopaque, _: ?*vs.Core, vsapi: ?*const vs.API) callcon
     allocator.destroy(d);
 }
 
-pub fn createEEDI3(in: ?*const vs.Map, out: ?*vs.Map, ud: ?*anyopaque, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-    createImpl(false, in, out, ud, core_ptr, vsapi);
+/// EEDI3 (vertical) and EEDI3H (horizontal) share every argument and differ
+/// only in the interpolation axis.
+pub const V = Entry(false);
+pub const H = Entry(true);
+
+fn Entry(comptime horizontal: bool) type {
+    return struct {
+        pub const filter_name = if (horizontal) "EEDI3H" else "EEDI3";
+        pub const params = "clip:vnode;field:int;dh:int:opt;alpha:float:opt;beta:float:opt;gamma:float:opt;nrad:int:opt;mdis:int:opt;hp:int:opt;" ++
+            "vcheck:int:opt;vthresh0:float:opt;vthresh1:float:opt;vthresh2:float:opt;sclip:vnode:opt;mclip:vnode:opt;";
+
+        pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+            createImpl(horizontal, filter_name, in, out, core_ptr, vsapi);
+        }
+    };
 }
 
-pub fn createEEDI3H(in: ?*const vs.Map, out: ?*vs.Map, ud: ?*anyopaque, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-    createImpl(true, in, out, ud, core_ptr, vsapi);
-}
-
-fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) void {
-    const filter_name = if (horizontal) "EEDI3H" else "EEDI3";
-
+fn createImpl(comptime horizontal: bool, comptime filter_name: [:0]const u8, in: ?*const vs.Map, out: ?*vs.Map, core_ptr: ?*vs.Core, vsapi: ?*const vs.API) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core_ptr, null);
@@ -346,5 +353,3 @@ fn createImpl(comptime horizontal: bool, in: ?*const vs.Map, out: ?*vs.Map, _: ?
     };
     zapi.createVideoFilter(out, filter_name, &d.vi, get_frame, free, .Parallel, dep_buf[0..ndeps], data);
 }
-
-pub const args_string = "clip:vnode;field:int;dh:int:opt;alpha:float:opt;beta:float:opt;gamma:float:opt;nrad:int:opt;mdis:int:opt;hp:int:opt;vcheck:int:opt;vthresh0:float:opt;vthresh1:float:opt;vthresh2:float:opt;sclip:vnode:opt;mclip:vnode:opt;";

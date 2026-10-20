@@ -11,6 +11,7 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "PlaneAverage";
+pub const params = "clipa:vnode;exclude:int[];clipb:vnode:opt;planes:int[]:opt;prop:data:opt;";
 
 const Data = struct {
     node1: ?*vs.Node = null,
@@ -92,7 +93,7 @@ fn planeAverageFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const 
     allocator.destroy(d);
 }
 
-pub fn planeAverageCreate(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
     var d: Data = .{};
 
     const zapi = ZAPI.init(vsapi, core, null);
