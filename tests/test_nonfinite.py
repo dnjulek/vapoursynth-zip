@@ -179,7 +179,7 @@ KIND = {c[1]: c[3] for c in CASES}
 assert len(set(CASE_IDS)) == len(CASE_IDS), "duplicate case ids"
 
 
-def _run_function_cases(cases, timeout=60.0):
+def _run_function_cases(cases, timeout=60.0, *, setup=None):
     """Run (id, expression) cases in child processes. Returns {id: result}
     with result REJECTED / ACCEPTED / ACCEPTED_NONFINITE_OUTPUT / CRASH(...)."""
     results = {}
@@ -197,7 +197,7 @@ except vs.Error:
 """
             for cid, expr in todo
         )
-        script = SETUP.format(tests=str(TESTS_DIR)) + body
+        script = (SETUP.format(tests=str(TESTS_DIR)) if setup is None else setup) + body
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", script], cwd=TESTS_DIR, env=os.environ.copy(),

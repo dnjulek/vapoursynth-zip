@@ -104,14 +104,19 @@ def _plugin_path() -> Path:
 
 def _load_vszip() -> vs.Core:
     core = vs.core
+    path = _plugin_path().resolve()
     if not hasattr(core, "vszip"):
-        path = _plugin_path()
         if not path.is_file():
             pytest.exit(
                 f"vszip plugin not found at {path}; run `zig build` first or set VSZIP_LIB",
                 returncode=2,
             )
         core.std.LoadPlugin(str(path))
+    loaded = Path(core.vszip.plugin_path).resolve()
+    if loaded != path:
+        raise RuntimeError(
+            f"vszip already loaded from {loaded}, but tests requested {path}; "
+            "disable the autoloaded copy or set VSZIP_LIB to the intended build")
     return core
 
 

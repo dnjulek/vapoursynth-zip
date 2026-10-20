@@ -79,7 +79,9 @@ def lib():
             "avs_new_video_frame_a": (C.c_void_p, [C.c_void_p, C.POINTER(VideoInfo), C.c_int]),
             "avs_new_c_filter": (C.c_void_p, [C.c_void_p, C.POINTER(C.POINTER(FilterInfo)), Value, C.c_int]),
             "avs_set_var": (C.c_int, [C.c_void_p, C.c_char_p, Value]),
-            "avs_save_string": (C.c_char_p, [C.c_void_p, C.c_char_p, C.c_int]),
+            # Keep the host address: c_char_p as a result type would copy it
+            # into Python bytes and lose its environment-owned lifetime.
+            "avs_save_string": (C.c_void_p, [C.c_void_p, C.c_char_p, C.c_int]),
             "avs_get_frame_props_ro": (C.c_void_p, [C.c_void_p, C.c_void_p]),
             "avs_prop_num_keys": (C.c_int, [C.c_void_p, C.c_void_p]),
             "avs_prop_get_key": (C.c_char_p, [C.c_void_p, C.c_void_p, C.c_int]),
@@ -89,6 +91,7 @@ def lib():
             "avs_prop_get_float": (C.c_double, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
             "avs_prop_get_data": (C.c_void_p, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
             "avs_prop_get_data_size": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
+            "avs_prop_get_frame": (C.c_void_p, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
         }
         for name, (res, args) in sig.items():
             f = getattr(L, name)
@@ -190,6 +193,35 @@ class Clip:
         finally:
             L.avs_release_video_frame(f)
 
+    def gray_frame_prop(self, key, n=0):
+        """Copy a gray frame property (_Alpha) at this clip's sample depth.
+
+        The C property getter returns an owned frame; release both frames even
+        when property lookup or numpy conversion fails.
+        """
+        L = lib()
+        f = L.avs_get_frame(self.ptr, n)
+        if not f:
+            raise AvsError("avs_get_frame failed")
+        alpha = None
+        try:
+            props = L.avs_get_frame_props_ro(self.env.ptr, f)
+            error = C.c_int()
+            alpha = L.avs_prop_get_frame(self.env.ptr, props, key.encode(), 0, C.byref(error))
+            if error.value or not alpha:
+                raise AvsError(f"frame property {key}: error {error.value}")
+            ptr = L.avs_get_read_ptr_p(alpha, PLANAR_Y)
+            pitch = L.avs_get_pitch_p(alpha, PLANAR_Y)
+            row = L.avs_get_row_size_p(alpha, PLANAR_Y)
+            height = L.avs_get_height_p(alpha, PLANAR_Y)
+            raw = np.ctypeslib.as_array((C.c_uint8 * (pitch * (height-1) + row)).from_address(ptr))
+            view = np.lib.stride_tricks.as_strided(raw, shape=(height, row), strides=(pitch, 1))
+            return np.array(view, copy=True).view(dtype_of(self.bits))
+        finally:
+            if alpha:
+                L.avs_release_video_frame(alpha)
+            L.avs_release_video_frame(f)
+
     def frames(self, ns=None):
         return [self.frame(n) for n in (range(self.num_frames) if ns is None else ns)]
 
@@ -223,7 +255,7 @@ class Env:
         arg = Value()
         arg.type = ord("s")
         arg.array_size = 0
-        arg.d.string = L.avs_save_string(self.ptr, script.encode(), -1)
+        arg.d.array = L.avs_save_string(self.ptr, script.encode(), -1)
         v = L.avs_invoke(self.ptr, b"Eval", arg, None)
         if v.type == ord("e"):
             raise self._err(v)
@@ -240,8 +272,68 @@ class Env:
         L = lib()
         v = Value()
         L.avs_set_to_clip(C.byref(v), clip.ptr)
-        L.avs_set_var(self.ptr, L.avs_save_string(self.ptr, name.encode(), -1), v)
+        saved = L.avs_save_string(self.ptr, name.encode(), -1)
+        L.avs_set_var(self.ptr, C.cast(saved, C.c_char_p), v)
         L.avs_release_value(v)
+
+    def invoke(self, name, *args, **kwargs):
+        """Call a clip function with typed V11 values, including NaN/inf/i64.
+
+        Script literals cannot represent all hostile values. Arrays here are
+        borrowing views; only the clip leaves created by set_to_clip are owned.
+        """
+        L = lib()
+        keep, owned = [], []
+
+        def value(x):
+            v = Value()
+            if isinstance(x, Clip):
+                L.avs_set_to_clip(C.byref(v), x.ptr)
+                owned.append(v)
+            elif isinstance(x, bool):
+                v.type, v.d.boolean = ord("b"), bytes([int(x)])
+            elif isinstance(x, int):
+                if not -(1 << 63) <= x < (1 << 63):
+                    raise OverflowError("AVS integers must fit i64")
+                v.type = ord("i") if -(1 << 31) <= x < (1 << 31) else ord("l")
+                if v.type == ord("i"):
+                    v.d.integer = x
+                else:
+                    v.d.longlong = x
+            elif isinstance(x, float):
+                v.type, v.d.double_pt = ord("d"), x
+            elif isinstance(x, str):
+                data = x.encode()
+                # Native filters may retain argument strings for their whole
+                # lifetime; Python-owned bytes only survive this invoke.
+                v.type, v.d.array = ord("s"), L.avs_save_string(self.ptr, data, len(data))
+            elif isinstance(x, (list, tuple)):
+                if len(x) > 32767:
+                    raise OverflowError("AVS array exceeds signed-short size")
+                items = (Value * len(x))(*(value(a) for a in x))
+                keep.append(items)
+                v.type, v.array_size = ord("a"), len(x)
+                v.d.array = C.cast(items, C.c_void_p)
+            else:
+                raise TypeError(f"unsupported AVS value {type(x).__name__}")
+            return v
+
+        try:
+            array = value([*args, *kwargs.values()])
+            names = (C.c_char_p * (len(args) + len(kwargs)))(
+                *([None] * len(args)), *(k.encode() for k in kwargs))
+            result = L.avs_invoke(self.ptr, name.encode(), array, names)
+            try:
+                if result.type == ord("e"):
+                    raise self._err(result)
+                if result.type != ord("c"):
+                    raise AvsError(f"{name} did not return a clip")
+                return Clip(self, L.avs_take_clip(result, self.ptr))
+            finally:
+                L.avs_release_value(result)
+        finally:
+            for v in owned:
+                L.avs_release_value(v)
 
     def source(self, frames, pixel_type, fps=(24, 1), name=None):
         """Clip of `frames` (list of per-plane 2D arrays, logical order)."""

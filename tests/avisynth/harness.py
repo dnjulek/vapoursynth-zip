@@ -46,6 +46,9 @@ def vszip():
     if not _vszip_loaded:
         if not hasattr(core, "vszip"):
             core.std.LoadPlugin(VSZIP)
+        loaded, expected = pathlib.Path(core.vszip.plugin_path).resolve(), pathlib.Path(VSZIP).resolve()
+        if loaded != expected:
+            raise RuntimeError(f"vszip loaded from {loaded}, expected {expected}; check autoload and VSZIP_LIB")
         _vszip_loaded = True
     return core.vszip
 
@@ -145,7 +148,7 @@ class Pair:
 
 
 def compare_planes(a, b, tol=0.0, what="", planes=None):
-    assert len(a.planes) >= len(b.planes) or planes is not None, what
+    assert len(a.planes) == len(b.planes) or planes is not None, f"{what}: plane count mismatch"
     for p in range(len(b.planes)) if planes is None else planes:
         x, y = a.planes[p], b.planes[p]
         assert x.shape == y.shape, f"{what} plane {p}: shape {x.shape} vs {y.shape}"
@@ -157,8 +160,9 @@ def compare_planes(a, b, tol=0.0, what="", planes=None):
                 raise AssertionError(
                     f"{what} plane {p}: {len(diff)} samples differ; first at (y={yy}, x={xx}): avs={x[yy, xx]} vs={y[yy, xx]}")
         else:
+            assert np.isfinite(x).all() and np.isfinite(y).all(), f"{what} plane {p}: nonfinite samples"
             d = np.abs(x.astype(np.float64) - y.astype(np.float64))
-            assert np.nanmax(d) <= tol, f"{what} plane {p}: max diff {np.nanmax(d)} > {tol}"
+            assert np.max(d) <= tol, f"{what} plane {p}: max diff {np.max(d)} > {tol}"
 
 
 def compare_props(a, b, keys, tol=0.0, what=""):
@@ -178,7 +182,7 @@ def compare_props(a, b, keys, tol=0.0, what=""):
             pairs = [(x, y)]
         for u, v in pairs:
             if isinstance(v, float) or isinstance(u, float):
-                assert abs(u - v) <= tol or (np.isnan(u) and np.isnan(v)), f"{what} {k}: avs={u} vs={v}"
+                assert u == v or abs(u - v) <= tol or (np.isnan(u) and np.isnan(v)), f"{what} {k}: avs={u} vs={v}"
             else:
                 if isinstance(v, str):
                     v = v.encode()

@@ -310,3 +310,105 @@ def test_xpsnr_mixed_depth_with_alpha(env, ref_pt, dist_pt):
         H.compare_planes(fa, fb, what=f"frame {n}", planes=range(3))
         for k in ("XPSNR_Y", "XPSNR_U", "XPSNR_V"):
             assert fa.props[k] == fb.props[k], k
+
+
+# ---------------------------------------------------------------------------
+# SSIMULACRA2: per-frame metadata and reference alpha
+# ---------------------------------------------------------------------------
+
+def _spliced(env, H_pair, name, tags):
+    """`H_pair` with per-frame props `tags` (list of dicts, one per frame) on
+    both hosts."""
+    env.set_clip(name + "src", H_pair.avs)
+    parts = []
+    for n, t in enumerate(tags):
+        parts.append(f"{name}src.Trim({n},-1)" + "".join(f'.propSet("{k}",{v})' for k, v in t.items()))
+    env.set_clip(name, env.eval(" ++ ".join(parts)))
+    vs_tags = []
+    for t in tags:
+        vt = {("_Range" if k == "_ColorRange" else k): (1 - v if k == "_ColorRange" else v) for k, v in t.items()}
+        vs_tags.append(vt)
+    return H.core.std.Splice([H_pair.vs[n].std.SetFrameProps(**t) if t else H_pair.vs[n] for n, t in enumerate(vs_tags)])
+
+
+@pytest.mark.parametrize("ref_tags,dist_tags", [
+    ([{"_Matrix": 6}, {"_Matrix": 1}], [{"_Matrix": 6}, {"_Matrix": 1}]),   # valid -> valid
+    ([{}, {"_Matrix": 1}], [{}, {"_Matrix": 1}]),                             # missing -> valid
+    ([{"_Matrix": 2}, {"_Matrix": 9}], [{"_Matrix": 2}, {"_Matrix": 9}]),     # unspecified -> valid
+    ([{"_Matrix": 1}, {}], [{"_Matrix": 1}, {}]),                             # valid -> missing
+    ([{"_Matrix": 1}, {"_Matrix": 1}], [{"_Matrix": 1}, {"_Matrix": 9}]),     # only the distorted changes
+    ([{"_ColorRange": 0}, {"_ColorRange": 1}], [{"_ColorRange": 1}, {"_ColorRange": 0}]),  # range transitions
+])
+def test_ssimulacra2_per_frame_metadata(env, ref_tags, dist_tags):
+    ref = H.make_frames("YUV444P16", w=96, h=64, n=2, seed=1, kind="smooth")
+    ref[1] = [p.copy() for p in ref[0]]
+    dist = [[p.copy() for p in f] for f in ref]
+    for f in dist:
+        f[1][:] = np.clip(f[1].astype(np.int64) + 2000, 0, 65535)
+    r = H.Pair(env, "YUV444P16", ref)
+    d = H.Pair(env, "YUV444P16", dist)
+    rv = _spliced(env, r, "r", ref_tags)
+    dv = _spliced(env, d, "d", dist_tags)
+    a = env.eval("vszip_SSIMULACRA2(r, d)")
+    v = H.vszip().SSIMULACRA2(rv, dv)
+    vf = H.vs_frames(v)
+    for order in ([0, 1], [1, 0, 1, 0]):  # repeated and reversed requests
+        for n in order:
+            x = a.frame(n)
+            H.compare_planes(x, vf[n], tol=1e-5, what=f"frame {n}")
+            assert abs(x.props["SSIMULACRA2"] - vf[n].props["SSIMULACRA2"]) < 0.02
+    env.set_clip("m", a)
+    mt = env.eval("m.Prefetch(4)")
+    for n in (1, 0, 1):
+        H.compare_planes(mt.frame(n), vf[n], tol=1e-5, what=f"Prefetch frame {n}")
+
+
+def _yuva(env, pt, alpha_kind, seed=1):
+    import avsrt
+    fam, bits, has_alpha, ssw, ssh = avsrt_describe(pt)
+    color = {"YUVA420": "YV12", "YUVA444P16": "YUV444P16", "YUVA444PS": "YUV444PS"}[pt]
+    fr = H.make_frames(color, w=64, h=32, n=1, seed=seed, kind="smooth")
+    if bits == 32:
+        a = np.linspace(0, 1, 64 * 32, dtype=np.float32).reshape(32, 64) if alpha_kind == "ramp" else np.full((32, 64), 0.25, np.float32)
+    else:
+        peak = (1 << bits) - 1
+        a = (np.arange(64 * 32).reshape(32, 64) * 7 % (peak + 1)).astype(np.uint8 if bits == 8 else np.uint16)
+        if alpha_kind != "ramp":
+            a[:] = peak // 3
+    return fr, [f + [a] for f in fr], color, bits
+
+
+@pytest.mark.parametrize("pt", ["YUVA420", "YUVA444P16", "YUVA444PS"])
+def test_ssimulacra2_keeps_reference_alpha(env, pt):
+    color_frames, frames, color, bits = _yuva(env, pt, "ramp")
+    ref = env.source(frames, pt)
+    plain = env.source(color_frames, color)
+    env.set_clip("ra", ref)
+    env.set_clip("rc", plain)
+    out = env.eval("vszip_SSIMULACRA2(ra, rc)")
+    assert out.has_alpha and out.bits == 32 and out.family == "rgb"
+    f = out.frame(0)
+    if bits == 32:
+        assert np.array_equal(f.planes[3], frames[0][3]), "float alpha unchanged"
+    else:
+        # integer alpha as full-range float (x * (1/peak) in f32)
+        want = frames[0][3].astype(np.float64) / ((1 << bits) - 1)
+        assert np.max(np.abs(f.planes[3] - want)) < 1e-7, "reference alpha (as full-range float)"
+    # color is unaffected by alpha: same score and RGB as the alpha-free call
+    g = env.eval("vszip_SSIMULACRA2(rc, rc)").frame(0)
+    H.compare_planes(f, g, what=pt, planes=range(3))
+    assert f.props["SSIMULACRA2"] == g.props["SSIMULACRA2"]
+
+
+def test_ssimulacra2_distorted_alpha_is_ignored(env):
+    color_frames, frames, color, _ = _yuva(env, "YUVA444P16", "ramp")
+    _, other_alpha, _, _ = _yuva(env, "YUVA444P16", "flat")
+    env.set_clip("rc", env.source(color_frames, color))
+    env.set_clip("da", env.source(frames, "YUVA444P16"))
+    env.set_clip("db", env.source(other_alpha, "YUVA444P16"))
+    out = env.eval("vszip_SSIMULACRA2(rc, da)")
+    assert not out.has_alpha, "alpha on the distorted input alone adds no alpha plane"
+    a = out.frame(0).props["SSIMULACRA2"]
+    b = env.eval("vszip_SSIMULACRA2(rc, db)").frame(0).props["SSIMULACRA2"]
+    c = env.eval("vszip_SSIMULACRA2(rc, rc)").frame(0).props["SSIMULACRA2"]
+    assert a == b == c, "the distorted alpha does not change the score"
