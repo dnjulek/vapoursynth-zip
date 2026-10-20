@@ -83,22 +83,3 @@ zig build -Doptimize=fast -Davisynth=true && python -m pytest -q   # both suites
 ```
 
 The AviSynth suite needs Python with `vapoursynth`, `numpy`, `pytest`, and `Pillow`, plus an installed AviSynth+. It loads `zig-out/bin/avszip.dll` and `zig-out/bin/vszip.dll` (override with `AVSZIP_LIB` / `VSZIP_LIB`). Without the DLL or AviSynth+ the directory is skipped at collection, so the default `pytest` run (and CI) is unaffected. `tests/avisynth/avsrt.py` drives AviSynth+ through its C API with ctypes; its numpy-backed source feeds both hosts bit-identical frames, and `tests/avisynth/harness.py` compares planes and props.
-
-Coverage per filter:
-- Every supported format family and depth, with the parameter variants that select different kernels.
-- Cropped (unaligned / foreign-pitch) inputs.
-- Error messages.
-- `test_avs_mt.py`: `Prefetch(4)` with shuffled and repeated requests must equal serial output.
-- `test_avs_registration.py`: every name is reachable and dispatches to its own create.
-- `test_avs_regressions.py`: combinations the matrices miss (temporal windows on verified foreign-pitch inputs, mixed alpha layouts, later ImageRead format changes, RGB plane routing, extreme WNNM ranges, alpha pass-through); cases that used to abort run in a child process. `avsrt.Clip.geometry()` gives the plane addresses and pitches the host delivers, so a test can assert the layout it relies on (a small horizontal crop is often realigned by the host).
-- A sensitivity test that proves a 1-LSB difference is caught.
-
-Run the tests against both debug and fast builds.
-
-## Benchmark
-
-`python bench/avisynth/bench.py [--threads 1,16] [--frames 240] [--filter Deband]` times avszip against vszip on the same prepared 1080p frames. See [`bench/avisynth/README.md`](../../bench/avisynth/README.md) for method and results.
-
-## License
-
-MIT, as vszip. The AviSynth build adds avisynth-zig (MIT; its loader is MPL-2.0, the AviSynth+ headers GPL with the C-interface exception).
