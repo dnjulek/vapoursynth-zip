@@ -3,8 +3,6 @@ zig-pkg/
 .zig-cache/
 .vscode/
 run.bat
-build-help/releases.json
-build-help/zig-*
 __pycache__/
 .vsjet/
 *.h
