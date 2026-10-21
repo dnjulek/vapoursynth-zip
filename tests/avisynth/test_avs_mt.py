@@ -33,8 +33,8 @@ CASES = [
     ("WNNM", "YUV420PS", "radius=1, block_size=4"),
     ("AdaptiveGrainMask", "YUV420P16", ""),
     ("LimitFilter", "YUV420P16", "src=src, dark_thr=[2.0]"),
-    ("XPSNR", "YV12", "distorted=src.vszip_BoxBlur(), verbose=false"),
-    ("SSIMULACRA2", "RGBPS", "distorted=src.vszip_BoxBlur()"),
+    ("XPSNR", "YV12", "distorted=src.avszip_BoxBlur(), verbose=false"),
+    ("SSIMULACRA2", "RGBPS", "distorted=src.avszip_BoxBlur()"),
 ]
 
 
@@ -53,7 +53,7 @@ def frames_equal(a, b, what):
 def test_prefetch_matches_serial(env, name, fmt, args):
     pair = H.Pair(env, fmt, H.make_frames(fmt, w=96, h=64, n=8, kind="noise"))
     env.set_clip("src", pair.avs)
-    call = f"src.vszip_{name}({args})"
+    call = f"src.avszip_{name}({args})"
     serial = env.eval(call)
     ref = [serial.frame(n) for n in range(serial.num_frames)]
 

@@ -1,4 +1,4 @@
-//! vszip_PlaneMinMax(clip clipa, float "minthr", float "maxthr", clip "clipb", int[] "planes", string "prop")
+//! avszip_PlaneMinMax(clip clipa, float "minthr", float "maxthr", clip "clipb", int[] "planes", string "prop")
 //!
 //! Property-only: writes `<prop>Min`/`<prop>Max` (and `<prop>Diff` with clipb)
 //! per selected plane, appended in plane order, exactly like vszip.
@@ -10,7 +10,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/planeminmax.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_PlaneMinMax";
+pub const filter_name = "avszip_PlaneMinMax";
 pub const params = "c[minthr]f[maxthr]f[clipb]c[planes]i*[prop]s";
 
 const Data = struct {

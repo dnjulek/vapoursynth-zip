@@ -22,7 +22,7 @@ def test_gray_alpha_property_contains_exact_pixels(env, tmp_path, bits, width):
     gray, alpha = (x * 37 + y * 13) % (peak+1), (x * 173 + y * 113) % (peak+1)
     rows = [[(int(gray[j,i]), int(alpha[j,i])) for i in range(width)] for j in range(3)]
     path = write_png(tmp_path / "gray-alpha.png", rows, color="graya", bitdepth=bits)
-    a = env.invoke("vszip_ImageRead", path=[str(path)])
+    a = env.invoke("avszip_ImageRead", path=[str(path)])
     v = H.vszip().ImageRead(str(path))
     expected = alpha.astype(np.uint8 if bits == 8 else np.uint16)
     # The older test checked only '<v>', so a blank/wrong _Alpha passed it.

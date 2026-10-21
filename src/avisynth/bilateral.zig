@@ -1,4 +1,4 @@
-//! vszip_Bilateral(clip, clip "ref", float[] "sigmaS", float[] "sigmaR", int[] "planes", int[] "algorithm", int[] "PBFICnum")
+//! avszip_Bilateral(clip, clip "ref", float[] "sigmaS", float[] "sigmaR", int[] "planes", int[] "algorithm", int[] "PBFICnum")
 
 const std = @import("std");
 const math = std.math;
@@ -8,7 +8,7 @@ const filter = @import("../filters/bilateral.zig");
 const hz = @import("helper.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_Bilateral";
+pub const filter_name = "avszip_Bilateral";
 pub const params = "c[ref]c[sigmaS]f*[sigmaR]f*[planes]i*[algorithm]i*[PBFICnum]i*";
 const max_sigma_s = filter.Data.max_sigma_s;
 

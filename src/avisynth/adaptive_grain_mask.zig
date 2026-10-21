@@ -1,4 +1,4 @@
-//! vszip_AdaptiveGrainMask(clip, float "luma_scaling")
+//! avszip_AdaptiveGrainMask(clip, float "luma_scaling")
 //!
 //! Output: a Gray clip of the input's depth, computed from logical plane 0
 //! (Y, or R for planar RGB, as in vszip; AviSynth's default plane of planar
@@ -12,7 +12,7 @@ const c = avs.c;
 const filter = @import("../filters/adaptive_grain_mask.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_AdaptiveGrainMask";
+pub const filter_name = "avszip_AdaptiveGrainMask";
 pub const params = "c[luma_scaling]f";
 
 const Data = struct {

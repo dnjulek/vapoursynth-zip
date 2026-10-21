@@ -1,4 +1,4 @@
-//! vszip_PlaneAverage(clip clipa, int[] "exclude", clip "clipb", int[] "planes", string "prop")
+//! avszip_PlaneAverage(clip clipa, int[] "exclude", clip "clipb", int[] "planes", string "prop")
 //!
 //! Property-only: pixels pass through (shared, copy-on-write props). Writes
 //! `<prop>Avg` (and `<prop>Diff` with clipb) per selected plane, appended in
@@ -12,7 +12,7 @@ const filter = @import("../filters/planeaverage.zig");
 const hz = @import("helper.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_PlaneAverage";
+pub const filter_name = "avszip_PlaneAverage";
 pub const params = "c[exclude]i*[clipb]c[planes]i*[prop]s";
 
 const Data = struct {

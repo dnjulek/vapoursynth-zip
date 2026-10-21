@@ -1,4 +1,4 @@
-//! vszip_RFS(clip clipa, clip clipb, int[] "frames", bool "mismatch", int[] "planes")
+//! avszip_RFS(clip clipa, clip clipb, int[] "frames", bool "mismatch", int[] "planes")
 //!
 //! Replace the listed frames of clipa with clipb's. Differences from vszip:
 //! AviSynth has no variable-format clips, so `mismatch=true` only tolerates a
@@ -15,7 +15,7 @@ const avs = @import("avisynth");
 const hz = @import("helper.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_RFS";
+pub const filter_name = "avszip_RFS";
 pub const params = "c[clipb]c[frames]i*[mismatch]b[planes]i*";
 
 const Data = struct {

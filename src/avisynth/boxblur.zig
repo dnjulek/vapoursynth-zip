@@ -1,4 +1,4 @@
-//! vszip_BoxBlur(clip, int[] "planes", int "hradius", int "hpasses", int "vradius", int "vpasses")
+//! avszip_BoxBlur(clip, int[] "planes", int "hradius", int "hpasses", int "vradius", int "vpasses")
 
 const std = @import("std");
 const math = std.math;
@@ -8,7 +8,7 @@ const boxblur_ct = @import("../filters/boxblur_comptime.zig");
 const boxblur_rt = @import("../filters/boxblur_runtime.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_BoxBlur";
+pub const filter_name = "avszip_BoxBlur";
 pub const params = "c[planes]i*[hradius]i[hpasses]i[vradius]i[vpasses]i";
 
 const Data = struct {

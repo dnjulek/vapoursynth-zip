@@ -1,4 +1,4 @@
-//! vszip_Compress(clip, int "codec", int "qscale", int "quality", int "dc_prec", bool "chroma")
+//! avszip_Compress(clip, int "codec", int "qscale", int "quality", int "dc_prec", bool "chroma")
 //!
 //! 8-bit Gray/YUV: MPEG-2 (codec=0) or JPEG (codec=1) 8x8 DCT quantization
 //! round trip. Alpha (YUVA) passes through.
@@ -11,7 +11,7 @@ const filter = @import("../filters/compress.zig");
 const hz = @import("helper.zig");
 
 const Codec = filter.Codec;
-pub const filter_name = "vszip_Compress";
+pub const filter_name = "avszip_Compress";
 pub const params = "c[codec]i[qscale]i[quality]i[dc_prec]i[chroma]b";
 
 const Data = struct {

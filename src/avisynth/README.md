@@ -4,6 +4,8 @@ The same repository builds an AviSynth+ plugin, `avszip`, from the same kernels 
 
 Requirements: AviSynth+ with interface ≥ 11 (3.7.4+) and Zig 0.17.0. Windows x86_64 is the tested path; the plugin also cross-compiles for Linux.
 
+To build it yourself:
+
 ```sh
 zig build -Doptimize=fast -Davisynth=true                     # vszip.dll + avszip.dll
 zig build -Doptimize=fast -Davisynth=true -Dvapoursynth=false # avszip.dll only
@@ -14,42 +16,42 @@ The AviSynth build is opt-in: a plain `zig build` (what pip/hatch run) builds on
 ```avs
 LoadPlugin("avszip.dll")
 src = LWLibavVideoSource("in.mkv").ConvertBits(16)
-src.vszip_Deband(thr=[2.0], grain=[1.0]).vszip_Limiter(tv_range=true)
+src.avszip_Deband(thr=[2.0], grain=[1.0]).avszip_Limiter(tv_range=true)
 ```
 
-Every function is registered as `vszip_<Filter>`. AviSynth+ also exposes it as `avszip_vszip_<Filter>`, the DLL-basename alias. Parameter docs are vszip's [wiki](https://github.com/dnjulek/vapoursynth-zip/wiki): names, defaults, and ranges are the same. Arrays use AviSynth+ syntax (`planes=[0, 1]`, or a scalar `planes=0`). Every parameter after the first clip is named, so `vszip_EEDI3(field=1)`, `vszip_Dither(bitdepth=8)` and positional calls both work.
+Every function is registered as `avszip_<Filter>`. AviSynth+ also exposes it as `avszip_avszip_<Filter>`, the DLL-basename alias. Parameter docs are vszip's [wiki](https://github.com/dnjulek/vapoursynth-zip/wiki): names, defaults, and ranges are the same. Arrays use AviSynth+ syntax (`planes=[0, 1]`, or a scalar `planes=0`). Every parameter after the first clip is named, so `avszip_EEDI3(field=1)`, `avszip_Dither(bitdepth=8)` and positional calls both work.
 
 ## Functions
 
 | AviSynth+ signature | Notes |
 | --- | --- |
-| `vszip_AdaptiveBinarize(clip, clip clip2, int "c")` | 8-bit; output `_ColorRange`=0 |
-| `vszip_AdaptiveGrainMask(clip, float "luma_scaling")` | returns Gray (Y8..Y32) |
-| `vszip_Bilateral(clip, clip "ref", float[] "sigmaS", float[] "sigmaR", int[] "planes", int[] "algorithm", int[] "PBFICnum")` | |
-| `vszip_BilateralDither(clip, clip "ref", int[] "radius", float[] "thr", float[] "flat", float[] "wmin", float[] "subspl", int[] "planes")` | |
-| `vszip_BoxBlur(clip, int[] "planes", int "hradius", int "hpasses", int "vradius", int "vpasses")` | |
-| `vszip_Checkmate(clip, int "thr", int "tmax", int "tthr2")` | 8-bit, temporal |
-| `vszip_CLAHE(clip, int "limit", int[] "tiles")` | output `_ColorRange`=0 |
-| `vszip_ColorMap(clip, int "color")` | Y8 in, RGBP out |
-| `vszip_CombMask(clip, int "cthresh", int "mthresh", bool "expand", int "metric")` | 8-bit |
-| `vszip_CombMaskMT(clip, int "thY1", int "thY2")` | 8-bit |
-| `vszip_Compress(clip, int "codec", int "qscale", int "quality", int "dc_prec", bool "chroma")` | 8-bit Gray/YUV |
-| `vszip_Deband(clip, int "range", float[] "thr", float[] "grain", int "sample_mode", int "seed", bool "blur_first", bool "dynamic_grain", bool "keep_tv_range", int "random_algo_ref", int "random_algo_grain", float "random_param_ref", float "random_param_grain", float[] "thr1", float[] "thr2", float "angle_boost", float "max_angle")` | <16-bit int is processed at 16 bit, as in vszip |
-| `vszip_Dither(clip, int bitdepth, int "dither_type", int "sample_type", bool "fulls", bool "fulld")` | 12 modes (fmtconv + zimg) |
-| `vszip_EEDI3(clip, int field, bool "dh", float "alpha", float "beta", float "gamma", int "nrad", int "mdis", bool "hp", int "vcheck", float "vthresh0", float "vthresh1", float "vthresh2", clip "sclip", clip "mclip")` | field 2/3 bob: 2× frames and fps |
-| `vszip_EEDI3H(...)` | same parameters, interpolates along the width |
-| `vszip_ImageRead(string[] path, bool "validate")` | source filter (zigimg; files or http(s) URLs) |
-| `vszip_LimitFilter(clip flt, clip src, clip "ref", float[] "dark_thr", float[] "bright_thr", float[] "elast", int[] "planes")` | |
-| `vszip_Limiter(clip, float[] "min", float[] "max", bool "tv_range", bool "mask", int[] "planes")` | |
-| `vszip_MosquitoNR(clip, int[] "strength", int[] "restore", int[] "radius", int[] "planes")` | |
-| `vszip_PlaneAverage(clip, int[] exclude, clip "clipb", int[] "planes", string "prop")` | property-only (`psmAvg`/`psmDiff`) |
-| `vszip_PlaneMinMax(clip, float "minthr", float "maxthr", clip "clipb", int[] "planes", string "prop")` | property-only (`psmMin`/`psmMax`/`psmDiff`) |
-| `vszip_RFS(clip, clip clipb, int[] frames, bool "mismatch", int[] "planes")` | |
-| `vszip_SSIMULACRA2(clip reference, clip distorted)` | property `SSIMULACRA2` |
-| `vszip_WNNM(clip, float[] "sigma", int "block_size", int "block_step", int "group_size", int "bm_range", int "radius", int "ps_num", int "ps_range", bool "residual", bool "adaptive_aggregation", clip "rclip")` | 32-bit float |
-| `vszip_XPSNR(clip reference, clip distorted, bool "temporal", bool "verbose")` | props `XPSNR_Y/U/V` |
+| `avszip_AdaptiveBinarize(clip, clip clip2, int "c")` | 8-bit; output `_ColorRange`=0 |
+| `avszip_AdaptiveGrainMask(clip, float "luma_scaling")` | returns Gray (Y8..Y32) |
+| `avszip_Bilateral(clip, clip "ref", float[] "sigmaS", float[] "sigmaR", int[] "planes", int[] "algorithm", int[] "PBFICnum")` | |
+| `avszip_BilateralDither(clip, clip "ref", int[] "radius", float[] "thr", float[] "flat", float[] "wmin", float[] "subspl", int[] "planes")` | |
+| `avszip_BoxBlur(clip, int[] "planes", int "hradius", int "hpasses", int "vradius", int "vpasses")` | |
+| `avszip_Checkmate(clip, int "thr", int "tmax", int "tthr2")` | 8-bit, temporal |
+| `avszip_CLAHE(clip, int "limit", int[] "tiles")` | output `_ColorRange`=0 |
+| `avszip_ColorMap(clip, int "color")` | Y8 in, RGBP out |
+| `avszip_CombMask(clip, int "cthresh", int "mthresh", bool "expand", int "metric")` | 8-bit |
+| `avszip_CombMaskMT(clip, int "thY1", int "thY2")` | 8-bit |
+| `avszip_Compress(clip, int "codec", int "qscale", int "quality", int "dc_prec", bool "chroma")` | 8-bit Gray/YUV |
+| `avszip_Deband(clip, int "range", float[] "thr", float[] "grain", int "sample_mode", int "seed", bool "blur_first", bool "dynamic_grain", bool "keep_tv_range", int "random_algo_ref", int "random_algo_grain", float "random_param_ref", float "random_param_grain", float[] "thr1", float[] "thr2", float "angle_boost", float "max_angle")` | <16-bit int is processed at 16 bit, as in vszip |
+| `avszip_Dither(clip, int bitdepth, int "dither_type", int "sample_type", bool "fulls", bool "fulld")` | 12 modes (fmtconv + zimg) |
+| `avszip_EEDI3(clip, int field, bool "dh", float "alpha", float "beta", float "gamma", int "nrad", int "mdis", bool "hp", int "vcheck", float "vthresh0", float "vthresh1", float "vthresh2", clip "sclip", clip "mclip")` | field 2/3 bob: 2× frames and fps |
+| `avszip_EEDI3H(...)` | same parameters, interpolates along the width |
+| `avszip_ImageRead(string[] path, bool "validate")` | source filter (zigimg; files or http(s) URLs) |
+| `avszip_LimitFilter(clip flt, clip src, clip "ref", float[] "dark_thr", float[] "bright_thr", float[] "elast", int[] "planes")` | |
+| `avszip_Limiter(clip, float[] "min", float[] "max", bool "tv_range", bool "mask", int[] "planes")` | |
+| `avszip_MosquitoNR(clip, int[] "strength", int[] "restore", int[] "radius", int[] "planes")` | |
+| `avszip_PlaneAverage(clip, int[] exclude, clip "clipb", int[] "planes", string "prop")` | property-only (`psmAvg`/`psmDiff`) |
+| `avszip_PlaneMinMax(clip, float "minthr", float "maxthr", clip "clipb", int[] "planes", string "prop")` | property-only (`psmMin`/`psmMax`/`psmDiff`) |
+| `avszip_RFS(clip, clip clipb, int[] frames, bool "mismatch", int[] "planes")` | |
+| `avszip_SSIMULACRA2(clip reference, clip distorted)` | property `SSIMULACRA2` |
+| `avszip_WNNM(clip, float[] "sigma", int "block_size", int "block_step", int "group_size", int "bm_range", int "radius", int "ps_num", int "ps_range", bool "residual", bool "adaptive_aggregation", clip "rclip")` | 32-bit float |
+| `avszip_XPSNR(clip reference, clip distorted, bool "temporal", bool "verbose")` | props `XPSNR_Y/U/V` |
 
-`vszip_WNNMRaw` is registered as well. It is WNNM's internal first stage, a function only so that the host caches it; do not call it directly.
+`avszip_WNNMRaw` is registered as well. It is WNNM's internal first stage, a function only so that the host caches it; do not call it directly.
 
 vszip's int-typed booleans (`tv_range=1`) are AviSynth `bool`s here (`tv_range=true`). Enum-like ints such as `metric`, `codec`, and `dither_type` stay ints.
 

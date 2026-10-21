@@ -214,7 +214,7 @@ def avs_call(name, args):
             parts.append(f"{k}={v!r}")
         else:
             parts.append(f"{k}={int(v)}")
-    return f"vszip_{name}({', '.join(parts)})" if not parts else f"vszip_{name}({', '.join(parts)})"
+    return f"avszip_{name}({', '.join(parts)})" if not parts else f"avszip_{name}({', '.join(parts)})"
 
 
 def run_both(env, pair, name, avs_args=None, vs_args=None, clip_prefix=""):

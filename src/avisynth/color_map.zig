@@ -1,4 +1,4 @@
-//! vszip_ColorMap(clip, int "color")
+//! avszip_ColorMap(clip, int "color")
 //!
 //! Y8 in, planar RGB (RGBP) out. Props as vszip: _Matrix=0 (RGB),
 //! _Transfer=13 (sRGB), _Primaries=1 (BT.709), _ColorRange=0 (full).
@@ -11,7 +11,7 @@ const c = avs.c;
 const filter = @import("../filters/color_map.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_ColorMap";
+pub const filter_name = "avszip_ColorMap";
 pub const params = "c[color]i";
 
 const Data = struct {

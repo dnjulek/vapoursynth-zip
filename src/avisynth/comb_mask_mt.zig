@@ -1,4 +1,4 @@
-//! vszip_CombMaskMT(clip, int "thY1", int "thY2")
+//! avszip_CombMaskMT(clip, int "thY1", int "thY2")
 
 const std = @import("std");
 const math = std.math;
@@ -7,7 +7,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/comb_mask_mt.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_CombMaskMT";
+pub const filter_name = "avszip_CombMaskMT";
 pub const params = "c[thY1]i[thY2]i";
 
 const Data = struct {

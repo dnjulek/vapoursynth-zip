@@ -1,4 +1,4 @@
-//! vszip_SSIMULACRA2(clip reference, clip distorted)
+//! avszip_SSIMULACRA2(clip reference, clip distorted)
 //!
 //! Returns `reference` with the per-frame prop SSIMULACRA2. Planar RGB inputs
 //! (8-16 bit int, 32-bit float) are read natively, bit-exact with vszip.
@@ -21,7 +21,7 @@ const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_SSIMULACRA2";
+pub const filter_name = "avszip_SSIMULACRA2";
 pub const params = "c[distorted]c";
 const Scratch = []align(common.vec_len) f32;
 

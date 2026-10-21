@@ -1,7 +1,7 @@
-//! vszip_XPSNR(clip reference, clip distorted, bool "temporal", bool "verbose")
+//! avszip_XPSNR(clip reference, clip distorted, bool "temporal", bool "verbose")
 //!
 //! Returns `distorted` with per-frame props XPSNR_Y/U/V. A lower-depth input
-//! is first raised to the other's depth (vszip_Dither, plain rounding).
+//! is first raised to the other's depth (avszip_Dither, plain rounding).
 //!
 //! Aggregate (verbose) statistics differ from vszip on purpose: vszip adds to
 //! running totals on every evaluation, so a frame recomputed by the cache is
@@ -20,7 +20,7 @@ const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_XPSNR";
+pub const filter_name = "avszip_XPSNR";
 pub const params = "c[distorted]c[temporal]b[verbose]b";
 
 const PerFrame = struct {
@@ -141,8 +141,8 @@ fn raiseDepth(ctx: *avs.Create, clip: avs.Clip, bits: u8) !avs.Clip {
     const args = [_]c.AVS_Value{ cv.raw, c.avs_new_value_int(bits), c.avs_new_value_int(0) };
     const names = [_]?[*:0]const u8{ null, null, "dither_type" };
     var msg: ?[:0]const u8 = null;
-    const v = ctx.env.invoke("vszip_Dither", avs.Value.arrayView(&args), &names, &msg) catch
-        return ctx.fail("internal vszip_Dither failed: {s}", .{msg orelse "unknown error"});
+    const v = ctx.env.invoke("avszip_Dither", avs.Value.arrayView(&args), &names, &msg) catch
+        return ctx.fail("internal avszip_Dither failed: {s}", .{msg orelse "unknown error"});
     defer v.release();
     return v.takeClip(ctx.env);
 }

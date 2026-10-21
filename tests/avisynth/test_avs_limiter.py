@@ -39,7 +39,7 @@ def test_limiter_cropped_input(env):
     # Cropped source keeps its parent pitch: exercises the per-row path.
     pair = H.Pair(env, "YUV420P16", H.make_frames("YUV420P16", w=128, h=64))
     env.set_clip("src", pair.avs)
-    a = env.eval("src.Crop(16, 2, -32, -4).vszip_Limiter(tv_range=true)")
+    a = env.eval("src.Crop(16, 2, -32, -4).avszip_Limiter(tv_range=true)")
     b = H.vszip().Limiter(H.core.std.Crop(pair.vs, 16, 32, 2, 4), tv_range=1)
     for x, y in zip(a.frames(), H.vs_frames(b)):
         H.compare_planes(x, y)
@@ -57,4 +57,4 @@ def test_limiter_cropped_input(env):
 def test_limiter_errors(env, args, msg):
     env.eval('src = BlankClip(pixel_type="YV12", length=1)', want_clip=False)
     with pytest.raises(AvsError, match=msg):
-        env.eval(f"src.vszip_Limiter({args})")
+        env.eval(f"src.avszip_Limiter({args})")

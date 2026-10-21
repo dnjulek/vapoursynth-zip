@@ -1,4 +1,4 @@
-//! vszip_EEDI3 / vszip_EEDI3H(clip, int field, bool "dh", float "alpha", float "beta", float "gamma",
+//! avszip_EEDI3 / avszip_EEDI3H(clip, int field, bool "dh", float "alpha", float "beta", float "gamma",
 //!   int "nrad", int "mdis", bool "hp", int "vcheck", float "vthresh0", float "vthresh1",
 //!   float "vthresh2", clip "sclip", clip "mclip")
 //!
@@ -77,7 +77,7 @@ fn reduce(num: *u64, den: *u64) void {
 
 fn Impl(comptime horizontal: bool) type {
     return struct {
-        pub const filter_name = if (horizontal) "vszip_EEDI3H" else "vszip_EEDI3";
+        pub const filter_name = if (horizontal) "avszip_EEDI3H" else "avszip_EEDI3";
         pub const params = shared_params;
         const F = avs.Filter(Data, filter_name);
 
@@ -205,7 +205,7 @@ fn Impl(comptime horizontal: bool) type {
             const args = [_]c.AVS_Value{ cv.raw, c.avs_new_value_int(8), c.avs_new_value_int(0), t, t };
             const names = [_]?[*:0]const u8{ null, null, "dither_type", "fulls", "fulld" };
             var msg: ?[:0]const u8 = null;
-            const v = ctx.env.invoke("vszip_Dither", avs.Value.arrayView(&args), &names, &msg) catch
+            const v = ctx.env.invoke("avszip_Dither", avs.Value.arrayView(&args), &names, &msg) catch
                 return ctx.fail("could not convert mclip to 8 bit: {s}", .{msg orelse "unknown error"});
             defer v.release();
             return v.takeClip(ctx.env);

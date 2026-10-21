@@ -1,7 +1,7 @@
 //! vszip: VapourSynth Zig Image Process.
 //!
 //! Every function is registered in the `vszip` namespace; the AviSynth+ port
-//! (`avszip.zig`) registers the same filters as `vszip_<Filter>`.
+//! (`avszip.zig`) registers the same filters as `avszip_<Filter>`.
 
 pub const vapoursynth = @import("vapoursynth");
 const vs = vapoursynth.vapoursynth4;

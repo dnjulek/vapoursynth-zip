@@ -1,4 +1,4 @@
-//! vszip_ImageRead(string[] path, bool "validate")
+//! avszip_ImageRead(string[] path, bool "validate")
 //!
 //! Source filter (one frame per path, 30 fps) decoding with zigimg; paths may
 //! be http(s) URLs. Output formats: Y8/Y16 (gray), RGBP/RGBP16 (RGB),
@@ -24,7 +24,7 @@ const loadImage = ir.loadImage;
 const hz = @import("helper.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_ImageRead";
+pub const filter_name = "avszip_ImageRead";
 pub const params = "[path]s*[validate]b";
 
 const Layout = enum {

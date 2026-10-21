@@ -1,4 +1,4 @@
-//! vszip_AdaptiveBinarize(clip, clip clip2, int "c")
+//! avszip_AdaptiveBinarize(clip, clip clip2, int "c")
 //!
 //! 8-bit only: dst = 255 where (clip2 - clip) >= c, else 0; every plane.
 //! Output is marked full range (`_ColorRange` = 0) like vszip.
@@ -9,7 +9,7 @@ const avs = @import("avisynth");
 
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_AdaptiveBinarize";
+pub const filter_name = "avszip_AdaptiveBinarize";
 pub const params = "c[clip2]c[c]i";
 
 const Data = struct {

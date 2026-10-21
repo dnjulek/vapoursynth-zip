@@ -1,4 +1,4 @@
-//! vszip_CombMask(clip, int "cthresh", int "mthresh", bool "expand", int "metric")
+//! avszip_CombMask(clip, int "cthresh", int "mthresh", bool "expand", int "metric")
 //!
 //! 8-bit only. With mthresh > 0 frame n also reads frame n-1 (n=0 reads
 //! itself), like vszip.
@@ -10,7 +10,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/comb_mask.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_CombMask";
+pub const filter_name = "avszip_CombMask";
 pub const params = "c[cthresh]i[mthresh]i[expand]b[metric]i";
 
 const Data = struct {

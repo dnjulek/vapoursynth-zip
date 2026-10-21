@@ -1,4 +1,4 @@
-//! vszip_BilateralDither(clip, clip "ref", int[] "radius", float[] "thr", float[] "flat", float[] "wmin", float[] "subspl", int[] "planes")
+//! avszip_BilateralDither(clip, clip "ref", int[] "radius", float[] "thr", float[] "flat", float[] "wmin", float[] "subspl", int[] "planes")
 
 const std = @import("std");
 const avs = @import("avisynth");
@@ -8,7 +8,7 @@ const subspl = @import("../filters/bilateral_dither_subspl.zig");
 const hz = @import("helper.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_BilateralDither";
+pub const filter_name = "avszip_BilateralDither";
 pub const params = "c[ref]c[radius]i*[thr]f*[flat]f*[wmin]f*[subspl]f*[planes]i*";
 
 const Data = struct {

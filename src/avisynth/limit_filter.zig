@@ -1,4 +1,4 @@
-//! vszip_LimitFilter(clip flt, clip src, clip "ref", float[] "dark_thr", float[] "bright_thr", float[] "elast", int[] "planes")
+//! avszip_LimitFilter(clip flt, clip src, clip "ref", float[] "dark_thr", float[] "bright_thr", float[] "elast", int[] "planes")
 //!
 //! Thresholds are given on the 8-bit scale and rescaled to the clip's depth
 //! (range read from flt's first frame), like vszip. Output props come from flt.
@@ -10,7 +10,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/limit_filter.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_LimitFilter";
+pub const filter_name = "avszip_LimitFilter";
 pub const params = "c[src]c[ref]c[dark_thr]f*[bright_thr]f*[elast]f*[planes]i*";
 
 const Data = struct {

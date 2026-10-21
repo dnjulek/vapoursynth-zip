@@ -1,4 +1,4 @@
-//! vszip_CLAHE(clip, int "limit", int[] "tiles")
+//! avszip_CLAHE(clip, int "limit", int[] "tiles")
 //!
 //! Every color plane is equalized; the output is tagged full range
 //! (`_ColorRange` = 0) like vszip. Float is equalized on 16-bit bins.
@@ -10,7 +10,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/clahe.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_CLAHE";
+pub const filter_name = "avszip_CLAHE";
 pub const params = "c[limit]i[tiles]i*";
 
 const Data = struct {

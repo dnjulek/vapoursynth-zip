@@ -63,7 +63,7 @@ def test_xpsnr(env, fmt, args, fps):
     vs_r = H.core.std.AssumeFPS(pr.vs, fpsnum=fps[0], fpsden=fps[1])
     vs_d = H.core.std.AssumeFPS(pd.vs, fpsnum=fps[0], fpsden=fps[1])
     extra = "".join(f", {k}={'true' if v else 'false'}" for k, v in args.items())
-    a = env.eval(f"vszip_XPSNR(r.AssumeFPS({fps[0]}, {fps[1]}), dd.AssumeFPS({fps[0]}, {fps[1]}), verbose=false{extra})")
+    a = env.eval(f"avszip_XPSNR(r.AssumeFPS({fps[0]}, {fps[1]}), dd.AssumeFPS({fps[0]}, {fps[1]}), verbose=false{extra})")
     v = H.vszip().XPSNR(vs_r, vs_d, verbose=0, **{k: int(x) for k, x in args.items()})
     same(a, v, props=["XPSNR_Y", "XPSNR_U", "XPSNR_V"])
 
@@ -86,7 +86,7 @@ def test_ssimulacra2(env, fmt, tol):
     pd = H.Pair(env, fmt, dist)
     env.set_clip("r", pr.avs)
     env.set_clip("dd", pd.avs)
-    a = env.eval("vszip_SSIMULACRA2(r, dd)")
+    a = env.eval("avszip_SSIMULACRA2(r, dd)")
     v = H.vszip().SSIMULACRA2(pr.vs, pd.vs)
     fa, fb = a.frames(), H.vs_frames(v)
     for x, y in zip(fa, fb):
@@ -99,12 +99,12 @@ def test_wave3b_errors(env):
     env.eval('y8 = BlankClip(pixel_type="Y8", length=3)\nyv12 = BlankClip(pixel_type="YV12", length=3)\n'
              'y16 = BlankClip(pixel_type="YUV420P16", length=3)', want_clip=False)
     with pytest.raises(AvsError, match="tmax value"):
-        env.eval("y8.vszip_Checkmate(tmax=0)")
+        env.eval("y8.avszip_Checkmate(tmax=0)")
     with pytest.raises(AvsError, match="tiles values must be"):
-        env.eval("y8.vszip_CLAHE(tiles=[0])")
+        env.eval("y8.avszip_CLAHE(tiles=[0])")
     with pytest.raises(AvsError, match="only supports YUV"):
-        env.eval("vszip_XPSNR(y8, y8)")
+        env.eval("avszip_XPSNR(y8, y8)")
     with pytest.raises(AvsError, match="only supports 8 or 10 bit"):
-        env.eval("vszip_XPSNR(y16, y16)")
+        env.eval("avszip_XPSNR(y16, y16)")
     with pytest.raises(AvsError, match="same length"):
-        env.eval("vszip_SSIMULACRA2(yv12, yv12.Trim(0, 1))")
+        env.eval("avszip_SSIMULACRA2(yv12, yv12.Trim(0, 1))")

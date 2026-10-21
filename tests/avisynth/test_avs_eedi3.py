@@ -61,12 +61,12 @@ def test_eedi3_errors(env):
     env.eval('src = BlankClip(pixel_type="YV12", length=2, width=64, height=48)\n'
              'odd = BlankClip(pixel_type="YV24", length=2, width=64, height=47)', want_clip=False)
     with pytest.raises(AvsError, match="field must be 0, 1, 2, or 3"):
-        env.eval("src.vszip_EEDI3(4)")
+        env.eval("src.avszip_EEDI3(4)")
     with pytest.raises(AvsError, match="field must be 0 or 1 when dh"):
-        env.eval("src.vszip_EEDI3(2, dh=true)")
+        env.eval("src.avszip_EEDI3(2, dh=true)")
     with pytest.raises(AvsError, match="height must be mod 2"):
-        env.eval("odd.vszip_EEDI3(0)")
+        env.eval("odd.avszip_EEDI3(0)")
     with pytest.raises(AvsError, match="alpha \\+ beta"):
-        env.eval("src.vszip_EEDI3(0, alpha=0.8, beta=0.5)")
+        env.eval("src.avszip_EEDI3(0, alpha=0.8, beta=0.5)")
     with pytest.raises(AvsError, match="mclip must be Gray"):
-        env.eval("src.vszip_EEDI3(0, mclip=src)")
+        env.eval("src.avszip_EEDI3(0, mclip=src)")

@@ -22,8 +22,8 @@ OTHER = ["ImageRead", "WNNMRaw"]
 
 @pytest.mark.parametrize("name", NAMES + OTHER)
 def test_function_exists_and_alias(env, name):
-    env.eval(f'Assert(FunctionExists("vszip_{name}"), "missing vszip_{name}")\n'
-             f'Assert(FunctionExists("avszip_vszip_{name}"), "missing alias avszip_vszip_{name}")', want_clip=False)
+    env.eval(f'Assert(FunctionExists("avszip_{name}"), "missing avszip_{name}")\n'
+             f'Assert(FunctionExists("avszip_avszip_{name}"), "missing alias avszip_avszip_{name}")', want_clip=False)
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -35,6 +35,6 @@ def test_dispatches_to_own_callback(env, name):
     args = "tiny, tiny" if two else "tiny"
     extra = {"Dither": ", 8", "RFS": ", frames=[0]", "PlaneAverage": ", exclude=[-1]", "EEDI3": ", 0", "EEDI3H": ", 0"}.get(name, "")
     try:
-        env.eval(f"vszip_{name}({args}{extra})")
+        env.eval(f"avszip_{name}({args}{extra})")
     except AvsError as e:
-        assert str(e).startswith(f"vszip_{name}:"), f"vszip_{name} raised another function's error: {e}"
+        assert str(e).startswith(f"avszip_{name}:"), f"avszip_{name} raised another function's error: {e}"

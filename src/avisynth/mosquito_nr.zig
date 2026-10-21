@@ -1,4 +1,4 @@
-//! vszip_MosquitoNR(clip, int[] "strength", int[] "restore", int[] "radius", int[] "planes")
+//! avszip_MosquitoNR(clip, int[] "strength", int[] "restore", int[] "radius", int[] "planes")
 
 const std = @import("std");
 const avs = @import("avisynth");
@@ -9,7 +9,7 @@ const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_MosquitoNR";
+pub const filter_name = "avszip_MosquitoNR";
 pub const params = "c[strength]i*[restore]i*[radius]i*[planes]i*";
 
 const Data = struct {

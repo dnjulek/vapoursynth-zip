@@ -53,11 +53,11 @@ def foreign_pitch(clip):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("script,n", [
-    ('BlankClip(width=224, height=64, length=5, pixel_type="YV24").Crop(64, 0, 96, 64).vszip_Checkmate(tthr2=8)', 2),
-    ('BlankClip(width=128, height=32, length=5, pixel_type="RGBPS").Crop(16, 0, 48, 32).vszip_WNNM(radius=1, block_size=4)', 2),
-    ('BlankClip(width=128, height=32, length=5, pixel_type="Y32").Crop(16, 0, 48, 32).vszip_WNNM(radius=2, block_size=4)', 2),
+    ('BlankClip(width=224, height=64, length=5, pixel_type="YV24").Crop(64, 0, 96, 64).avszip_Checkmate(tthr2=8)', 2),
+    ('BlankClip(width=128, height=32, length=5, pixel_type="RGBPS").Crop(16, 0, 48, 32).avszip_WNNM(radius=1, block_size=4)', 2),
+    ('BlankClip(width=128, height=32, length=5, pixel_type="Y32").Crop(16, 0, 48, 32).avszip_WNNM(radius=2, block_size=4)', 2),
     # maximum radius: a 31-frame window on three planes
-    ('BlankClip(width=128, height=32, length=40, pixel_type="RGBPS").Crop(16, 0, 48, 32).vszip_WNNM(radius=15, block_size=4)', 20),
+    ('BlankClip(width=128, height=32, length=40, pixel_type="RGBPS").Crop(16, 0, 48, 32).avszip_WNNM(radius=15, block_size=4)', 20),
 ])
 def test_temporal_foreign_pitch_does_not_abort(script, n):
     assert isolated(script, n) == "OK"
@@ -69,7 +69,7 @@ def test_checkmate_foreign_pitch_matches_vszip(env):
     a = env.eval("src.Crop(64, 0, 96, 64)")
     assert foreign_pitch(a)
     env.set_clip("cropped", a)
-    out = env.eval("cropped.vszip_Checkmate(tthr2=8)")
+    out = env.eval("cropped.avszip_Checkmate(tthr2=8)")
     v = H.vszip().Checkmate(H.core.std.Crop(pair.vs, left=64, right=64), tthr2=8)
     for n, (x, y) in enumerate(zip(out.frames(), H.vs_frames(v))):
         H.compare_planes(x, y, what=f"frame {n}")
@@ -82,7 +82,7 @@ def test_wnnm_temporal_foreign_pitch_matches_vszip(env, fmt, radius):
     a = env.eval("src.Crop(16, 0, 48, 32)")
     assert foreign_pitch(a)
     env.set_clip("cropped", a)
-    out = env.eval(f"cropped.vszip_WNNM(radius={radius}, block_size=4)")
+    out = env.eval(f"cropped.avszip_WNNM(radius={radius}, block_size=4)")
     v = H.vszip().WNNM(H.core.std.Crop(pair.vs, left=16, right=64), radius=radius, block_size=4)
     for n, (x, y) in enumerate(zip(out.frames(), H.vs_frames(v))):
         H.compare_planes(x, y, what=f"frame {n}")
@@ -96,7 +96,7 @@ def test_wnnm_temporal_foreign_pitch_matches_vszip(env, fmt, radius):
 def test_adaptive_binarize_mixed_alpha_layouts(fa, fb):
     script = (f'a = BlankClip(width=32, height=16, length=1, pixel_type="{fa}")\n'
               f'b = BlankClip(width=32, height=16, length=1, pixel_type="{fb}")\n'
-              'a.vszip_AdaptiveBinarize(clip2=b)')
+              'a.avszip_AdaptiveBinarize(clip2=b)')
     assert isolated(script) == "OK"  # color planes only; the primary's alpha passes through
 
 
@@ -104,9 +104,9 @@ def test_adaptive_binarize_mixed_alpha_layouts(fa, fb):
 def test_stats_alpha_plane_requires_alpha_in_clipb(name, args):
     base = ('a = BlankClip(width=32, height=16, length=1, pixel_type="RGBAP")\n'
             'b = BlankClip(width=32, height=16, length=1, pixel_type="RGBP")\n')
-    out = isolated(base + f"a.vszip_{name}({args}clipb=b, planes=[3])")
+    out = isolated(base + f"a.avszip_{name}({args}clipb=b, planes=[3])")
     assert out.startswith("AVSERROR:") and "alpha plane" in out
-    assert isolated(base + f"a.vszip_{name}({args}clipb=b, planes=[0])") == "OK"
+    assert isolated(base + f"a.avszip_{name}({args}clipb=b, planes=[0])") == "OK"
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +127,9 @@ def _png(path, mode, value):
 def test_imageread_later_format_change(tmp_path, first, second):
     a = _png(tmp_path / "a.png", *first)
     b = _png(tmp_path / "b.png", *second)
-    out = isolated(f'vszip_ImageRead(path=["{a}", "{b}"], validate=false)', n=1)
+    out = isolated(f'avszip_ImageRead(path=["{a}", "{b}"], validate=false)', n=1)
     assert out.startswith("AVSERROR:") and "does not match the clip's first image" in out
-    assert isolated(f'vszip_ImageRead(path=["{a}", "{b}"], validate=false)', n=0) == "OK"
+    assert isolated(f'avszip_ImageRead(path=["{a}", "{b}"], validate=false)', n=0) == "OK"
 
 
 def test_imageread_later_format_change_vszip(tmp_path):
@@ -162,10 +162,10 @@ def test_adaptive_grain_mask_rgb_plane_routing(env, fmt):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("script,n", [
-    ('BlankClip(width=16, height=16, length=3, pixel_type="Y32").vszip_WNNM(radius=1, block_size=4, ps_range=2147483648)', 1),
-    ('BlankClip(width=16, height=16, length=3, pixel_type="Y32").vszip_WNNM(radius=1, block_size=4, ps_range=4294967295)', 1),
-    ('BlankClip(width=8, height=8, length=1, pixel_type="Y32").vszip_WNNM(block_size=4, bm_range=4294967295)', 0),
-    ('BlankClip(width=8, height=8, length=1, pixel_type="Y32").vszip_WNNM(block_size=4, bm_range=2147483647)', 0),
+    ('BlankClip(width=16, height=16, length=3, pixel_type="Y32").avszip_WNNM(radius=1, block_size=4, ps_range=2147483648)', 1),
+    ('BlankClip(width=16, height=16, length=3, pixel_type="Y32").avszip_WNNM(radius=1, block_size=4, ps_range=4294967295)', 1),
+    ('BlankClip(width=8, height=8, length=1, pixel_type="Y32").avszip_WNNM(block_size=4, bm_range=4294967295)', 0),
+    ('BlankClip(width=8, height=8, length=1, pixel_type="Y32").avszip_WNNM(block_size=4, bm_range=2147483647)', 0),
 ])
 def test_wnnm_extreme_ranges(script, n):
     assert isolated(script, n) == "OK"
@@ -175,8 +175,8 @@ def test_wnnm_extreme_ranges_match_plane_sized_ranges(env):
     # Ranges past the plane select the same windows as a plane-sized range.
     pair = H.Pair(env, "Y32", H.make_frames("Y32", w=24, h=16, n=3))
     env.set_clip("src", pair.avs)
-    big = env.eval("src.vszip_WNNM(radius=1, block_size=4, bm_range=4294967295, ps_range=4294967295)")
-    small = env.eval("src.vszip_WNNM(radius=1, block_size=4, bm_range=24, ps_range=24)")
+    big = env.eval("src.avszip_WNNM(radius=1, block_size=4, bm_range=4294967295, ps_range=4294967295)")
+    small = env.eval("src.avszip_WNNM(radius=1, block_size=4, bm_range=24, ps_range=24)")
     for n in range(3):
         H.compare_planes(big.frame(n), small.frame(n), what=f"frame {n}")
 
@@ -198,7 +198,7 @@ def _rgba_source(env, n, alpha_levels):
 
 
 @pytest.mark.parametrize("call", [
-    "vszip_CombMask()", "vszip_CombMaskMT()", "vszip_AdaptiveBinarize(clip2=src)", "vszip_Checkmate(tthr2=255)",
+    "avszip_CombMask()", "avszip_CombMaskMT()", "avszip_AdaptiveBinarize(clip2=src)", "avszip_Checkmate(tthr2=255)",
 ])
 def test_alpha_passes_through(env, call):
     frames, src = _rgba_source(env, 5, [0, 100, 120, 130, 140])
@@ -231,7 +231,7 @@ def test_ssimulacra2_honors_matrix(env, m_ref, m_dist, full, h):
     d = _yuv444_pair(env, m_dist, full, 2000, h)
     env.set_clip("ref", r.avs)
     env.set_clip("dist", d.avs)
-    a = env.eval("vszip_SSIMULACRA2(ref, dist)").frame(0)
+    a = env.eval("avszip_SSIMULACRA2(ref, dist)").frame(0)
     v = H.vs_frames(H.vszip().SSIMULACRA2(r.vs, d.vs))[0]
     # The returned planes are the converted reference: a wrong matrix shows up
     # here far above float rounding (0.18-0.23 in the original report).
@@ -266,7 +266,7 @@ def test_deband_low_bit_alpha(env, pt, color, bits):
     frames = _alpha_frames(pt, bits)
     src = env.source(frames, pt)
     env.set_clip("src", src)
-    out = env.eval("src.vszip_Deband(grain=[2.0])")
+    out = env.eval("src.avszip_Deband(grain=[2.0])")
     assert out.pixel_type == src.pixel_type
     pair = H.Pair(env, color, [f[:3] for f in frames])
     v = H.vszip().Deband(pair.vs, grain=[2.0])
@@ -279,8 +279,8 @@ def test_deband_low_bit_alpha(env, pt, color, bits):
 def test_dither_alpha_round_trip(env, pt, bits):
     frames = _alpha_frames(pt, bits)
     env.set_clip("src", env.source(frames, pt))
-    up = env.eval("src.vszip_Dither(bitdepth=16)")
-    back = env.eval(f"src.vszip_Dither(bitdepth=16).vszip_Dither(bitdepth={bits}, dither_type=3)")
+    up = env.eval("src.avszip_Dither(bitdepth=16)")
+    back = env.eval(f"src.avszip_Dither(bitdepth=16).avszip_Dither(bitdepth={bits}, dither_type=3)")
     peak = (1 << bits) - 1
     for n in range(3):
         a16 = up.frame(n).planes[3].astype(np.int64)
@@ -303,8 +303,8 @@ def test_xpsnr_mixed_depth_with_alpha(env, ref_pt, dist_pt):
     d_a, d_c = clip(dist_pt, 2)
     for name, c in (("ra", r_a), ("rc", r_c), ("da", d_a), ("dc", d_c)):
         env.set_clip(name, c)
-    with_alpha = env.eval("vszip_XPSNR(ra, da, verbose=false)")
-    without = env.eval("vszip_XPSNR(rc, dc, verbose=false)")
+    with_alpha = env.eval("avszip_XPSNR(ra, da, verbose=false)")
+    without = env.eval("avszip_XPSNR(rc, dc, verbose=false)")
     for n in range(2):
         fa, fb = with_alpha.frame(n), without.frame(n)
         H.compare_planes(fa, fb, what=f"frame {n}", planes=range(3))
@@ -349,7 +349,7 @@ def test_ssimulacra2_per_frame_metadata(env, ref_tags, dist_tags):
     d = H.Pair(env, "YUV444P16", dist)
     rv = _spliced(env, r, "r", ref_tags)
     dv = _spliced(env, d, "d", dist_tags)
-    a = env.eval("vszip_SSIMULACRA2(r, d)")
+    a = env.eval("avszip_SSIMULACRA2(r, d)")
     v = H.vszip().SSIMULACRA2(rv, dv)
     vf = H.vs_frames(v)
     for order in ([0, 1], [1, 0, 1, 0]):  # repeated and reversed requests
@@ -385,7 +385,7 @@ def test_ssimulacra2_keeps_reference_alpha(env, pt):
     plain = env.source(color_frames, color)
     env.set_clip("ra", ref)
     env.set_clip("rc", plain)
-    out = env.eval("vszip_SSIMULACRA2(ra, rc)")
+    out = env.eval("avszip_SSIMULACRA2(ra, rc)")
     assert out.has_alpha and out.bits == 32 and out.family == "rgb"
     f = out.frame(0)
     if bits == 32:
@@ -395,7 +395,7 @@ def test_ssimulacra2_keeps_reference_alpha(env, pt):
         want = frames[0][3].astype(np.float64) / ((1 << bits) - 1)
         assert np.max(np.abs(f.planes[3] - want)) < 1e-7, "reference alpha (as full-range float)"
     # color is unaffected by alpha: same score and RGB as the alpha-free call
-    g = env.eval("vszip_SSIMULACRA2(rc, rc)").frame(0)
+    g = env.eval("avszip_SSIMULACRA2(rc, rc)").frame(0)
     H.compare_planes(f, g, what=pt, planes=range(3))
     assert f.props["SSIMULACRA2"] == g.props["SSIMULACRA2"]
 
@@ -406,9 +406,9 @@ def test_ssimulacra2_distorted_alpha_is_ignored(env):
     env.set_clip("rc", env.source(color_frames, color))
     env.set_clip("da", env.source(frames, "YUVA444P16"))
     env.set_clip("db", env.source(other_alpha, "YUVA444P16"))
-    out = env.eval("vszip_SSIMULACRA2(rc, da)")
+    out = env.eval("avszip_SSIMULACRA2(rc, da)")
     assert not out.has_alpha, "alpha on the distorted input alone adds no alpha plane"
     a = out.frame(0).props["SSIMULACRA2"]
-    b = env.eval("vszip_SSIMULACRA2(rc, db)").frame(0).props["SSIMULACRA2"]
-    c = env.eval("vszip_SSIMULACRA2(rc, rc)").frame(0).props["SSIMULACRA2"]
+    b = env.eval("avszip_SSIMULACRA2(rc, db)").frame(0).props["SSIMULACRA2"]
+    c = env.eval("avszip_SSIMULACRA2(rc, rc)").frame(0).props["SSIMULACRA2"]
     assert a == b == c, "the distorted alpha does not change the score"

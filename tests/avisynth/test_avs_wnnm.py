@@ -51,10 +51,10 @@ def test_wnnm_errors(env):
     env.eval('i8 = BlankClip(pixel_type="YV12", length=1, width=32, height=32)\n'
              'f = BlankClip(pixel_type="Y32", length=1, width=32, height=32)', want_clip=False)
     with pytest.raises(AvsError, match="32 bit float"):
-        env.eval("i8.vszip_WNNM()")
+        env.eval("i8.avszip_WNNM()")
     with pytest.raises(AvsError, match="block_size"):
-        env.eval("f.vszip_WNNM(block_size=65)")
+        env.eval("f.avszip_WNNM(block_size=65)")
     with pytest.raises(AvsError, match="radius"):
-        env.eval("f.vszip_WNNM(radius=16)")
+        env.eval("f.avszip_WNNM(radius=16)")
     with pytest.raises(AvsError, match="non-negative"):
-        env.eval("f.vszip_WNNM(sigma=[-1.0])")
+        env.eval("f.avszip_WNNM(sigma=[-1.0])")

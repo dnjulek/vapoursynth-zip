@@ -1,10 +1,10 @@
-//! vszip_Deband(clip, int "range", float[] "thr", float[] "grain", int "sample_mode", int "seed",
+//! avszip_Deband(clip, int "range", float[] "thr", float[] "grain", int "sample_mode", int "seed",
 //!   bool "blur_first", bool "dynamic_grain", bool "keep_tv_range", int "random_algo_ref",
 //!   int "random_algo_grain", float "random_param_ref", float "random_param_grain",
 //!   float[] "thr1", float[] "thr2", float "angle_boost", float "max_angle")
 //!
 //! neo_f3kdb core at 16-bit integer or 32-bit float. Like vszip, lower integer
-//! depths are processed at 16 bit: up with `vszip_Dither(16, dither_type=0)`,
+//! depths are processed at 16 bit: up with `avszip_Dither(16, dither_type=0)`,
 //! back down with zimg error diffusion (`dither_type=3`), using the range of
 //! the source's first frame.
 
@@ -19,7 +19,7 @@ const filter_float = @import("../filters/deband_float.zig");
 const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
-pub const filter_name = "vszip_Deband";
+pub const filter_name = "avszip_Deband";
 pub const params = "c[range]i[thr]f*[grain]f*[sample_mode]i[seed]i[blur_first]b[dynamic_grain]b[keep_tv_range]b" ++
     "[random_algo_ref]i[random_algo_grain]i[random_param_ref]f[random_param_grain]f[thr1]f*[thr2]f*[angle_boost]f[max_angle]f";
 
@@ -137,7 +137,7 @@ fn invokeClip(ctx: *avs.Create, name: [:0]const u8, args: []const c.AVS_Value, n
     return v.takeClip(ctx.env);
 }
 
-/// `range`: the source's tagged range, or null to let vszip_Dither use its
+/// `range`: the source's tagged range, or null to let avszip_Dither use its
 /// defaults (limited for YUV/Gray, full for RGB: zimg's defaults too) without
 /// stamping a range property.
 fn ditherTo(ctx: *avs.Create, clip: avs.Clip, bits: c_int, dither_type: c_int, range: ?hz.Range) !avs.Clip {
@@ -147,11 +147,11 @@ fn ditherTo(ctx: *avs.Create, clip: avs.Clip, bits: c_int, dither_type: c_int, r
         const full = c.avs_new_value_bool(@intFromBool(r == .FULL));
         const args = [_]c.AVS_Value{ cv.raw, c.avs_new_value_int(bits), c.avs_new_value_int(dither_type), full, full };
         const names = [_]?[*:0]const u8{ null, null, "dither_type", "fulls", "fulld" };
-        return invokeClip(ctx, "vszip_Dither", &args, &names);
+        return invokeClip(ctx, "avszip_Dither", &args, &names);
     }
     const args = [_]c.AVS_Value{ cv.raw, c.avs_new_value_int(bits), c.avs_new_value_int(dither_type) };
     const names = [_]?[*:0]const u8{ null, null, "dither_type" };
-    return invokeClip(ctx, "vszip_Dither", &args, &names);
+    return invokeClip(ctx, "avszip_Dither", &args, &names);
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {

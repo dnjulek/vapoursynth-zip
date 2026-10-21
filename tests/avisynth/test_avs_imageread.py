@@ -15,7 +15,7 @@ REPO_IMAGE = H.REPO_ROOT / "tests" / "image.png"
 
 def avs_read(env, *paths, extra=""):
     lst = ", ".join(f'"{p}"' for p in paths)
-    return env.eval(f"vszip_ImageRead(path=[{lst}]{extra})")
+    return env.eval(f"avszip_ImageRead(path=[{lst}]{extra})")
 
 
 def vs_read(*paths):
@@ -114,7 +114,7 @@ def test_errors(env, tmp_path):
     with pytest.raises(AvsError, match="Couldn't open"):
         avs_read(env, str(tmp_path / "missing.png").replace("\\", "/"))
     with pytest.raises(AvsError, match="path is required"):
-        env.eval("vszip_ImageRead()")
+        env.eval("avszip_ImageRead()")
 
 
 def test_source_filter_parity_and_audio_safe(env, tmp_path):

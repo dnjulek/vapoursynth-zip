@@ -15,7 +15,7 @@ class AVSHost:
         return self.env.source(frames, name)
 
     def apply(self, name, clip, **kwargs):
-        return self.env.invoke("vszip_" + name, clip, **kwargs)
+        return self.env.invoke("avszip_" + name, clip, **kwargs)
 
     def frame(self, clip, n=0):
         f = clip.frame(n)

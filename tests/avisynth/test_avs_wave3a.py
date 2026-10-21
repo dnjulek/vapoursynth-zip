@@ -77,12 +77,12 @@ def test_wave3a_errors(env):
              'small = BlankClip(pixel_type="Y8", length=1, width=8, height=8)\n'
              'rgb = BlankClip(pixel_type="RGBP", length=1)', want_clip=False)
     with pytest.raises(AvsError, match="non-negative"):
-        env.eval("y8.vszip_Bilateral(sigmaS=[-1.0])")
+        env.eval("y8.avszip_Bilateral(sigmaS=[-1.0])")
     with pytest.raises(AvsError, match="except 1"):
-        env.eval("y8.vszip_Bilateral(PBFICnum=[1])")
+        env.eval("y8.avszip_Bilateral(PBFICnum=[1])")
     with pytest.raises(AvsError, match="16x16 min"):
-        env.eval("small.vszip_BilateralDither()")
+        env.eval("small.avszip_BilateralDither()")
     with pytest.raises(AvsError, match="YUV or Gray"):
-        env.eval("rgb.vszip_MosquitoNR()")
+        env.eval("rgb.avszip_MosquitoNR()")
     with pytest.raises(AvsError, match=r"strength\[0\] value 40 is out of range"):
-        env.eval("y8.vszip_MosquitoNR(strength=[40])")
+        env.eval("y8.avszip_MosquitoNR(strength=[40])")

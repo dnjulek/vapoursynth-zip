@@ -1,4 +1,4 @@
-//! vszip_Checkmate(clip, int "thr", int "tmax", int "tthr2")
+//! avszip_Checkmate(clip, int "thr", int "tmax", int "tthr2")
 //!
 //! Temporal: frame n reads n-1 and n+1 (and n-2/n+2 when tthr2 > 0), clamped
 //! to the clip, exactly like vszip. Results depend only on n, never on request
@@ -11,7 +11,7 @@ const avs = @import("avisynth");
 const filter = @import("../filters/checkmate.zig");
 const hz = @import("helper.zig");
 
-pub const filter_name = "vszip_Checkmate";
+pub const filter_name = "avszip_Checkmate";
 pub const params = "c[thr]i[tmax]i[tthr2]i";
 
 const Data = struct {

@@ -19,7 +19,7 @@ def test_dither_down(env, mode, conv):
     fmt, bits = conv
     pair = H.Pair(env, fmt, H.make_frames(fmt, n=3))
     env.set_clip("src", pair.avs)
-    a = env.eval(f"src.vszip_Dither({bits}, dither_type={mode})")
+    a = env.eval(f"src.avszip_Dither({bits}, dither_type={mode})")
     v = H.vszip().Dither(pair.vs, bits, dither_type=mode)
     same(a, v)
 
@@ -31,7 +31,7 @@ def test_dither_other(env, conv):
     fmt, bits, extra = conv
     pair = H.Pair(env, fmt, H.make_frames(fmt, n=2))
     env.set_clip("src", pair.avs)
-    a = env.eval("src." + H.avs_call("Dither", extra).replace("vszip_Dither(", f"vszip_Dither({bits}" + (", " if extra else "")))
+    a = env.eval("src." + H.avs_call("Dither", extra).replace("avszip_Dither(", f"avszip_Dither({bits}" + (", " if extra else "")))
     vs_extra = {k: int(v) if isinstance(v, bool) else v for k, v in extra.items()}
     v = H.vszip().Dither(pair.vs, bits, **vs_extra)
     props = ["_ColorRange"] if ("fulls" in extra or "fulld" in extra) else []
@@ -41,11 +41,11 @@ def test_dither_other(env, conv):
 def test_dither_errors(env):
     env.eval('src = BlankClip(pixel_type="YUV420P16", length=1)', want_clip=False)
     with pytest.raises(AvsError, match="16-bit float"):
-        env.eval("src.vszip_Dither(16, sample_type=1)")
+        env.eval("src.avszip_Dither(16, sample_type=1)")
     with pytest.raises(AvsError, match="8, 10, 12, 14 or 16"):
-        env.eval("src.vszip_Dither(9)")
+        env.eval("src.avszip_Dither(9)")
     with pytest.raises(AvsError, match="dither_type must be 0-11"):
-        env.eval("src.vszip_Dither(8, dither_type=12)")
+        env.eval("src.avszip_Dither(8, dither_type=12)")
 
 
 DB_FMTS = ["YUV420P16", "YUV444P16", "Y16", "YUV420PS", "Y32", "RGBP16", "YV12", "YUV420P10", "Y8"]
@@ -81,6 +81,6 @@ def test_deband_cropped_input(env):
     fmt = "YUV444P16"
     pair = H.Pair(env, fmt, H.make_frames(fmt, w=100, h=48, n=2, kind="smooth"))
     env.set_clip("src", pair.avs)
-    a = env.eval("src.Crop(6, 0, 80, 0).vszip_Deband(grain=[1.0])")
+    a = env.eval("src.Crop(6, 0, 80, 0).avszip_Deband(grain=[1.0])")
     v = H.vszip().Deband(H.core.std.Crop(pair.vs, 6, 14), grain=[1.0])
     same(a, v)

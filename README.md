@@ -4,7 +4,7 @@
 
 [READ THE DOCS](https://github.com/dnjulek/vapoursynth-zip/wiki)
 
-**AviSynth+:** the same filters build as an AviSynth+ plugin with `zig build -Doptimize=fast -Davisynth=true` (`vszip_<Filter>` functions, bit-exact with vszip). See [src/avisynth/README.md](src/avisynth/README.md).
+**AviSynth+:** the same filters build as an AviSynth+ plugin with `zig build -Doptimize=fast -Davisynth=true` (`avszip_<Filter>` functions, bit-exact with vszip). Prebuilt Windows DLLs (SSE2/AVX2/AVX-512) are in each release's `avszip-<version>-x86_64-windows.zip`. See [src/avisynth/README.md](src/avisynth/README.md).
 
 # FILTERS
 - [AdaptiveBinarize](https://github.com/dnjulek/vapoursynth-zip/wiki/AdaptiveBinarize): based on [OpenCV's Adaptive Thresholding](https://docs.opencv.org/5.x/d7/d4d/tutorial_py_thresholding.html).

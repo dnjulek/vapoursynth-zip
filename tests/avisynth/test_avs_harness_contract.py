@@ -36,12 +36,12 @@ def test_equal_infinite_metric_is_valid_but_opposite_sign_is_not():
 def test_typed_invoke_matches_script_and_keeps_inputs_owned(env):
     clip = env.eval('BlankClip(width=32,height=16,length=1,pixel_type="Y16",color_yuv=$808080)')
     env.set_clip("src", clip)
-    direct = env.invoke("vszip_Limiter", clip, min=[20000.0], max=[30000.0])
-    script = env.eval("src.vszip_Limiter(min=[20000.0],max=[30000.0])")
+    direct = env.invoke("avszip_Limiter", clip, min=[20000.0], max=[30000.0])
+    script = env.eval("src.avszip_Limiter(min=[20000.0],max=[30000.0])")
     H.compare_planes(direct.frame(0), script.frame(0))
     before = clip.frame(0)
     with pytest.raises(avsrt.AvsError, match="finite"):
-        env.invoke("vszip_Limiter", clip, min=[float("nan")], max=[30000.0])
+        env.invoke("avszip_Limiter", clip, min=[float("nan")], max=[30000.0])
     H.compare_planes(clip.frame(0), before)
 
 

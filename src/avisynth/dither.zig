@@ -1,4 +1,4 @@
-//! vszip_Dither(clip, int bitdepth, int "dither_type", int "sample_type", bool "fulls", bool "fulld")
+//! avszip_Dither(clip, int bitdepth, int "dither_type", int "sample_type", bool "fulls", bool "fulld")
 //!
 //! Bit-depth conversion with dithering (fmtconv `bitdepth` + zimg modes).
 //! AviSynth has no half-float format, so float output is 32-bit only. When
@@ -14,7 +14,7 @@ const filter = @import("../filters/dither.zig");
 const errdiff = @import("../filters/dither_errdiff.zig");
 
 const allocator = std.heap.c_allocator;
-pub const filter_name = "vszip_Dither";
+pub const filter_name = "avszip_Dither";
 pub const params = "c[bitdepth]i[dither_type]i[sample_type]i[fulls]b[fulld]b";
 
 pub const Mode = filter.Mode;

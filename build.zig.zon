@@ -7,8 +7,10 @@
     .dependencies = .{
         .avisynth = .{
             // zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
+            // (re-add `.lazy = true` after a fetch: only -Davisynth=true builds need it)
             .url = "git+https://github.com/dnjulek/avisynth-zig.git#9baa17a8d5d8dc025d883d7eaadff822f346f1ce",
             .hash = "avisynth-0.2.0-o4p8CzZdAgBBhSVZnu0NVVNubl9aOKH_pwGE1fz_kvfF",
+            .lazy = true,
         },
 
         .vapoursynth = .{

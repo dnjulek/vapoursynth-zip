@@ -26,7 +26,7 @@ else:
     sys.path.insert(0, str(pathlib.Path(tests) / "avisynth"))
     import avsrt, harness
     env = avsrt.Env(plugins=[harness.AVSZIP])
-    create = lambda: env.invoke("vszip_ImageRead", path=[first, second], validate=bool(int(eager)))
+    create = lambda: env.invoke("avszip_ImageRead", path=[first, second], validate=bool(int(eager)))
     read = lambda c, n: c.frame(n)
     error = avsrt.AvsError
 phase = "create"

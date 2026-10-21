@@ -1,4 +1,4 @@
-//! vszip_Limiter(clip, float[] "min", float[] "max", bool "tv_range", bool "mask", int[] "planes")
+//! avszip_Limiter(clip, float[] "min", float[] "max", bool "tv_range", bool "mask", int[] "planes")
 
 const std = @import("std");
 const math = std.math;
@@ -8,7 +8,7 @@ const filter = @import("../filters/limiter.zig");
 const hz = @import("helper.zig");
 const BPSType = hz.BPSType;
 
-pub const filter_name = "vszip_Limiter";
+pub const filter_name = "avszip_Limiter";
 pub const params = "c[min]f*[max]f*[tv_range]b[mask]b[planes]i*";
 
 const Data = struct {

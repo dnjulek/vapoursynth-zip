@@ -1,8 +1,8 @@
 //! avszip: AviSynth+ port of vszip (VapourSynth Zig Image Process).
 //!
-//! Every function is registered as `vszip_<Filter>` with vszip's argument
+//! Every function is registered as `avszip_<Filter>` with vszip's argument
 //! names and defaults (see README for the per-filter mapping). AviSynth+ also
-//! exposes each one as `avszip_vszip_<Filter>` (DLL-basename alias).
+//! exposes each one as `avszip_avszip_<Filter>` (DLL-basename alias).
 
 const std = @import("std");
 pub const avs = @import("avisynth");

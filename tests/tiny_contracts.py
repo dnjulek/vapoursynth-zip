@@ -66,7 +66,7 @@ else:
     pt = {(False, 8): "Y8", (False, 32): "Y32", (True, 8): "YV12", (True, 32): "YUV420PS"}[(yuv, bits)]
     src = env.source([[np.full(s, expected, dtype=np.uint8 if bits==8 else np.float32) for s in shapes]
                       for _ in range(3)], pt)
-    create = lambda: env.invoke("vszip_" + name, src, **kwargs)
+    create = lambda: env.invoke("avszip_" + name, src, **kwargs)
     def planes(n):
         return out.frame(n).planes
 # Every recipe is a legal geometry: it must evaluate, not be rejected.

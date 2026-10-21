@@ -31,7 +31,7 @@ class Proxy:
         def invoke(*args, **kwargs):
             args = [x.clip if isinstance(x, Proxy) else x for x in args]
             try:
-                return env.invoke('vszip_' + name, self.clip, *args, **kwargs)
+                return env.invoke('avszip_' + name, self.clip, *args, **kwargs)
             except avsrt.AvsError as e:
                 # Only the plugin's own validation counts as REJECTED: a call
                 # the host refuses before the plugin runs (signature/type
@@ -68,7 +68,7 @@ def test_manifest_covers_avs_float_parameters():
     want = set()
     for path in (H.REPO_ROOT / "src" / "avisynth").glob("*.zig"):
         text = path.read_text(encoding="utf-8")
-        name = re.search(r'pub const filter_name = "vszip_(\w+)"', text)
+        name = re.search(r'pub const filter_name = "avszip_(\w+)"', text)
         names = {"eedi3": ["EEDI3", "EEDI3H"], "wnnm": ["WNNM"]}.get(
             path.stem, [name[1]] if name else [])
         declarations = re.findall(r'(?:pub const params|const shared_params) = ([^;]+);', text)
@@ -103,4 +103,4 @@ def test_integer_range_checked_before_narrowing(env, function, param, extra, val
     fmt = "Y32" if function == "WNNM" else "Y8"
     clip = env.eval(f'BlankClip(width=64,height=64,length=3,pixel_type="{fmt}")')
     with pytest.raises(avsrt.AvsError, match=param):
-        env.invoke("vszip_" + function, clip, **extra, **{param: value})
+        env.invoke("avszip_" + function, clip, **extra, **{param: value})

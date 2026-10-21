@@ -66,7 +66,7 @@ def test_planeminmax(env, fmt, variant):
 def test_pixels_untouched_and_source_props_isolated(env):
     pair = H.Pair(env, "YV12", H.make_frames("YV12"))
     env.set_clip("src", pair.avs)
-    a = env.eval("src.vszip_PlaneAverage(exclude=[-1], planes=[0, 1, 2])")
+    a = env.eval("src.avszip_PlaneAverage(exclude=[-1], planes=[0, 1, 2])")
     src = env.eval("src")
     for i in range(pair.avs.num_frames):
         x, s = a.frame(i), src.frame(i)
@@ -80,12 +80,12 @@ def test_errors(env):
     env.eval('src16 = BlankClip(pixel_type="YUV420P16", length=1)', want_clip=False)
     env.eval('srcf = BlankClip(pixel_type="YUV420PS", length=1)', want_clip=False)
     with pytest.raises(AvsError, match="exclude is required"):
-        env.eval("src.vszip_PlaneAverage()")
+        env.eval("src.avszip_PlaneAverage()")
     with pytest.raises(AvsError, match="same bit depth"):
-        env.eval("src.vszip_PlaneAverage(exclude=[-1], clipb=src16)")
+        env.eval("src.avszip_PlaneAverage(exclude=[-1], clipb=src16)")
     with pytest.raises(AvsError, match="between 0.0 and 1.0"):
-        env.eval("src.vszip_PlaneMinMax(maxthr=1.5)")
+        env.eval("src.avszip_PlaneMinMax(maxthr=1.5)")
     with pytest.raises(AvsError, match="float chroma"):
-        env.eval("srcf.vszip_PlaneMinMax(maxthr=0.1, planes=[0, 1])")
+        env.eval("srcf.avszip_PlaneMinMax(maxthr=0.1, planes=[0, 1])")
     with pytest.raises(AvsError, match="plane index out of range"):
-        env.eval("src.vszip_PlaneMinMax(planes=[5])")
+        env.eval("src.avszip_PlaneMinMax(planes=[5])")

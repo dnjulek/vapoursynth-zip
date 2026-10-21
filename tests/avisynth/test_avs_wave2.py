@@ -26,7 +26,7 @@ def same(avs_clip, vs_clip, tol=0.0, props=()):
 def test_adaptive_binarize(env, fmt, cval):
     a, b = two(env, fmt)
     extra = {} if cval is None else {"c": cval}
-    out = env.eval("vszip_AdaptiveBinarize(a, b" + ("" if cval is None else f", c={cval}") + ")")
+    out = env.eval("avszip_AdaptiveBinarize(a, b" + ("" if cval is None else f", c={cval}") + ")")
     same(out, H.vszip().AdaptiveBinarize(a.vs, b.vs, **extra), props=["_ColorRange"])
 
 
@@ -81,7 +81,7 @@ def test_limit_filter(env, fmt, args, use_ref):
     ref = H.Pair(env, fmt, H.make_frames(fmt, seed=3))
     env.set_clip("r", ref.avs)
     call = H.avs_call("LimitFilter", args)
-    call = call.replace("vszip_LimitFilter(", "vszip_LimitFilter(a, b" + (", ref=r" if use_ref else "") + (", " if args else ""))
+    call = call.replace("avszip_LimitFilter(", "avszip_LimitFilter(a, b" + (", ref=r" if use_ref else "") + (", " if args else ""))
     out = env.eval(call)
     kw = dict(args)
     if use_ref:
@@ -107,18 +107,18 @@ def test_wave2_errors(env):
     env.eval('y16 = BlankClip(pixel_type="Y16", length=1)\ny8 = BlankClip(pixel_type="Y8", length=1)\n'
              'rgb = BlankClip(pixel_type="RGBP", length=1)\nyv12 = BlankClip(pixel_type="YV12", length=1)', want_clip=False)
     with pytest.raises(AvsError, match="only 8 bit int"):
-        env.eval("vszip_AdaptiveBinarize(y16, y16)")
+        env.eval("avszip_AdaptiveBinarize(y16, y16)")
     with pytest.raises(AvsError, match="only Gray8"):
-        env.eval("yv12.vszip_ColorMap()")
+        env.eval("yv12.avszip_ColorMap()")
     with pytest.raises(AvsError, match="between 0 and 21"):
-        env.eval("y8.vszip_ColorMap(color=22)")
+        env.eval("y8.avszip_ColorMap(color=22)")
     with pytest.raises(AvsError, match="thY1 can't be greater"):
-        env.eval("y8.vszip_CombMaskMT(thY1=50, thY2=20)")
+        env.eval("y8.avszip_CombMaskMT(thY1=50, thY2=20)")
     with pytest.raises(AvsError, match="cthresh must be between 0 and 255"):
-        env.eval("y8.vszip_CombMask(cthresh=300)")
+        env.eval("y8.avszip_CombMask(cthresh=300)")
     with pytest.raises(AvsError, match="Gray or YUV"):
-        env.eval("rgb.vszip_Compress()")
+        env.eval("rgb.avszip_Compress()")
     with pytest.raises(AvsError, match="qscale must be between"):
-        env.eval("y8.vszip_Compress(qscale=0)")
+        env.eval("y8.avszip_Compress(qscale=0)")
     with pytest.raises(AvsError, match=r"dark_thr\[0\] value 300 is out of range"):
-        env.eval("vszip_LimitFilter(y8, y8, dark_thr=[300])")
+        env.eval("avszip_LimitFilter(y8, y8, dark_thr=[300])")

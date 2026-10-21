@@ -1,4 +1,4 @@
-//! vszip_WNNM(clip, float[] "sigma", int "block_size", int "block_step", int "group_size",
+//! avszip_WNNM(clip, float[] "sigma", int "block_size", int "block_step", int "group_size",
 //!   int "bm_range", int "radius", int "ps_num", int "ps_range", bool "residual",
 //!   bool "adaptive_aggregation", clip "rclip")
 //!
@@ -6,7 +6,7 @@
 //! two-stage graph as vszip: a raw stage writes per-frame numerator /
 //! denominator slabs for the 2r+1 temporal window into a tall float frame, and
 //! an aggregation stage sums the slabs of neighbouring raw frames and divides.
-//! The raw stage is registered as `vszip_WNNMRaw` (same parameters) and
+//! The raw stage is registered as `avszip_WNNMRaw` (same parameters) and
 //! instantiated through avs_invoke so the host puts its frame cache in front
 //! of it: every raw frame is read by up to 2r+1 output frames.
 //!
@@ -78,8 +78,8 @@ const Data = struct {
 
 fn Wnnm(comptime BS: ?u32) type {
     return struct {
-        const FS = avs.Filter(Data, "vszip_WNNM");
-        const FR = avs.Filter(Data, "vszip_WNNMRaw");
+        const FS = avs.Filter(Data, "avszip_WNNM");
+        const FR = avs.Filter(Data, "avszip_WNNMRaw");
 
         fn spatial(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
             const src = try ctx.childFrame(n);
@@ -205,7 +205,7 @@ const VagData = struct {
     }
 };
 
-const FV = avs.Filter(VagData, "vszip_WNNM");
+const FV = avs.Filter(VagData, "avszip_WNNM");
 
 fn vagGetFrame(d: *VagData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     const radius: i32 = @intCast(d.radius);
@@ -314,7 +314,7 @@ fn checkFormat(ctx: *avs.Create, vi: *const c.AVS_VideoInfo) !avs.Format {
 }
 
 pub const Main = struct {
-    pub const filter_name = "vszip_WNNM";
+    pub const filter_name = "avszip_WNNM";
     pub const params = shared_params;
 
     pub fn create(ctx: *avs.Create) !avs.Value {
@@ -359,7 +359,7 @@ pub const Main = struct {
 
 /// Internal raw stage (radius > 0); public so the host can cache it.
 pub const Raw = struct {
-    pub const filter_name = "vszip_WNNMRaw";
+    pub const filter_name = "avszip_WNNMRaw";
     pub const params = shared_params;
 
     pub fn create(ctx: *avs.Create) !avs.Value {
