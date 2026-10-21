@@ -31,6 +31,7 @@ CASES = [
     ("EEDI3", "YV12", "field=3"),
     ("EEDI3H", "YUV420P16", "field=1, dh=true"),
     ("WNNM", "YUV420PS", "radius=1, block_size=4"),
+    ("NLMeans", "YUV420P16", "d=2"),
     ("AdaptiveGrainMask", "YUV420P16", ""),
     ("LimitFilter", "YUV420P16", "src=src, dark_thr=[2.0]"),
     ("XPSNR", "YV12", "distorted=src.avszip_BoxBlur(), verbose=false"),

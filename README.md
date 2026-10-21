@@ -25,6 +25,7 @@
 - [Limiter](https://github.com/dnjulek/vapoursynth-zip/wiki/Limiter): A faster version of [core.std.Limiter](https://www.vapoursynth.com/doc/functions/video/limiter.html).
 - [LimitFilter](https://github.com/dnjulek/vapoursynth-zip/wiki/LimitFilter): Performs a soft-limiting between two clips to limit the difference of filtering while avoiding artifacts.
 - [MosquitoNR](https://github.com/dnjulek/vapoursynth-zip/wiki/MosquitoNR): Port from AviSynth's [MosquitoNR](http://avisynth.nl/index.php/MosquitoNR).
+- [NLMeans](https://github.com/dnjulek/vapoursynth-zip/wiki/NLMeans): Non-local means denoiser, CPU port of [KNLMeansCL](https://github.com/Khanattila/KNLMeansCL) (same arguments and results).
 - [PackRGB](https://github.com/dnjulek/vapoursynth-zip/wiki/PackRGB): Planar to interleaved RGB filter.
 - [PlaneAverage](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneAverage): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.

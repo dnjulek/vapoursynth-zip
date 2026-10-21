@@ -26,6 +26,7 @@ const modules = .{
     @import("avisynth/bilateral.zig"),
     @import("avisynth/bilateral_dither.zig"),
     @import("avisynth/mosquito_nr.zig"),
+    @import("avisynth/nlmeans.zig"),
     @import("avisynth/dither.zig"),
     @import("avisynth/deband.zig"),
     @import("avisynth/checkmate.zig"),

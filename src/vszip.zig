@@ -3,6 +3,7 @@
 //! Every function is registered in the `vszip` namespace; the AviSynth+ port
 //! (`avszip.zig`) registers the same filters as `avszip_<Filter>`.
 
+const std = @import("std");
 pub const vapoursynth = @import("vapoursynth");
 const vs = vapoursynth.vapoursynth4;
 const ZAPI = vapoursynth.ZAPI;
@@ -35,6 +36,7 @@ const modules = .{
     @import("vapoursynth/limit_filter.zig"),
     @import("vapoursynth/limiter.zig"),
     @import("vapoursynth/mosquito_nr.zig"),
+    @import("vapoursynth/nlmeans.zig"),
     @import("vapoursynth/packrgb.zig"),
     @import("vapoursynth/planeaverage.zig"),
     @import("vapoursynth/planeminmax.zig"),
@@ -46,5 +48,27 @@ const modules = .{
 
 export fn VapourSynthPluginInit2(plugin: *vs.Plugin, vspapi: *const vs.PLUGINAPI) void {
     ZAPI.Plugin.config("com.julek.vszip", "vszip", "VapourSynth Zig Image Process", zon.version, plugin, vspapi);
-    inline for (modules) |m| ZAPI.Plugin.function(m.filter_name, m.params, "clip:vnode;", m.create, plugin, vspapi);
+    inline for (modules) |m| {
+        if (comptime enabled(m.filter_name)) {
+            ZAPI.Plugin.function(m.filter_name, m.params, "clip:vnode;", m.create, plugin, vspapi);
+        }
+    }
+}
+
+/// `-Dfilters=A,B` (dev builds) registers only those filters; a module that
+/// is not registered is never referenced, so its kernels are not compiled.
+fn enabled(comptime name: []const u8) bool {
+    comptime {
+        if (zon.filters.len == 0) return true;
+        @setEvalBranchQuota(100_000);
+        var it = std.mem.tokenizeScalar(u8, zon.filters, ',');
+        while (it.next()) |raw| {
+            const want = std.mem.trim(u8, raw, " ");
+            var known = false;
+            for (modules) |m| known = known or std.ascii.eqlIgnoreCase(m.filter_name, want);
+            if (!known) @compileError("-Dfilters: unknown filter '" ++ want ++ "' (names as registered, e.g. NLMeans, EEDI3H)");
+            if (std.ascii.eqlIgnoreCase(want, name)) return true;
+        }
+        return false;
+    }
 }

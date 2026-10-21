@@ -14,6 +14,7 @@ NAMES = [
     "Limiter", "PlaneAverage", "PlaneMinMax", "RFS", "BoxBlur", "AdaptiveBinarize", "AdaptiveGrainMask",
     "ColorMap", "CombMask", "CombMaskMT", "LimitFilter", "Compress", "Bilateral", "BilateralDither",
     "MosquitoNR", "Dither", "Deband", "Checkmate", "CLAHE", "XPSNR", "SSIMULACRA2", "EEDI3", "EEDI3H", "WNNM",
+    "NLMeans",
 ]
 
 # Registered too, but take no clip as first argument / are internal.

@@ -32,6 +32,7 @@ const kernels = .{
     @import("filters/limiter.zig"),
     @import("filters/mosquito_nr.zig"),
     @import("filters/mosquito_nr_float.zig"),
+    @import("filters/nlmeans.zig"),
     @import("filters/planeaverage.zig"),
     @import("filters/planeminmax.zig"),
     @import("filters/simd.zig"),
@@ -243,4 +244,48 @@ test "xpsnr getWSSE releases partial allocations" {
             try xpsnr.getWSSE(u8, .{ &org, &.{}, &.{} }, .{ &rec, &.{}, &.{} }, null, null, &wsse, .{ w, 0, 0 }, .{ h, 0, 0 }, .{ w, 0, 0 }, 8, 1, 24, false);
         }
     }.run);
+}
+
+const nlmeans = @import("filters/nlmeans.zig");
+
+test "nlmeans validates its config and bounds the tile working set" {
+    try std.testing.expectError(error.A, nlmeans.Config.init(.{ .a = 0, .width = 64, .height = 64 }));
+    try std.testing.expectError(error.Window, nlmeans.Config.init(.{ .a = 40, .width = 64, .height = 64 }));
+    // 1e-30 squared underflows f32: 1/h^2 would be inf and every weight NaN
+    try std.testing.expectError(error.H, nlmeans.Config.init(.{ .h = 1e-30, .width = 64, .height = 64 }));
+    const big = try nlmeans.Config.init(.{ .d = 16, .ref = .rgb, .width = 1920, .height = 1080 });
+    try std.testing.expect(big.tw < 512 and big.th == 16);
+    const small = try nlmeans.Config.init(.{ .width = 20, .height = 9 });
+    try std.testing.expect(small.tw >= 20 and small.th == 9);
+}
+
+test "nlmeans keeps a flat interior flat" {
+    // Away from the zero border every candidate equals the pixel, so the
+    // weighted mean must reproduce it. 70x37 spans a partial tile, a
+    // partial vector and a 4-row batch remainder.
+    const w = 70;
+    const h = 37;
+    const cfg = try nlmeans.Config.init(.{ .d = 1, .width = w, .height = h });
+    const sc = try nlmeans.Scratch.create(&cfg, false);
+    defer sc.destroy();
+    var src: [w * h]u8 = @splat(77);
+    var dst: [w * h]u8 = @splat(0);
+    const In = nlmeans.PlaneIn(u8);
+    const planes: [3]In = @splat(.{ .data = &src, .stride = w });
+    nlmeans.processFrame(u8, .luma, 0, &cfg, sc, &planes, null, .{.{ .data = &dst, .stride = w }}, 1, 255);
+    for (2..h - 2) |y| for (2..w - 2) |x| {
+        try std.testing.expectEqual(@as(u8, 77), dst[y * w + x]);
+    };
+}
+
+test "nlmeans Scratch.create releases partial construction" {
+    inline for (.{ false, true }) |has_ref| {
+        try faultSweep(has_ref, struct {
+            fn run(r: bool) anyerror!void {
+                const cfg = nlmeans.Config.init(.{ .width = 64, .height = 48 }) catch unreachable;
+                const sc = try nlmeans.Scratch.create(&cfg, r);
+                sc.destroy();
+            }
+        }.run);
+    }
 }

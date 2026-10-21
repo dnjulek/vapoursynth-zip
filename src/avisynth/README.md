@@ -44,6 +44,7 @@ Every function is registered as `avszip_<Filter>`. AviSynth+ also exposes it as 
 | `avszip_LimitFilter(clip flt, clip src, clip "ref", float[] "dark_thr", float[] "bright_thr", float[] "elast", int[] "planes")` | |
 | `avszip_Limiter(clip, float[] "min", float[] "max", bool "tv_range", bool "mask", int[] "planes")` | |
 | `avszip_MosquitoNR(clip, int[] "strength", int[] "restore", int[] "radius", int[] "planes")` | |
+| `avszip_NLMeans(clip, int "d", int "a", int "s", float "h", string "channels", int "wmode", float "wref", clip "rclip")` | KNLMeansCL port; channels `Y`/`UV`/`YUV`/`RGB`/`auto`, temporal |
 | `avszip_PlaneAverage(clip, int[] exclude, clip "clipb", int[] "planes", string "prop")` | property-only (`psmAvg`/`psmDiff`) |
 | `avszip_PlaneMinMax(clip, float "minthr", float "maxthr", clip "clipb", int[] "planes", string "prop")` | property-only (`psmMin`/`psmMax`/`psmDiff`) |
 | `avszip_RFS(clip, clip clipb, int[] frames, bool "mismatch", int[] "planes")` | |
@@ -66,7 +67,7 @@ AviSynth+ is a different host, so a few behaviors are adapted rather than copied
 - **SSIMULACRA2 on YUV.** vszip converts YUV/Gray input with zimg; here each frame is normalized to float with its own `_ColorRange` (limited when unset), subsampled chroma is upsampled in float by AviSynth's `ConvertToYUV444`, and the frame's own `_Matrix` is applied (BT.709, BT.601, BT.2020 NCL, FCC, 240M; 2 or unset falls back to vszip's BT.709-above-650-lines rule; other matrices raise a frame error). Metadata may change from frame to frame, independently on both inputs. 4:4:4 input converts within float rounding of zimg; 4:2:x chroma goes through AviSynth's resampler, so those scores differ slightly. A YUV reference is returned as RGBPS, or RGBAPS carrying its alpha (integer alpha as full-range float); the distorted clip's alpha is ignored.
 - **ImageRead alpha.** RGBA images use the native A plane (RGBAP). Gray+alpha has no AviSynth planar format, so it returns Y plus a separate Y frame in the `_Alpha` frame property (vszip's representation).
 - **ImageRead later frames.** Every frame is checked when decoded, not only with `validate=true`: a file whose size or decoded layout (gray/RGB, depth, alpha) differs from the first image raises a frame error. The VapourSynth build does the same.
-- **Scratch pools.** vszip keys EEDI3/WNNM scratch by thread ID. Here every request checks a block out of a mutex-guarded pool and returns it, so blocks are exclusive per request, including nested use on one thread.
+- **Scratch pools.** vszip keys EEDI3/WNNM/NLMeans scratch by thread ID. Here every request checks a block out of a mutex-guarded pool and returns it, so blocks are exclusive per request, including nested use on one thread.
 
 Every filter registers `AVS_MT_NICE_FILTER`, and frame n depends only on n (temporal filters clamp neighbors like vszip). On AviSynth+ ≤ 3.7.5, concurrent C-filter calls share an error slot, so under `Prefetch` an error message may name the wrong frame. Successful frames are unaffected.
 

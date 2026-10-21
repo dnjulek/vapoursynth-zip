@@ -14,6 +14,10 @@ pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     const version = try std.SemanticVersion.parse(zon.version);
     options.addOption(std.SemanticVersion, "version", version);
+    // Dev builds: register only these filters (comma-separated, e.g.
+    // -Dfilters=NLMeans,Limiter); the rest is never analyzed or compiled.
+    const filters = b.option([]const u8, "filters", "Register only these VapourSynth filters (comma-separated; default: all)") orelse "";
+    options.addOption([]const u8, "filters", filters);
 
     const zigimg_dependency = b.dependency("zigimg", .{
         .target = target,

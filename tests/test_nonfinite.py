@@ -102,6 +102,7 @@ MANIFEST = {
         {"min": (True, 0.0, 3), "max": (True, 255.0, 3)},
         {"min": "[0, 0, 0]", "max": "[65535, 65535, 65535]"},
     ),
+    "NLMeans": ("gs.vszip.NLMeans({a})", {"h": (False, 1.2, 1), "wref": (False, 1.0, 1)}, {}),
     "PlaneMinMax": ("c8.vszip.PlaneMinMax({a})", {"minthr": (False, 0.0, 1), "maxthr": (False, 0.0, 1)}, {}),
     "WNNM": ("gs.vszip.WNNM(block_size=4, {a})", {"sigma": (True, 3.0, 3)}, {}),
 }

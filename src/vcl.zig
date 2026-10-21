@@ -179,6 +179,39 @@ pub fn pow(x0: anytype, y: anytype) @TypeOf(x0) {
     return z;
 }
 
+/// 2^y for `-126 <= y <= 127`; below -126 (and NaN) it returns 0. Not a
+/// VCL port: a round-to-nearest split y = r + f (|f| <= 0.5), a near-minimax
+/// polynomial for 2^f, and 2^r built from the integer bits the rounding
+/// magic leaves in the mantissa. Max error against float64 over [-126, 0]:
+/// 0.66 ulp (degree 6), 1.8 ulp (degree 5), 22.6 ulp (degree 4). Degree 4 is
+/// 6 mul/fma-class ops against VCL2 exp_f's 12, which matters on Zen 3,
+/// where only 2 of the 4 FP pipes multiply.
+pub fn exp2Bounded(comptime degree: comptime_int, y: anytype) @TypeOf(y) {
+    const F32V = @TypeOf(y);
+    const vec_len: comptime_int = @typeInfo(F32V).vector.len;
+    const U32V = @Vector(vec_len, u32);
+    const coef = switch (degree) {
+        4 => [_]f32{ 0.9999992847442627, 0.6931217908859253, 0.240247443318367, 0.05591786280274391, 0.009570096619427204 },
+        5 => [_]f32{ 1.0000001192092896, 0.6931469440460205, 0.24022120237350464, 0.05550713464617729, 0.009675541892647743, 0.0013276466634124517 },
+        6 => [_]f32{ 1.0, 0.6931471824645996, 0.24022646248340607, 0.05550328642129898, 0.009618489071726799, 0.0013399932067841291, 0.0001534580806037411 },
+        else => @compileError("exp2Bounded: degree 4, 5 or 6"),
+    };
+
+    // y + 1.5*2^23 rounds y to an integer r (nearest-even); its low mantissa
+    // bits hold r in two's complement, so (bits << 23) == r << 23.
+    const magic: F32V = @splat(12582912.0);
+    const t = y + magic;
+    const r = t - magic;
+    const f = y - r;
+
+    var p: F32V = @splat(coef[coef.len - 1]);
+    inline for (1..coef.len) |i| p = fma(p, f, @as(F32V, @splat(coef[coef.len - 1 - i])));
+
+    const shift23: @Vector(vec_len, u5) = @splat(23);
+    const scale: F32V = @bitCast((@as(U32V, @bitCast(t)) << shift23) +% @as(U32V, @splat(0x3F80_0000)));
+    return @select(f32, y >= @as(F32V, @splat(-126.0)), p * scale, @as(F32V, @splat(0.0)));
+}
+
 fn fma(a: anytype, b: @TypeOf(a), c: @TypeOf(a)) @TypeOf(a) {
     const F32V = @TypeOf(a);
     return @mulAdd(F32V, a, b, c);
