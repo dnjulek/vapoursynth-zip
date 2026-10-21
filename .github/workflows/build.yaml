@@ -15,13 +15,13 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  build-sdist:
+  build-sdist: 
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       file: ${{ steps.build.outputs.file }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Export version
         id: version
@@ -87,6 +87,33 @@ jobs:
           name: vapoursynth-vszip-${{ matrix.target }}
           path: dist/*.whl
 
+  build-avisynth:
+    runs-on: ubuntu-latest
+    needs: build-sdist
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Build avszip.dll
+        run: |
+          for variant in sse2:x86_64 avx2:haswell avx512:x86_64_v4; do
+            name=${variant%%:*}
+            cpu=${variant#*:}
+            zig build -Doptimize=fast -Dtarget=x86_64-windows -Dcpu=$cpu -Davisynth=true -Dvapoursynth=false --prefix out/$name
+            mkdir -p pkg/$name
+            cp out/$name/bin/avszip.dll pkg/$name/
+          done
+          cp LICENSE pkg/
+          cd pkg && zip -r ../avszip-${{ needs.build-sdist.outputs.version }}-x86_64-windows.zip .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: avszip-x86_64-windows
+          path: avszip-*.zip
+
   release:
     if: needs.check-tag.outputs.exists == 'false'
     runs-on: ubuntu-latest
@@ -94,6 +121,7 @@ jobs:
       - check-tag
       - build-sdist
       - build-wheel
+      - build-avisynth
     permissions:
       id-token: write
       contents: write
@@ -103,10 +131,17 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: vapoursynth-vszip-*
           merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: avszip-x86_64-windows
+          path: avisynth
 
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build-sdist.outputs.version }}
+          files: avisynth/*.zip
 
       - uses: pypa/gh-action-pypi-publish@release/v1
