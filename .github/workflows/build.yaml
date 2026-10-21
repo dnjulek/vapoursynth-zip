@@ -88,8 +88,11 @@ jobs:
           path: dist/*.whl
 
   build-avisynth:
+    if: needs.check-tag.outputs.exists == 'false'
     runs-on: ubuntu-latest
-    needs: build-sdist
+    needs:
+      - build-sdist
+      - check-tag
     steps:
       - uses: actions/checkout@v7
 
