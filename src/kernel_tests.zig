@@ -11,6 +11,11 @@ const kernels = .{
     @import("filters/bilateral.zig"),
     @import("filters/bilateral_dither.zig"),
     @import("filters/bilateral_dither_subspl.zig"),
+    @import("filters/bm3d_common.zig"),
+    @import("filters/bm3d_cuda.zig"),
+    @import("filters/bm3d_classic.zig"),
+    @import("filters/bm3d_fftw.zig"),
+    @import("filters/bm3d_fftw_codelets.zig"),
     @import("filters/boxblur_comptime.zig"),
     @import("filters/boxblur_runtime.zig"),
     @import("filters/checkmate.zig"),
@@ -287,5 +292,52 @@ test "nlmeans Scratch.create releases partial construction" {
                 sc.destroy();
             }
         }.run);
+    }
+}
+
+const bm3d_fftw = @import("filters/bm3d_fftw.zig");
+const bm3d_fftw_vectors = @import("filters/bm3d_fftw_vectors.zig");
+
+test "bm3d FFTW port reproduces FFTW 3.3.11 bit for bit (scalar and 8 lanes)" {
+    const V8 = @Vector(8, f32);
+    for (bm3d_fftw_vectors.cases) |c| {
+        var tw: [bm3d_fftw.tw_len]f32 = undefined;
+        bm3d_fftw.twiddles(c.n, &tw);
+        inline for (.{ true, false }) |fwd| {
+            const want = if (fwd) c.re10 else c.re01;
+            var x: [64]f32 = undefined;
+            var xv: [64]V8 = undefined;
+            for (0..c.n) |k| {
+                x[k] = @as(f32, @floatFromInt((k * 37 + 11) % 130)) / 100.0 - 0.4;
+                // lane l scales by 2^l: exact, so every lane stays checkable
+                inline for (0..8) |l| xv[k][l] = x[k] * @as(f32, @floatFromInt(@as(u32, 1) << @intCast(l)));
+            }
+            bm3d_fftw.dct(fwd, f32, c.n, &tw, x[0..c.n]);
+            bm3d_fftw.dct(fwd, V8, c.n, &tw, xv[0..c.n]);
+            for (0..c.n) |k| {
+                try std.testing.expectEqual(want[k], @as(u32, @bitCast(x[k])));
+                inline for (0..8) |l| {
+                    const scaled: f32 = @as(f32, @bitCast(want[k])) * @as(f32, @floatFromInt(@as(u32, 1) << @intCast(l)));
+                    try std.testing.expectEqual(@as(u32, @bitCast(scaled)), @as(u32, @bitCast(xv[k][l])));
+                }
+            }
+        }
+    }
+}
+
+test "bm3d FFTW round trip scales by 2n (exact plans and the slow fallback)" {
+    for ([_]u32{ 1, 2, 7, 8, 11, 16, 17, 24, 30, 32, 40, 64 }) |n| {
+        var tw: [bm3d_fftw.tw_len]f32 = undefined;
+        if (n <= bm3d_fftw.max_exact) bm3d_fftw.twiddles(n, &tw);
+        var x: [64]f32 = undefined;
+        var y: [64]f32 = undefined;
+        for (0..n) |k| {
+            x[k] = @sin(@as(f32, @floatFromInt(k)) * 1.7) + 0.25;
+            y[k] = x[k];
+        }
+        bm3d_fftw.dct(true, f32, n, &tw, y[0..n]);
+        bm3d_fftw.dct(false, f32, n, &tw, y[0..n]);
+        const scale: f32 = @floatFromInt(2 * n);
+        for (0..n) |k| try std.testing.expectApproxEqAbs(x[k] * scale, y[k], 1e-4 * scale);
     }
 }

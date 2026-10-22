@@ -15,7 +15,24 @@ import harness as H
 from test_nonfinite import CASES, MANIFEST, _run_function_cases
 
 
-CASES_AVS = [c for c in CASES if c[0] != "Limiter@f16"]
+def _avs_float_parameters():
+    """{function: float parameters} declared by the AVS adapters in src/avisynth."""
+    out = {}
+    for path in (H.REPO_ROOT / "src" / "avisynth").glob("*.zig"):
+        text = path.read_text(encoding="utf-8")
+        name = re.search(r'pub const filter_name = "avszip_(\w+)"', text)
+        names = {"eedi3": ["EEDI3", "EEDI3H"], "wnnm": ["WNNM"]}.get(
+            path.stem, [name[1]] if name else [])
+        declarations = re.findall(r'(?:pub const params|const shared_params) = ([^;]+);', text)
+        signature = "".join(s for d in declarations for s in re.findall(r'"([^"]*)"', d))
+        for fn in names:
+            out[fn] = set(re.findall(r'\[([^\]]+)\]f', signature))
+    return out
+
+
+# not every vszip function has an AviSynth port (BM3D, PackRGB, ...)
+AVS_FLOAT_PARAMETERS = _avs_float_parameters()
+CASES_AVS = [c for c in CASES if c[0] != "Limiter@f16" and c[0].split("@")[0] in AVS_FLOAT_PARAMETERS]
 SETUP_AVS = f"""
 import sys, types
 sys.path.insert(0, {str(pathlib.Path(__file__).resolve().parent)!r})
@@ -65,17 +82,9 @@ def outcomes():
 
 def test_manifest_covers_avs_float_parameters():
     """A new AVS float parameter must join the hostile-input matrix too."""
-    want = set()
-    for path in (H.REPO_ROOT / "src" / "avisynth").glob("*.zig"):
-        text = path.read_text(encoding="utf-8")
-        name = re.search(r'pub const filter_name = "avszip_(\w+)"', text)
-        names = {"eedi3": ["EEDI3", "EEDI3H"], "wnnm": ["WNNM"]}.get(
-            path.stem, [name[1]] if name else [])
-        declarations = re.findall(r'(?:pub const params|const shared_params) = ([^;]+);', text)
-        signature = "".join(s for d in declarations for s in re.findall(r'"([^"]*)"', d))
-        for fn in names:
-            want.update((fn, p) for p in re.findall(r'\[([^\]]+)\]f', signature))
-    have = {(fn.split("@")[0], p) for fn, (_, params, _) in MANIFEST.items() for p in params}
+    want = {(fn, p) for fn, params in AVS_FLOAT_PARAMETERS.items() for p in params}
+    have = {(fn.split("@")[0], p) for fn, (_, params, _) in MANIFEST.items() for p in params
+            if fn.split("@")[0] in AVS_FLOAT_PARAMETERS}
     assert want == have, f"missing cases: {want-have}; stale cases: {have-want}"
 
 

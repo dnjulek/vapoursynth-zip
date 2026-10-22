@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) !void {
     ensureZigVersion(try .parse(zon.minimum_zig_version)) catch return;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "Strip debug symbols from fast builds (default: true)") orelse true;
 
     // The VapourSynth plugin is the default product (pip/hatch builds run a
     // plain `zig build`); the AviSynth+ plugin is opt-in.
@@ -48,7 +49,7 @@ pub fn build(b: *std.Build) !void {
         lib.root_module.link_libc = true;
 
         if (lib.root_module.optimize == .fast) {
-            lib.root_module.strip = true;
+            lib.root_module.strip = strip;
         }
 
         b.installArtifact(lib);
@@ -82,7 +83,7 @@ pub fn build(b: *std.Build) !void {
             lib.root_module.link_libc = true;
 
             if (lib.root_module.optimize == .fast) {
-                lib.root_module.strip = true;
+                lib.root_module.strip = strip;
             }
 
             b.installArtifact(lib);
