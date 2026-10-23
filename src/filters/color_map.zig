@@ -205,7 +205,7 @@ pub fn buildLut(color: Colors) Lut {
         const frac: f32 = p - @as(f32, @floatFromInt(lo));
         inline for (0..3) |c| {
             const v: f32 = color_arr[c][lo] + (color_arr[c][hi] - color_arr[c][lo]) * frac;
-            lut[c][i] = @trunc(@mulAdd(f32, v, 255, 0.5));
+            lut[c][i] = @trunc(simd.madd(f32, v, 255, 0.5));
         }
     }
     return lut;

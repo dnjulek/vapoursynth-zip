@@ -9,10 +9,10 @@ Contract (src/vapoursynth/bm3d.zig, src/filters/bm3d_cuda.zig):
 - radius > 0 aggregates internally (BM3D == BM3Dv2, no stacked clip); the
   temporal window is vszipcu's (frames clamped at the clip ends).
 - BM3Dv2 passes a clip with nothing to process through; BM3D rejects it.
-- Arithmetic follows vszipcu's sm_86 code (fma points, MUFU.RCP emulation);
-  with extractor_exp set the GPU is deterministic and the CPU matches it
-  bit for bit, except where ptxas fuses an inverse transform differently in
-  context (observed: at most one pixel per frame, in some configurations).
+- Same algorithm as vszipcu, not the GPU's rounding: its fast-math
+  reciprocal/divide and its order of the separable transform passes are not
+  reproduced. With extractor_exp set the GPU is deterministic and the outputs
+  agree within float rounding, plus a rare pixel one extractor step away.
 - VAggregate aggregates stacked clips made by the GPU plugins.
 
 Nets:
@@ -97,7 +97,7 @@ def test_flat_input_stays_flat(core, radius, final):
     # every block is the same: the 3D spectrum is DC only (kept), every
     # group returns the block, and the weighted average is the value again
     # up to the transforms' rounding
-    src = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=3, color=0.4)
+    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=3, color=0.4)
     kw = {"ref": src} if final else {}
     for f in frames(src.vszip.BM3D(radius=radius, **kw)):
         assert np.abs(f[0] - 0.4).max() < 2e-6
@@ -177,7 +177,7 @@ def _stacked(core, w, h, r, nframes, seed):
 
 
 def test_vaggregate_oracle(core):
-    r, n_fr, w, h = 2, 6, 37, 11
+    r, n_fr, w, h = 2, 6, 67, 64
     stacked, data = _stacked(core, w, h, r, n_fr, 5)
     src = core.std.BlankClip(None, w, h, vs.GRAYS, length=n_fr)
     got = frames(core.vszip.VAggregate(stacked, src=src, planes=[0]))
@@ -193,14 +193,17 @@ def test_vaggregate_oracle(core):
 
 
 def test_vaggregate_validation(core):
-    src = core.std.BlankClip(None, 32, 16, vs.GRAYS, length=2)
-    st = core.std.BlankClip(None, 32, 16 * 6, vs.GRAYS, length=2)
+    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=2)
+    st = core.std.BlankClip(None, 64, 64 * 6, vs.GRAYS, length=2)
     with pytest.raises(vs.Error, match="out-of-range plane index"):
         core.vszip.VAggregate(st, src=src, planes=[1])
     with pytest.raises(vs.Error, match="duplicate plane index"):
         core.vszip.VAggregate(st, src=src, planes=[0, 0])
     with pytest.raises(vs.Error, match="not a BM3D stacked clip"):
         core.vszip.VAggregate(src, src=src, planes=[0])
+    small = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=2)
+    with pytest.raises(vs.Error, match="at least 64x64"):
+        core.vszip.VAggregate(core.std.BlankClip(None, 64, 48 * 6, vs.GRAYS, length=2), src=small, planes=[0])
 
 
 # --- validation --------------------------------------------------------------
@@ -226,23 +229,24 @@ def test_vaggregate_validation(core):
     ],
 )
 def test_validation_errors(core, args, msg):
-    src = core.std.BlankClip(None, 64, 48, vs.YUV420PS, length=1)
+    src = core.std.BlankClip(None, 64, 64, vs.YUV420PS, length=1)
     with pytest.raises(vs.Error, match=msg):
         src.vszip.BM3D(**args)
 
 
 def test_format_and_ref_errors(core):
     with pytest.raises(vs.Error, match="32 bit float"):
-        core.std.BlankClip(None, 64, 48, vs.GRAY16, length=1).vszip.BM3D()
-    src = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=2)
+        core.std.BlankClip(None, 64, 64, vs.GRAY16, length=1).vszip.BM3D()
+    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=2)
     with pytest.raises(vs.Error, match="same format"):
-        src.vszip.BM3D(ref=core.std.BlankClip(None, 64, 48, vs.YUV444PS, length=2))
+        src.vszip.BM3D(ref=core.std.BlankClip(None, 64, 64, vs.YUV444PS, length=2))
     with pytest.raises(vs.Error, match="same dimensions"):
         src.vszip.BM3D(ref=core.std.BlankClip(None, 64, 40, vs.GRAYS, length=2))
     with pytest.raises(vs.Error, match="same number of frames"):
-        src.vszip.BM3D(ref=core.std.BlankClip(None, 64, 48, vs.GRAYS, length=3))
-    with pytest.raises(vs.Error, match="at least 8x8"):
-        core.std.BlankClip(None, 64, 7, vs.GRAYS, length=1).vszip.BM3D()
+        src.vszip.BM3D(ref=core.std.BlankClip(None, 64, 64, vs.GRAYS, length=3))
+    for w, h in ((64, 63), (63, 64)):
+        with pytest.raises(vs.Error, match="at least 64x64"):
+            core.std.BlankClip(None, w, h, vs.GRAYS, length=1).vszip.BM3D()
 
 
 # --- optional: parity with vszipcu (the CUDA plugin) --------------------------
@@ -250,22 +254,26 @@ def test_format_and_ref_errors(core):
 
 @pytest.mark.skipif(not HAS_CU, reason="vszipcu (CUDA BM3D) not installed")
 @pytest.mark.parametrize(
-    ("fmt", "kw", "max_diff_px"),
+    ("fmt", "kw"),
     [
-        (vs.GRAYS, {}, 0),
-        (vs.GRAYS, dict(radius=1), 0),
-        (vs.GRAYS, dict(radius=2, ps_num=3, ps_range=6, block_step=5, bm_range=7), 0),
-        (vs.GRAYS, dict(final=True), 2),
-        (vs.GRAYS, dict(final=True, radius=1), 2),
-        (vs.GRAYS, dict(transform_2d_s="haar", transform_1d_s="bior1.5", radius=1), 0),
-        (vs.GRAYS, dict(transform_2d_s="wht", bm_error_s="zssd"), 0),
-        (vs.YUV420PS, dict(radius=1), 2),
-        (vs.YUV444PS, dict(chroma=True), 2),
+        (vs.GRAYS, {}),
+        (vs.GRAYS, dict(radius=1)),
+        (vs.GRAYS, dict(radius=2, ps_num=3, ps_range=6, block_step=5, bm_range=7)),
+        (vs.GRAYS, dict(final=True)),
+        (vs.GRAYS, dict(final=True, radius=1)),
+        (vs.GRAYS, dict(transform_2d_s="haar", transform_1d_s="bior1.5", radius=1)),
+        (vs.GRAYS, dict(transform_2d_s="wht", bm_error_s="zssd")),
+        (vs.YUV420PS, dict(radius=1)),
+        (vs.YUV444PS, dict(chroma=True)),
     ],
 )
-def test_matches_cuda_plugin(clip, fmt, kw, max_diff_px):
-    """With extractor_exp the GPU sums are exact and order-free, so the GPU is
-    deterministic; extractor_exp=10 keeps every sum inside the exact range."""
+def test_matches_cuda_plugin(clip, fmt, kw):
+    """Same algorithm as vszipcu, not the same rounding: the GPU's
+    -use_fast_math reciprocal/divide (MUFU.RCP, +-1 ulp) and its order of the
+    separable transform passes are not reproduced. With extractor_exp the GPU
+    is deterministic, so the outputs can be compared: almost every pixel
+    within float rounding, and the rare one that crosses an extractor
+    rounding step moves by one step."""
     src = clip(fmt)
     kw = dict(kw, extractor_exp=10)
     if kw.pop("final", False):
@@ -273,5 +281,9 @@ def test_matches_cuda_plugin(clip, fmt, kw, max_diff_px):
     a = frames(src.vszip.BM3D(**kw))
     b = frames(src.vszipcu.BM3Dv2(**kw))
     for n, (fa, fb) in enumerate(zip(a, b)):
-        diff = sum(int(np.count_nonzero(pa != pb)) for pa, pb in zip(fa, fb))
-        assert diff <= max_diff_px, f"frame {n}: {diff} pixels differ"
+        d = np.concatenate([np.abs(pa.astype(np.float64) - pb).ravel() for pa, pb in zip(fa, fb)])
+        # measured: mean <= 3e-7, max <= 4.3e-3 (one extractor step), at most
+        # ~1 pixel in 15000 above 1e-5
+        assert d.mean() < 1e-5, f"frame {n}: mean diff {d.mean():.3g}"
+        assert d.max() < 1e-2, f"frame {n}: max diff {d.max():.3g}"
+        assert np.mean(d > 1e-5) <= 1e-3, f"frame {n}: {np.mean(d > 1e-5):.3g} of the pixels differ"

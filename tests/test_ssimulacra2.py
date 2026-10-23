@@ -91,10 +91,35 @@ def _rgb_pair(src_rgb, fmt):
 
 
 def test_yuv_matches_manual_rgbs(src16):
-    """YUV goes through toRGBS, then the in-plugin sRGB decode: same score as
-    converting to (still sRGB-encoded) RGBS by hand."""
+    """YUV is converted to RGB inside the filter (zimg's steps: range, Bicubic
+    chroma upsampling, matrix; values within ~1e-7 of resize), then the
+    in-plugin sRGB decode: the score of converting to (still sRGB-encoded)
+    RGBS by hand. Not bit-exact: 1e-7 of input noise alone moves a score by
+    ~1e-4."""
     dist = src16.resize.Bicubic(src16.width * 2, src16.height * 2).resize.Bicubic(src16.width, src16.height)
-    assert score(src16, dist) == score(src16.resize.Bicubic(format=vs.RGBS), dist.resize.Bicubic(format=vs.RGBS))
+    manual = score(src16.resize.Bicubic(format=vs.RGBS), dist.resize.Bicubic(format=vs.RGBS))
+    assert score(src16, dist) == pytest.approx(manual, abs=2e-3)
+
+
+@pytest.mark.parametrize("fmt", [vs.YUV420P8, vs.YUV422P10, vs.YUV444PS, vs.YUV440P8])
+@pytest.mark.parametrize("loc", [None, 1, 2, 5])
+@pytest.mark.parametrize("matrix", [None, 6, 9])
+def test_yuv_conversion_matches_resize(src_rgb, fmt, loc, matrix):
+    """The in-filter YUV -> RGB follows resize's frame props (_Matrix over the
+    height rule, _ChromaLocation, _Range): scoring a YUV clip against its own
+    resize.Bicubic RGBS conversion lands at the ~1e-7 noise floor (a 1e-7
+    perturbation of an RGBS clip scores ~99.5)."""
+    yuv = src_rgb.resize.Bicubic(format=fmt, matrix=1)
+    props = {}
+    if loc is not None:
+        props["_ChromaLocation"] = loc
+    if matrix is not None:
+        props["_Matrix"] = matrix
+    if props:
+        yuv = yuv.std.SetFrameProps(**props)
+    default = 1 if yuv.height > 650 else 6
+    rgb = yuv.resize.Bicubic(format=vs.RGBS, matrix_in=default)
+    assert score(yuv, rgb) > 99.4
 
 
 @pytest.mark.parametrize("fmt", [vs.RGB24, vs.RGB30, vs.RGB48])
@@ -132,13 +157,16 @@ def test_linear_tagged_input_skips_decode(src_rgb):
 
 
 def test_output_passes_input_through(src16, src_rgb):
-    """Only the frame prop matters: the output is the (converted) reference
-    frame -- native RGB as is, other families as the toRGBS clip."""
+    """Only the frame prop matters: the output is the reference frame -- RGB
+    and YUV (converted inside the filter) as is, other families (GRAY) as the
+    toRGBS clip."""
     rgb = src_rgb.resize.Point(format=vs.RGB24)
     assert vs.core.vszip.SSIMULACRA2(rgb, rgb).format.id == vs.RGB24
     out = vs.core.vszip.SSIMULACRA2(src16, src16)
-    assert out.format.id == vs.RGBS
+    assert out.format.id == vs.YUV420P16
     assert (out.width, out.height, out.num_frames) == (src16.width, src16.height, src16.num_frames)
+    gray = src16.std.ShufflePlanes(0, vs.GRAY)
+    assert vs.core.vszip.SSIMULACRA2(gray, gray).format.id == vs.RGBS
 
 
 def test_concurrent_requests_match_sequential(temporal_rgb):

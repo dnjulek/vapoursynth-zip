@@ -161,7 +161,7 @@ pub const dp_block = 64;
 
 pub const n_vec = std.simd.suggestVectorLength(f32) orelse 8;
 pub const Vec = @Vector(n_vec, f32);
-pub const vec_align: u32 = @max(32, n_vec * @sizeOf(f32));
+pub const vec_align: u32 = hz.vec_len;
 
 pub const pad_h = std.mem.alignForward(u32, 2 * mdis_max + nrad_max + n_vec, n_vec);
 pub const pad_buf_w = pad_h * 2;

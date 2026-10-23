@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/wnnm.zig");
+const bc = @import("../filters/bm3d_common.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
@@ -25,8 +26,9 @@ const Data = struct {
     node: ?*vs.Node = null,
     ref_node: ?*vs.Node = null,
     vi: *const vs.VideoInfo = undefined,
-    vi_raw: vs.VideoInfo = undefined,
     cfg: Config = .{},
+    /// radius > 0: in-filter temporal aggregation (BM3D's fused scheme)
+    cache: bc.TemporalCache = undefined,
 
     pool_lock: std.Io.Mutex = .init,
     pool: std.AutoHashMap(std.Thread.Id, *Bufs) = undefined,
@@ -78,65 +80,119 @@ fn Wnnm(comptime BS: ?u32) type {
                 const intermediate = bufs.intermediate[0 .. 2 * h * w];
                 @memset(intermediate, 0.0);
 
-                processPlane(BS, &d.cfg, bufs, &.{srcp}, &.{refp}, intermediate.ptr, w, w, h, stride, d.cfg.sigma[plane]) catch return hz.frameOom(&zapi, filter_name, dst);
+                processPlane(BS, &d.cfg, bufs, &.{srcp}, &.{refp}, intermediate.ptr, w, h, w, h, stride, d.cfg.sigma[plane], {}) catch return hz.frameOom(&zapi, filter_name, dst);
                 filter.aggregation(dstp, intermediate, w, h, stride);
             }
 
             return dst.frame;
         }
 
-        pub fn getFrameRaw(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
+        /// Source and reference frames n - 2r .. n + 2r (clamped): every
+        /// stage m = n - r .. n + r reads frames m - r .. m + r.
+        const Frames = struct {
+            lo: i32,
+            count: usize = 0,
+            src: [2 * max_window]ZAPI.ZFrame(*const vs.Frame) = undefined,
+            ref: [2 * max_window]ZAPI.ZFrame(*const vs.Frame) = undefined,
+        };
+
+        /// One WNNM pass centered on frame m (VAggregate's "stage" m): the
+        /// window frames' accumulators stream through a per-thread row ring
+        /// into the temporal cache instead of a stacked raw frame of
+        /// 2 * (2r + 1) planes per plane.
+        const Stages = struct {
+            d: *Data,
+            fr: *const Frames,
+            bufs: *Bufs,
+
+            pub fn compute(self: *const Stages, m: i32) error{OutOfMemory}!void {
+                const d = self.d;
+                const r: i32 = @intCast(d.cfg.radius);
+                const nf: usize = 2 * d.cfg.radius + 1;
+                var srcps: [max_window][]const f32 = undefined;
+                var refps: [max_window][]const f32 = undefined;
+                var plane: u32 = 0;
+                while (plane < d.vi.format.numPlanes) : (plane += 1) {
+                    if (!d.cfg.process[plane]) continue;
+                    const any = self.fr.src[0];
+                    const w, const h, const stride = any.getDimensions2(f32, plane);
+                    for (0..nf) |z| {
+                        const f = math.clamp(m - r + @as(i32, @intCast(z)), 0, d.vi.numFrames - 1);
+                        const k: usize = @intCast(f - self.fr.lo);
+                        srcps[z] = self.fr.src[k].getReadSlice2(f32, plane);
+                        refps[z] = self.fr.ref[k].getReadSlice2(f32, plane);
+                    }
+                    const rows = filter.ringRows(&d.cfg, h);
+                    const ring = try self.bufs.ensureRing(nf * 2 * @as(usize, filter.ringRows(&d.cfg, d.cfg.max_ih)) * d.cfg.max_iw);
+                    const sink: FoldSink = .{ .cache = &d.cache, .m = m, .plane = plane };
+                    processPlane(BS, &d.cfg, self.bufs, srcps[0..nf], refps[0..nf], ring.ptr, w, rows, w, h, stride, d.cfg.sigma[plane], &sink) catch |e| {
+                        @memset(ring, 0); // keep the all-zero invariant
+                        return e;
+                    };
+                }
+            }
+        };
+
+        const FoldSink = struct {
+            cache: *bc.TemporalCache,
+            m: i32,
+            plane: u32,
+
+            pub fn rows(self: *const FoldSink, t: u32, y: u32, num: []const f32, den: []const f32) void {
+                self.cache.fold(self.m, t, self.plane, y, num, den);
+            }
+        };
+
+        const Out = struct {
+            dst: ZAPI.ZFrame(*vs.Frame),
+
+            pub fn plane(self: *const Out, p: usize, num: []const f32, den: []const f32) void {
+                const w, const h, const stride = self.dst.getDimensions2(f32, p);
+                const out = self.dst.getWriteSlice2(f32, p);
+                for (0..h) |y| {
+                    filter.vagDivide(out[y * stride ..][0..w], num[y * w ..][0..w], den[y * w ..][0..w]);
+                }
+            }
+        };
+
+        /// radius > 0. The cache sums the stages' window slices per output
+        /// frame in the order of the stacked clip + VAggregate it replaces
+        /// (bm3d_common.Window.cuda == the old slab choice), so the output is
+        /// the same float sum.
+        pub fn getFrameTemporal(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
-            const radius: i32 = @intCast(d.cfg.radius);
-            const num_frames = 2 * d.cfg.radius + 1;
+            const span: i32 = 2 * @as(i32, @intCast(d.cfg.radius));
+            const lo = @max(n - span, 0);
+            const hi = @min(n + span, d.vi.numFrames - 1);
 
             if (activation_reason == .Initial) {
-                var i: i32 = -radius;
-                while (i <= radius) : (i += 1) {
-                    const fid = math.clamp(n + i, 0, d.vi.numFrames - 1);
-                    zapi.requestFrameFilter(fid, d.node);
-                    if (d.ref_node != null) zapi.requestFrameFilter(fid, d.ref_node);
+                var i = lo;
+                while (i <= hi) : (i += 1) {
+                    zapi.requestFrameFilter(i, d.node);
+                    if (d.ref_node != null) zapi.requestFrameFilter(i, d.ref_node);
                 }
                 return null;
             }
             if (activation_reason != .AllFramesReady) return null;
 
-            comptime std.debug.assert(max_window >= 2 * max_radius + 1);
-            var srcs: [max_window]@TypeOf(zapi.initZFrame(d.node, n)) = undefined;
-            var refs: [max_window]@TypeOf(zapi.initZFrame(d.node, n)) = undefined;
-            for (0..num_frames) |i| {
-                const fid = math.clamp(n - radius + @as(i32, @intCast(i)), 0, d.vi.numFrames - 1);
-                srcs[i] = zapi.initZFrame(d.node, fid);
-                refs[i] = if (d.ref_node != null) zapi.initZFrame(d.ref_node, fid) else srcs[i].addFrameRef();
-            }
-            defer for (0..num_frames) |i| {
-                srcs[i].deinit();
-                refs[i].deinit();
+            var fr: Frames = .{ .lo = lo };
+            defer for (0..fr.count) |i| {
+                fr.src[i].deinit();
+                fr.ref[i].deinit();
             };
-
-            const dst = zapi.initZFrameFromVi(&d.vi_raw, srcs[d.cfg.radius].frame);
-
-            const bufs = acquireBufs(d) orelse return hz.frameOom(&zapi, filter_name, dst);
-
-            var srcps: [max_window][]const f32 = undefined;
-            var refps: [max_window][]const f32 = undefined;
-
-            var plane: u32 = 0;
-            while (plane < d.vi.format.numPlanes) : (plane += 1) {
-                if (!d.cfg.process[plane]) continue;
-
-                const w, const h, const stride = srcs[d.cfg.radius].getDimensions2(f32, plane);
-                for (0..num_frames) |i| {
-                    srcps[i] = srcs[i].getReadSlice2(f32, plane);
-                    refps[i] = refs[i].getReadSlice2(f32, plane);
-                }
-                const dstp = dst.getWriteSlice2(f32, plane);
-                @memset(dstp[0 .. 2 * num_frames * h * stride], 0.0);
-
-                processPlane(BS, &d.cfg, bufs, srcps[0..num_frames], refps[0..num_frames], dstp.ptr, stride, w, h, stride, d.cfg.sigma[plane]) catch return hz.frameOom(&zapi, filter_name, dst);
+            var i = lo;
+            while (i <= hi) : (i += 1) {
+                fr.src[fr.count] = zapi.initZFrame(d.node, i);
+                fr.ref[fr.count] = if (d.ref_node != null) zapi.initZFrame(d.ref_node, i) else fr.src[fr.count].addFrameRef();
+                fr.count += 1;
             }
 
+            const dst = fr.src[@intCast(n - lo)].newVideoFrame2(d.cfg.process);
+            const bufs = acquireBufs(d) orelse return hz.frameOom(&zapi, filter_name, dst);
+            const stages: Stages = .{ .d = d, .fr = &fr, .bufs = bufs };
+            const out: Out = .{ .dst = dst };
+            d.cache.produce(n, &stages, &out) catch return hz.frameOom(&zapi, filter_name, dst);
             return dst.frame;
         }
     };
@@ -149,121 +205,20 @@ fn wnnmFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) 
     var it = d.pool.valueIterator();
     while (it.next()) |b| Bufs.destroy(b.*);
     d.pool.deinit();
+    if (d.cfg.radius > 0) d.cache.deinit();
 
     zapi.freeNode(d.node);
     zapi.freeNode(d.ref_node);
     allocator.destroy(d);
 }
 
-const VagData = struct {
-    node: ?*vs.Node = null,
-    src_node: ?*vs.Node = null,
-    vi: *const vs.VideoInfo = undefined,
-    radius: u32 = 0,
-    process: [3]bool = undefined,
-    max_w: u32 = 0,
-
-    pool_lock: std.Io.Mutex = .init,
-    pool: std.AutoHashMap(std.Thread.Id, []align(64) f32) = undefined,
-};
-
-fn vagAcquireBuffer(d: *VagData) ?[]align(64) f32 {
-    const tid = std.Thread.getCurrentId();
-    d.pool_lock.lockUncancelable(vszip.io);
-    defer d.pool_lock.unlock(vszip.io);
-    if (d.pool.get(tid)) |b| return b;
-    const b: []align(64) f32 = allocator.alignedAlloc(f32, comptime std.mem.Alignment.fromByteUnits(64), 2 * d.max_w) catch return null;
-    d.pool.put(tid, b) catch {
-        allocator.free(b);
-        return null;
-    };
-    return b;
-}
-
-fn vagGetFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
-    const d: *VagData = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core, frame_ctx);
-    const radius: i32 = @intCast(d.radius);
-    const num_frames = 2 * d.radius + 1;
-
-    if (activation_reason == .Initial) {
-        var i: i32 = -radius;
-        while (i <= radius) : (i += 1) {
-            zapi.requestFrameFilter(math.clamp(n + i, 0, d.vi.numFrames - 1), d.node);
-        }
-        zapi.requestFrameFilter(n, d.src_node);
-        return null;
-    }
-    if (activation_reason != .AllFramesReady) return null;
-
-    const src = zapi.initZFrame(d.src_node, n);
-    defer src.deinit();
-
-    var raws: [max_window]@TypeOf(zapi.initZFrame(d.node, n)) = undefined;
-    for (0..num_frames) |i| {
-        const fid = math.clamp(n - radius + @as(i32, @intCast(i)), 0, d.vi.numFrames - 1);
-        raws[i] = zapi.initZFrame(d.node, fid);
-    }
-    defer for (0..num_frames) |i| raws[i].deinit();
-
-    const dst = src.newVideoFrame2(d.process);
-
-    const buffer = vagAcquireBuffer(d) orelse return hz.frameOom(&zapi, filter_name, dst);
-
-    var plane: u32 = 0;
-    while (plane < d.vi.format.numPlanes) : (plane += 1) {
-        if (!d.process[plane]) continue;
-
-        const w, const h, const stride = src.getDimensions2(f32, plane);
-        const dstp = dst.getWriteSlice2(f32, plane);
-        const num = buffer[0..w];
-        const den = buffer[d.max_w..][0..w];
-
-        var y: u32 = 0;
-        while (y < h) : (y += 1) {
-            @memset(num, 0.0);
-            @memset(den, 0.0);
-            for (0..num_frames) |i| {
-                const raw = raws[i].getReadSlice2(f32, plane);
-
-                const slab = math.clamp(
-                    2 * radius - @as(i32, @intCast(i)),
-                    n - d.vi.numFrames + 1 + radius,
-                    n + radius,
-                );
-                const base = (@as(usize, @intCast(slab)) * 2 * h + y) * stride;
-                const nrow = raw[base..][0..w];
-                const drow = raw[base + h * stride ..][0..w];
-                filter.vagAccumulate(num, nrow);
-                filter.vagAccumulate(den, drow);
-            }
-            filter.vagDivide(dstp[y * stride ..][0..w], num, den);
-        }
-    }
-
-    return dst.frame;
-}
-
-fn vagFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-    const d: *VagData = @ptrCast(@alignCast(instance_data));
-    const zapi = ZAPI.init(vsapi, core, null);
-
-    var it = d.pool.valueIterator();
-    while (it.next()) |b| allocator.free(b.*);
-    d.pool.deinit();
-
-    zapi.freeNode(d.node);
-    zapi.freeNode(d.src_node);
-    allocator.destroy(d);
-}
-
 fn selectGetFrame(bs: u32, radius: u32) vs.FilterGetFrame {
     return switch (bs) {
-        4 => if (radius == 0) &Wnnm(4).getFrameSpatial else &Wnnm(4).getFrameRaw,
-        6 => if (radius == 0) &Wnnm(6).getFrameSpatial else &Wnnm(6).getFrameRaw,
-        8 => if (radius == 0) &Wnnm(8).getFrameSpatial else &Wnnm(8).getFrameRaw,
-        16 => if (radius == 0) &Wnnm(16).getFrameSpatial else &Wnnm(16).getFrameRaw,
-        else => if (radius == 0) &Wnnm(null).getFrameSpatial else &Wnnm(null).getFrameRaw,
+        4 => if (radius == 0) &Wnnm(4).getFrameSpatial else &Wnnm(4).getFrameTemporal,
+        6 => if (radius == 0) &Wnnm(6).getFrameSpatial else &Wnnm(6).getFrameTemporal,
+        8 => if (radius == 0) &Wnnm(8).getFrameSpatial else &Wnnm(8).getFrameTemporal,
+        16 => if (radius == 0) &Wnnm(16).getFrameSpatial else &Wnnm(16).getFrameTemporal,
+        else => if (radius == 0) &Wnnm(null).getFrameSpatial else &Wnnm(null).getFrameTemporal,
     };
 }
 
@@ -352,8 +307,12 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         return;
     }
 
-    data.vi_raw = d.vi.*;
-    data.vi_raw.height *= @intCast(2 * (2 * d.cfg.radius + 1));
+    var info: vs.CoreInfo = undefined;
+    zapi.getCoreInfo(core, &info);
+    // Config.process flags planes past numPlanes too (sigma repeats)
+    var cache_planes: [3]bool = @splat(false);
+    for (0..num_planes) |p| cache_planes[p] = d.cfg.process[p];
+    data.cache = bc.TemporalCache.init(.cuda, d.cfg.radius, d.vi.numFrames, cache_planes, plane_w, plane_h, @intCast(@max(info.numThreads, 1)));
 
     var deps_buf: [2]vs.FilterDependency = undefined;
     var n_deps: usize = 1;
@@ -362,33 +321,6 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         deps_buf[1] = .{ .source = d.ref_node, .requestPattern = .General };
         n_deps = 2;
     }
-
-    const src_node2 = zapi.addNodeRef(d.node);
-
-    const raw_node = zapi.createVideoFilter2("WNNMRaw", &data.vi_raw, selectGetFrame(d.cfg.bs, d.cfg.radius), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
-    if (raw_node == null) {
-        map_out.setError(filter_name ++ ": failed to create internal WNNMRaw filter.");
-        zapi.freeNode(src_node2);
-        wnnmFree(data, core, vsapi);
-        return;
-    }
-
-    const vag: *VagData = allocator.create(VagData) catch unreachable;
-    vag.* = .{
-        .node = raw_node,
-        .src_node = src_node2,
-        .vi = data.vi,
-        .radius = d.cfg.radius,
-        .process = d.cfg.process,
-        .max_w = d.cfg.max_iw,
-    };
-    vag.pool_lock = .init;
-    vag.pool = std.AutoHashMap(std.Thread.Id, []align(64) f32).init(allocator);
-
-    const vag_deps = [_]vs.FilterDependency{
-        .{ .source = raw_node, .requestPattern = .General },
-        .{ .source = src_node2, .requestPattern = .StrictSpatial },
-    };
-    zapi.createVideoFilter(out, "WNNMVAggregate", data.vi, &vagGetFrame, vagFree, .Parallel, &vag_deps, vag);
-    if (map_out.getError() != null) vagFree(vag, core, vsapi);
+    zapi.createVideoFilter(out, filter_name, d.vi, selectGetFrame(d.cfg.bs, d.cfg.radius), wnnmFree, .Parallel, deps_buf[0..n_deps], data);
+    if (map_out.getError() != null) wnnmFree(data, core, vsapi);
 }

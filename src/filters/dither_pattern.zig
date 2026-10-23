@@ -1,3 +1,4 @@
+const common = @import("../common.zig");
 pub const ZIMG_BLUE_NOISE_LEN: comptime_int = 64;
 pub const ZIMG_BLUE_NOISE_SCALE: comptime_int = 255;
 pub const ZIMG_BLUE_NOISE_TABLE: [ZIMG_BLUE_NOISE_LEN][ZIMG_BLUE_NOISE_LEN]u8 = .{
@@ -474,19 +475,19 @@ fn buildZimgTable(comptime len: comptime_int, table: [len][len]u8, comptime scal
     return out;
 }
 
-pub const fmtc_bayer_i16: PaddedI16(16) align(64) = blk: {
+pub const fmtc_bayer_i16: PaddedI16(16) align(common.vec_len) = blk: {
     @setEvalBranchQuota(100_000);
     break :blk padRowsI16(16, buildFmtcBayerI16());
 };
-pub const fmtc_void_i16: PaddedI16(32) align(64) = blk: {
+pub const fmtc_void_i16: PaddedI16(32) align(common.vec_len) = blk: {
     @setEvalBranchQuota(300_000);
     break :blk padRowsI16(32, buildFmtcVoidI16());
 };
-pub const fmtc_bayer_f32: Padded(16) align(64) = blk: {
+pub const fmtc_bayer_f32: Padded(16) align(common.vec_len) = blk: {
     @setEvalBranchQuota(100_000);
     break :blk padRows(16, scaleTo256th(16, buildFmtcBayerI16()));
 };
-pub const fmtc_void_f32: Padded(32) align(64) = blk: {
+pub const fmtc_void_f32: Padded(32) align(common.vec_len) = blk: {
     @setEvalBranchQuota(300_000);
     break :blk padRows(32, scaleTo256th(32, buildFmtcVoidI16()));
 };
@@ -504,7 +505,7 @@ fn rotateBayer(comptime variant: u2, base: [16][16]f32) [16][16]f32 {
     return out;
 }
 
-pub const zimg_bayer_rot: [4]Padded(16) align(64) = blk: {
+pub const zimg_bayer_rot: [4]Padded(16) align(common.vec_len) = blk: {
     @setEvalBranchQuota(400_000);
     const base = buildZimgTable(16, ZIMG_BAYER_TABLE, ZIMG_BAYER_TABLE_SCALE);
     break :blk .{
@@ -515,7 +516,7 @@ pub const zimg_bayer_rot: [4]Padded(16) align(64) = blk: {
     };
 };
 
-pub const zimg_blue_noise_f32: Padded(64) align(64) = blk: {
+pub const zimg_blue_noise_f32: Padded(64) align(common.vec_len) = blk: {
     @setEvalBranchQuota(1_000_000);
     break :blk padRows(64, buildZimgTable(64, ZIMG_BLUE_NOISE_TABLE, ZIMG_BLUE_NOISE_SCALE));
 };

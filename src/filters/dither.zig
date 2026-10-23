@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("../common.zig");
 const simd = @import("simd.zig");
 const pattern = @import("dither_pattern.zig");
 
@@ -163,7 +164,7 @@ pub fn Ordered(comptime T: type, comptime U: type, comptime mode: OrderedMode) t
             const rcst: u16 = comptime @as(u16, 1) << (dif - 1);
             const peak: u16 = @intCast((@as(u32, 1) << @intCast(bits_out)) - 1);
 
-            var d_table: [32][32 + pattern.pad]u16 align(64) = undefined;
+            var d_table: [32][32 + pattern.pad]u16 align(common.vec_len) = undefined;
             const tab_len: u32 = comptime switch (mode) {
                 .fmtc_bayer => pattern.fmtc_bayer_len,
                 .fmtc_void => 32,
@@ -238,7 +239,7 @@ pub fn Ordered(comptime T: type, comptime U: type, comptime mode: OrderedMode) t
         inline fn computeVal(ptr: *const [n_vec]T, dsrc: DitherSource(mode), x: u32, scale_v: F32V, offset_v: F32V) F32V {
             const src_vec = loadSrc(T, ptr);
             var val = if (comptime mode == .zimg_ordered or mode == .zimg_random or mode == .round)
-                @mulAdd(F32V, src_vec, scale_v, offset_v)
+                simd.madd(F32V, src_vec, scale_v, offset_v)
             else
                 src_vec * scale_v + offset_v;
             if (comptime mode != .round) val += dsrc.get(x);
@@ -277,8 +278,8 @@ pub fn Ordered(comptime T: type, comptime U: type, comptime mode: OrderedMode) t
                     while (x + 64 <= src_stride and x + 64 <= dst_stride and x < w) : (x += 64) {
                         inline for (0..4) |i| {
                             const xb = x + i * 16;
-                            const lo = @mulAdd(F32V, loadSrc(T, src_row[xb..][0..n_vec]), scale_v, offset_v) + drow[2 * i];
-                            const hi = @mulAdd(F32V, loadSrc(T, src_row[xb + n_vec ..][0..n_vec]), scale_v, offset_v) + drow[2 * i + 1];
+                            const lo = simd.madd(F32V, loadSrc(T, src_row[xb..][0..n_vec]), scale_v, offset_v) + drow[2 * i];
+                            const hi = simd.madd(F32V, loadSrc(T, src_row[xb + n_vec ..][0..n_vec]), scale_v, offset_v) + drow[2 * i + 1];
                             const lo_i = simd.cvtRoundI32(n_vec, lo);
                             const hi_i = simd.cvtRoundI32(n_vec, hi);
                             const w16 = @min(simd.packUsI32ToU16(lo_i, hi_i), peak16_v);

@@ -1,4 +1,6 @@
 const std = @import("std");
+const common = @import("../common.zig");
+const simd = @import("simd.zig");
 const assert = std.debug.assert;
 
 const VEC = 8;
@@ -364,21 +366,27 @@ pub fn col2im(
     a: [*]const f32,
     lda: u32,
     errors: []const Match,
-    height: u32,
+    rows: u32,
     bs_rt: u32,
     weight: f32,
 ) void {
     const bs = BS orelse bs_rt;
     const wv: Vf = @splat(weight);
+    const plane_off: usize = @as(usize, rows) * agg_stride;
     for (errors, 0..) |e, i| {
         var patch = a + i * lda;
         const x: u32 = @intCast(e.x);
         const y: u32 = @intCast(e.y);
         const t: u32 = @intCast(e.t);
-        var wdst = agg + (@as(usize, t * 2) * height + y) * agg_stride + x;
-        var wgt = agg + (@as(usize, t * 2 + 1) * height + y) * agg_stride + x;
+        // row y lives at y % rows: the full plane (rows == height) or a ring
+        const slab = agg + @as(usize, t * 2) * plane_off + x;
+        var r: u32 = y % rows;
         var py: u32 = 0;
         while (py < bs) : (py += 1) {
+            const wdst = slab + @as(usize, r) * agg_stride;
+            const wgt = wdst + plane_off;
+            r += 1;
+            if (r == rows) r = 0;
             var px: u32 = 0;
             while (px + VEC <= bs) : (px += VEC) {
                 const pv: Vf = patch[px..][0..VEC].*;
@@ -391,8 +399,6 @@ pub fn col2im(
                 wdst[px] += patch[px] * weight;
                 wgt[px] += weight;
             }
-            wdst += agg_stride;
-            wgt += agg_stride;
             patch += bs;
         }
     }
@@ -439,9 +445,9 @@ pub fn Workspace(comptime F: type) type {
         v: []F,
         eig: []F,
         r: []f32,
-        scratch: []align(64) f32,
+        scratch: []align(common.vec_len) f32,
 
-        wide: []align(64) F,
+        wide: []align(common.vec_len) F,
     };
 }
 
@@ -509,10 +515,10 @@ fn gramAtA(comptime F: type, a: []const f32, m: usize, n: usize, lda: usize, g: 
             while (p + VEC <= m) : (p += VEC) {
                 const x: VF = ci[p..][0..VEC].*;
                 const y: VF = cj[p..][0..VEC].*;
-                acc = @mulAdd(VF, x, y, acc);
+                acc = simd.madd(VF, x, y, acc);
             }
             var s: F = @reduce(.Add, acc);
-            while (p < m) : (p += 1) s = @mulAdd(F, ci[p], cj[p], s);
+            while (p < m) : (p += 1) s = simd.madd(F, ci[p], cj[p], s);
             g[i * n + j] = s;
             g[j * n + i] = s;
         }
@@ -528,7 +534,7 @@ fn gramAAt(comptime F: type, a: []const f32, m: usize, n: usize, lda: usize, g: 
         for (0..m) |p| col[p] = ck[p];
         for (0..m) |i| {
             const ai = col[i];
-            for (i..m) |j| g[i * m + j] = @mulAdd(F, ai, col[j], g[i * m + j]);
+            for (i..m) |j| g[i * m + j] = simd.madd(F, ai, col[j], g[i * m + j]);
         }
     }
     for (1..m) |i| {
@@ -798,13 +804,13 @@ fn reconTall(
             var acc: Vf = @splat(0);
             for (0..n) |kk| {
                 const av: Vf = a[kk * lda + p ..][0..VEC].*;
-                acc = @mulAdd(Vf, av, @splat(vc[kk]), acc);
+                acc = simd.madd(Vf, av, @splat(vc[kk]), acc);
             }
             bi[p..][0..VEC].* = acc;
         }
         while (p < m) : (p += 1) {
             var s: f32 = 0;
-            for (0..n) |kk| s = @mulAdd(f32, a[kk * lda + p], vc[kk], s);
+            for (0..n) |kk| s = simd.madd(f32, a[kk * lda + p], vc[kk], s);
             bi[p] = s;
         }
     }
@@ -818,13 +824,13 @@ fn reconTall(
             var acc: Vf = @splat(0);
             for (0..ku) |i| {
                 const bv: Vf = b[i * m + p ..][0..VEC].*;
-                acc = @mulAdd(Vf, bv, @splat(w[i]), acc);
+                acc = simd.madd(Vf, bv, @splat(w[i]), acc);
             }
             dj[p..][0..VEC].* = acc;
         }
         while (p < m) : (p += 1) {
             var s: f32 = 0;
-            for (0..ku) |i| s = @mulAdd(f32, b[i * m + p], w[i], s);
+            for (0..ku) |i| s = simd.madd(f32, b[i * m + p], w[i], s);
             dj[p] = s;
         }
     }
@@ -863,10 +869,10 @@ fn reconWide(
             while (p + VEC <= m) : (p += VEC) {
                 const x: Vf = ui[p..][0..VEC].*;
                 const y: Vf = aj[p..][0..VEC].*;
-                acc = @mulAdd(Vf, x, y, acc);
+                acc = simd.madd(Vf, x, y, acc);
             }
             var s: f32 = @reduce(.Add, acc);
-            while (p < m) : (p += 1) s = @mulAdd(f32, ui[p], aj[p], s);
+            while (p < m) : (p += 1) s = simd.madd(f32, ui[p], aj[p], s);
             cmat[i * n + j] = r[i] * s;
         }
     }
@@ -878,13 +884,13 @@ fn reconWide(
             var acc: Vf = @splat(0);
             for (0..ku) |i| {
                 const uv: Vf = uf[i * m + p ..][0..VEC].*;
-                acc = @mulAdd(Vf, uv, @splat(cmat[i * n + j]), acc);
+                acc = simd.madd(Vf, uv, @splat(cmat[i * n + j]), acc);
             }
             dj[p..][0..VEC].* = acc;
         }
         while (p < m) : (p += 1) {
             var s: f32 = 0;
-            for (0..ku) |i| s = @mulAdd(f32, uf[i * m + p], cmat[i * n + j], s);
+            for (0..ku) |i| s = simd.madd(f32, uf[i * m + p], cmat[i * n + j], s);
             dj[p] = s;
         }
     }
@@ -1015,15 +1021,15 @@ pub const Config = struct {
 /// Per-request scratch, carved from one arena; `create`/`destroy`.
 pub const Bufs = struct {
     arena: std.heap.ArenaAllocator,
-    cur: []align(64) f32,
-    amat: [batch_n][]align(64) f32,
-    aout: [batch_n][]align(64) f32,
-    mean: [batch_n][]align(64) f32,
+    cur: []align(common.vec_len) f32,
+    amat: [batch_n][]align(common.vec_len) f32,
+    aout: [batch_n][]align(common.vec_len) f32,
+    mean: [batch_n][]align(common.vec_len) f32,
     sel: []Match,
     selidx: []IdxErr,
     gbatch: []f64,
     vbatch: []f64,
-    intermediate: []align(64) f32,
+    intermediate: []align(common.vec_len) f32,
     est: Workspace(f64),
     errsf: std.ArrayList(f32),
     errors: std.ArrayList(Match),
@@ -1032,6 +1038,18 @@ pub const Bufs = struct {
     locs: std.ArrayList(Loc),
     locs_scratch: std.ArrayList(Loc),
     alloc: std.mem.Allocator,
+    /// streaming temporal mode: window-frame ring accumulators (see
+    /// `processPlane`), all zero between calls; empty until `ensureRing`
+    ring: []align(common.vec_len) f32,
+
+    /// Ring of at least `floats` zeroed floats.
+    pub fn ensureRing(b: *Bufs, floats: usize) error{OutOfMemory}![]align(common.vec_len) f32 {
+        if (b.ring.len < floats) {
+            b.ring = try b.alloc.alignedAlloc(f32, common.alignment, floats);
+            @memset(b.ring, 0);
+        }
+        return b.ring[0..floats];
+    }
 
     pub fn create(d: *const Config) error{OutOfMemory}!*Bufs {
         const b = try allocator.create(Bufs);
@@ -1039,7 +1057,7 @@ pub const Bufs = struct {
         b.arena = std.heap.ArenaAllocator.init(allocator);
         errdefer b.arena.deinit();
         const aa = b.arena.allocator();
-        const al = comptime std.mem.Alignment.fromByteUnits(64);
+        const al = common.alignment;
         const m = d.bs * d.bs;
         const q = d.q;
         const nb = batch_n;
@@ -1068,6 +1086,7 @@ pub const Bufs = struct {
         b.temporal = .empty;
         b.locs = .empty;
         b.locs_scratch = .empty;
+        b.ring = &.{};
         b.alloc = aa;
         return b;
     }
@@ -1089,12 +1108,22 @@ pub fn processPlane(
     refps: []const []const f32,
     agg: [*]f32,
     agg_stride: u32,
+    agg_rows: u32,
     w: u32,
     h: u32,
     stride: u32,
     sigma: f32,
+    sink: anytype,
 ) error{OutOfMemory}!void {
     const bs = BS orelse d.bs;
+    // Streaming (`sink` not void): `agg` is a ring of agg_rows rows per
+    // window frame, and rows that no later patch can reach are handed to
+    // `sink.rows(t, y, num, den)` and cleared as the scan moves down.
+    const streaming = @TypeOf(sink) != void;
+    const reach = ringReach(d);
+    var lo: u32 = 0; // first row not yet handed to the sink
+    var pending_y: u32 = 0; // reference row of the oldest batched group
+    if (!streaming) std.debug.assert(agg_rows == h);
     const m = bs * bs;
     const radius: i32 = @intCast(d.radius);
     const center: usize = d.radius;
@@ -1206,17 +1235,25 @@ pub fn processPlane(
                 }
             }
 
+            if (streaming) {
+                for (b.errors.items[0..n]) |e| {
+                    const ey: u32 = @intCast(e.y);
+                    std.debug.assert(ey >= lo and ey + bs <= lo + agg_rows);
+                }
+            }
+
             if (n == d.gs) {
+                if (slot == 0) pending_y = y;
                 loadPatches(BS, b.amat[slot].ptr, d.lda, if (d.residual) b.mean[slot] else null, srcps, b.errors.items, stride, bs);
                 if (d.residual) subtractMean(b.amat[slot].ptr, d.lda, b.mean[slot], m, n);
                 @memcpy(b.sel[slot * d.gs ..][0..n], b.errors.items);
                 slot += 1;
                 if (slot == batch_n) {
-                    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+                    flushBatch(BS, d, b, agg, agg_stride, agg_rows, bs, m, c_full, k0, slot);
                     slot = 0;
                 }
             } else {
-                flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+                flushBatch(BS, d, b, agg, agg_stride, agg_rows, bs, m, c_full, k0, slot);
                 slot = 0;
 
                 loadPatches(BS, b.amat[0].ptr, d.lda, if (d.residual) b.mean[0] else null, srcps, b.errors.items, stride, bs);
@@ -1229,14 +1266,52 @@ pub fn processPlane(
 
                 if (d.residual) addMean(b.aout[0].ptr, d.lda, b.mean[0], m, n);
 
-                col2im(BS, agg, agg_stride, b.aout[0].ptr, d.lda, b.errors.items, h, bs, weight);
+                col2im(BS, agg, agg_stride, b.aout[0].ptr, d.lda, b.errors.items, agg_rows, bs, weight);
             }
         }
+        if (streaming) {
+            // later patches start at or below the oldest batched group's row
+            // (or the next reference row) minus the search reach
+            const next_y = if (slot > 0) pending_y else @min(_y + d.step, temp_r);
+            flushRows(agg, agg_stride, agg_rows, w, h, @intCast(srcps.len), &lo, next_y -| reach, sink);
+        }
     }
-    flushBatch(BS, d, b, agg, agg_stride, h, bs, m, c_full, k0, slot);
+    flushBatch(BS, d, b, agg, agg_stride, agg_rows, bs, m, c_full, k0, slot);
+    if (streaming) flushRows(agg, agg_stride, agg_rows, w, h, @intCast(srcps.len), &lo, h, sink);
 }
 
-fn flushBatch(comptime BS: ?u32, d: *const Config, b: *Bufs, agg: [*]f32, agg_stride: u32, h: u32, bs: u32, m: u32, cv: f32, k0: u32, count: usize) void {
+/// How far above its reference row a patch can land: bm_range for the
+/// spatial search, plus ps_range per frame of the predictive temporal search.
+fn ringReach(d: *const Config) u32 {
+    return @intCast(@min(@as(u64, d.bm_range) + @as(u64, d.radius) * d.ps_range, math.maxInt(u32)));
+}
+
+/// Ring rows `processPlane` needs when streaming a plane of height h: patches
+/// for reference row y span rows y - reach .. y + reach + bs - 1, and the
+/// unflushed window also covers groups still waiting in a batch (at most
+/// batch_n reference positions, so at most batch_n rows of step back).
+pub fn ringRows(d: *const Config, h: u32) u32 {
+    const need: u64 = 2 * @as(u64, ringReach(d)) + d.bs + (batch_n + 1) * @as(u64, d.step) + 1;
+    return @intCast(@min(need, h));
+}
+
+/// Hands rows lo..upto-1 of every window frame to the sink, then clears them.
+fn flushRows(agg: [*]f32, agg_stride: u32, rows: u32, w: u32, h: u32, nf: u32, lo: *u32, upto: u32, sink: anytype) void {
+    const end = @min(upto, h);
+    const plane_off: usize = @as(usize, rows) * agg_stride;
+    while (lo.* < end) : (lo.* += 1) {
+        const r: usize = lo.* % rows;
+        for (0..nf) |t| {
+            const num = agg[@as(usize, t * 2) * plane_off + r * agg_stride ..][0..w];
+            const den = agg[(@as(usize, t * 2) + 1) * plane_off + r * agg_stride ..][0..w];
+            sink.rows(@intCast(t), lo.*, num, den);
+            @memset(num, 0);
+            @memset(den, 0);
+        }
+    }
+}
+
+fn flushBatch(comptime BS: ?u32, d: *const Config, b: *Bufs, agg: [*]f32, agg_stride: u32, rows: u32, bs: u32, m: u32, cv: f32, k0: u32, count: usize) void {
     if (count == 0) return;
     const n = d.gs;
 
@@ -1257,7 +1332,7 @@ fn flushBatch(comptime BS: ?u32, d: *const Config, b: *Bufs, agg: [*]f32, agg_st
     for (0..count) |l| {
         const weight: f32 = if (d.adaptive and ks[l] > 0) 1.0 / @as(f32, @floatFromInt(ks[l])) else 1.0;
         if (d.residual) addMean(b.aout[l].ptr, d.lda, b.mean[l], m, n);
-        col2im(BS, agg, agg_stride, b.aout[l].ptr, d.lda, b.sel[l * d.gs ..][0..n], h, bs, weight);
+        col2im(BS, agg, agg_stride, b.aout[l].ptr, d.lda, b.sel[l * d.gs ..][0..n], rows, bs, weight);
     }
 }
 

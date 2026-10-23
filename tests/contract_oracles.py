@@ -204,19 +204,34 @@ def check_rgb_metadata(host, name, fmt, bits, matrix, gray=False, height=9):
         tags = [{"_Matrix": m, "_ColorRange": int(not f)} for m, f in zip(matrices, full)]
     src = host.sequence(host.source(frames, name, fmt), tags)
     out = host.apply("SSIMULACRA2", src, distorted=src)
-    for n in (2, 0, 1, 2):
-        actual, props = host.frame(out, n)
+    expected = []
+    for n in range(3):
         effective = matrices[n]
         if effective == 2:
             effective = 1 if height > 650 else 6
-        expected = rgb_model(frames[n], bits, effective, full[n], gray)
+        expected.append([np.asarray(p, np.float32) for p in rgb_model(frames[n], bits, effective, full[n], gray)])
+    for n in (2, 0, 1, 2):
+        actual, props = host.frame(out, n)
         assert len(actual) == 3
-        for a, b in zip(actual, expected):
-            np.testing.assert_allclose(a, b, rtol=0, atol=2e-6)
+        if gray:
+            # Gray goes through an RGB conversion stage and comes back as it.
+            for a, b in zip(actual, expected[n]):
+                np.testing.assert_allclose(a, b, rtol=0, atol=2e-6)
+        else:
+            # YUV is converted inside the metric and returned as is.
+            for a, b in zip(actual, frames[n]):
+                np.testing.assert_array_equal(a, b)
         # The existing metric contract allows float cancellation for identical
-        # nonconstant inputs (test_ssimulacra2 uses >99.9); the RGB conversion
-        # itself has the much tighter independent assertion above.
+        # nonconstant inputs (test_ssimulacra2 uses >99.9).
         assert 99.9 < props["SSIMULACRA2"] <= 100.0
+    if not gray:
+        # The internal conversion against the independent model's RGB: within
+        # float rounding these frames score >= 99.0; a wrong matrix or range
+        # scores <= ~85 (measured on these patterns).
+        model = host.source(expected, "RGBPS", vs.RGBS)
+        scored = host.apply("SSIMULACRA2", src, distorted=model)
+        for n in (2, 0, 1):
+            assert host.frame(scored, n)[1]["SSIMULACRA2"] > 98.0, f"frame {n}"
 
 
 def check_selected_statistics(host, bits, family):

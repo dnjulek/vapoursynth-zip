@@ -193,7 +193,7 @@ const batch = 4;
 
 /// Per-thread working memory for one plane geometry.
 pub const Scratch = struct {
-    mem: []align(64) f32,
+    mem: []align(common.vec_len) f32,
     /// source window, layers * channels planes of bh rows x bw
     src: []f32,
     /// weight window from rclip (aliases `src` without rclip)
@@ -240,11 +240,11 @@ pub const Scratch = struct {
             @as(usize, C) * as,
         };
         var total: usize = 0;
-        for (lens) |l| total += std.mem.alignForward(usize, l, 16);
+        for (lens) |l| total += std.mem.alignForward(usize, l, common.vec_len / @sizeOf(f32));
 
         const self = try allocator.create(Scratch);
         errdefer allocator.destroy(self);
-        const mem = try allocator.alignedAlloc(f32, .@"64", total);
+        const mem = try allocator.alignedAlloc(f32, common.alignment, total);
         // Lanes past a row's width are computed but never stored to the
         // output; zero everything once so they never see NaN garbage.
         @memset(mem, 0);
@@ -253,7 +253,7 @@ pub const Scratch = struct {
         var parts: [lens.len][]f32 = undefined;
         for (lens, 0..) |l, i| {
             parts[i] = mem[off..][0..l];
-            off += std.mem.alignForward(usize, l, 16);
+            off += std.mem.alignForward(usize, l, common.vec_len / @sizeOf(f32));
         }
         self.* = .{
             .mem = mem,
@@ -350,14 +350,14 @@ inline fn pixDist(comptime ref: Ref, a: [*]const f32, b: [*]const f32, plane: us
             // 1.5f * (du*du + dv*dv): fma(du, du, dv*dv) * 1.5
             const du = load(a) - load(b);
             const dv = load(a + plane) - load(b + plane);
-            return @as(V, @splat(1.5)) * @mulAdd(V, du, du, dv * dv);
+            return @as(V, @splat(1.5)) * simd.madd(V, du, du, dv * dv);
         },
         .yuv => {
             // dy*dy + du*du + dv*dv: fma(dv, dv, fma(dy, dy, du*du))
             const dy = load(a) - load(b);
             const du = load(a + plane) - load(b + plane);
             const dv = load(a + 2 * plane) - load(b + 2 * plane);
-            return @mulAdd(V, dv, dv, @mulAdd(V, dy, dy, du * du));
+            return simd.madd(V, dv, dv, simd.madd(V, dy, dy, du * du));
         },
         .rgb => {
             // (2/3 + m)*(dr*dr) + (4/3)*(dg*dg) + (1 - m)*(db*db):
@@ -369,8 +369,8 @@ inline fn pixDist(comptime ref: Ref, a: [*]const f32, b: [*]const f32, plane: us
             const db = load(a + 2 * plane) - load(b + 2 * plane);
             const m_red = (ar + br) / @as(V, @splat(6.0));
             const t1 = @as(V, @splat(4.0 / 3.0)) * (dg * dg);
-            const t01 = @mulAdd(V, dr * dr, @as(V, @splat(2.0 / 3.0)) + m_red, t1);
-            const dist = @mulAdd(V, @as(V, @splat(1.0)) - m_red, db * db, t01);
+            const t01 = simd.madd(V, dr * dr, @as(V, @splat(2.0 / 3.0)) + m_red, t1);
+            const dist = simd.madd(V, @as(V, @splat(1.0)) - m_red, db * db, t01);
             // A red mean above 3 or below -2 (extended-range input, e.g. PQ
             // converted to linear light) turns a coefficient negative. Then
             // weights exceed 1 and the sums overflow to inf/NaN in every
@@ -456,7 +456,10 @@ const Blocks = struct {
 /// loads per output, some splitting a cache line). Building the shifted taps
 /// in registers (vperm2f128 + vpalignr) instead ran slower on Zen 3, and so
 /// did a second, 32-byte shifted copy of the row that avoids split loads
-/// (the extra store cost more than the splits).
+/// (the extra store cost more than the splits), and so did vsumBlock's
+/// laundered-FMA trick for every other tap (-13% at 1T, -7% at 16T: the
+/// loop is load-bound, 16 load-adds per 2 taps, so moving adds to the FMA
+/// pipes only lengthens the chains).
 inline fn blockSum(comptime U: u32, p: [*]const f32, taps: u32) [U]V {
     var acc: [U]V = undefined;
     inline for (0..U) |k| acc[k] = load(p + k * N);
@@ -496,7 +499,7 @@ inline fn vsumBlock(comptime R: u32, comptime U: u32, comptime taps: u32, rows: 
                     if (j == r) {
                         acc[r][u] = x[u];
                     } else if ((j - r) % 2 == 0) {
-                        acc[r][u] = @mulAdd(V, x[u], one, acc[r][u]);
+                        acc[r][u] = simd.madd(V, x[u], one, acc[r][u]);
                     } else {
                         acc[r][u] += x[u];
                     }
@@ -626,7 +629,7 @@ inline fn accumulateRow(comptime C: u32, cx: *const Ctx, tp: u32, tm: u32, qx: i
             const pa = acc_row + c * as + i;
             const pq = load(sp + c * cx.plane + i);
             const mq = load(sm + c * cx.plane + i);
-            store(pa, load(pa) + @mulAdd(V, wc_v, pq, wm_v * mq));
+            store(pa, load(pa) + simd.madd(V, wc_v, pq, wm_v * mq));
         }
         const pw = acc_row + C * as + i;
         store(pw, load(pw) + (wc_v + wm_v));
@@ -684,7 +687,7 @@ fn finish(comptime T: type, comptime C: u32, cx: *const Ctx, d: u32, wref: f32, 
             const den = m + load(ar + C * as + i);
             inline for (0..C) |c| {
                 const center = load(ctr + c * cx.plane + i);
-                const v = @mulAdd(V, center, m, load(ar + c * as + i)) / den;
+                const v = simd.madd(V, center, m, load(ar + c * as + i)) / den;
                 // den is >= wref*2^-23 > 0 unless wref == 0 and every weight
                 // underflowed; keep the source pixel there instead of NaN.
                 store(tmp + c * as + i, @select(f32, den > @as(V, @splat(0.0)), v, center));

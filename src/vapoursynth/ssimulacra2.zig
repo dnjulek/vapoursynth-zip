@@ -16,21 +16,31 @@ pub const filter_name = "SSIMULACRA2";
 pub const params = "reference:vnode;distorted:vnode;";
 const Scratch = []align(vszip.vec_len) f32;
 
-/// How one clip's frames are read: native RGB (int via LUT, or f32), or the
-/// RGBS that toRGBS made from YUV/GRAY.
+/// How one clip's frames are read: native RGB (int via LUT, or f32), YUV
+/// converted per row inside the filter (filters/ssimulacra2.zig Yuv), or the
+/// RGBS that toRGBS made from anything else (GRAY, 4:1:1, ...).
 const Source = struct {
     kind: filter_ssim.Input.Kind = .f32,
     srgb: bool = true,
     lut: []f32 = &.{},
+    /// yuv kind: per-clip conversion state
+    yuv: ?filter_ssim.YuvSetup = null,
 
-    fn input(self: *const Source, f: anytype) filter_ssim.Input {
-        return .{
-            .kind = self.kind,
-            .planes = .{ f.getReadSlice(0).ptr, f.getReadSlice(1).ptr, f.getReadSlice(2).ptr },
-            .stride = f.getStride(0),
-            .lut = self.lut,
-            .srgb = self.srgb,
-        };
+    fn input(self: *const Source, f: anytype) ?filter_ssim.Input {
+        const planes = [3][*]const u8{ f.getReadSlice(0).ptr, f.getReadSlice(1).ptr, f.getReadSlice(2).ptr };
+        if (self.yuv) |*ys| {
+            const props = f.getPropertiesRO();
+            // like resize: the frame's _Range (or the older _ColorRange)
+            const full = if (props.getRange()) |r| r == .FULL else if (props.getColorRange()) |r| r == .FULL else false;
+            const y = ys.frame(full, props.getInt(i64, "_Matrix"), props.getInt(i64, "_ChromaLocation")) orelse return null;
+            return filter_ssim.YuvSetup.input(y, planes, .{ f.getStride(0), f.getStride(1), f.getStride(2) }, self.srgb);
+        }
+        return .{ .kind = self.kind, .planes = planes, .stride = f.getStride(0), .lut = self.lut, .srgb = self.srgb };
+    }
+
+    fn deinit(self: *Source) void {
+        allocator.free(self.lut);
+        if (self.yuv) |*ys| ys.deinit();
     }
 };
 
@@ -78,7 +88,9 @@ fn ssimulacra2GetFrame(n: c_int, activation_reason: vs.ActivationReason, instanc
 
         const scratch = acquireScratch(d, filter_ssim.scratchSize(w, h));
         defer releaseScratch(d, scratch);
-        const val = filter_ssim.process(d.src1.input(&src1), d.src2.input(&src2), w, h, scratch);
+        const in1 = d.src1.input(&src1) orelse return badMatrix(&zapi, dst, n);
+        const in2 = d.src2.input(&src2) orelse return badMatrix(&zapi, dst, n);
+        const val = filter_ssim.process(in1, in2, w, h, scratch);
         const dst_prop = dst.getPropertiesRW();
         dst_prop.setFloat("SSIMULACRA2", val, .Replace);
         return dst.frame;
@@ -95,8 +107,8 @@ fn ssimulacraFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs
     }
     d.pool.deinit(allocator);
 
-    allocator.free(d.src1.lut);
-    allocator.free(d.src2.lut);
+    d.src1.deinit();
+    d.src2.deinit();
     zapi.freeNode(d.node1);
     zapi.freeNode(d.node2);
     allocator.destroy(d);
@@ -154,15 +166,40 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
 /// f32 decoded per row); YUV and GRAY go through toRGBS first. The sRGB
 /// decode runs inside the filter (libjxl's TF_SRGB, see filters/srgb.zig)
 /// unless frame 0 says the clip is already linear.
+fn badMatrix(zapi: *const ZAPI, dst: anytype, n: c_int) ?*const vs.Frame {
+    dst.deinit();
+    var buf: [160]u8 = undefined;
+    const msg = std.mem.printSentinel(&buf, filter_name ++ ": frame {d}: unsupported _Matrix (supported: 1, 4, 5, 6, 7, 9, or 2/unset).", .{n}, 0) catch filter_name ++ ": unsupported _Matrix.";
+    zapi.setFilterError(msg);
+    return null;
+}
+
+/// RGB clips are read natively (8-16 bit int through a sample -> linear LUT,
+/// f32 decoded per row); YUV with 2x or no subsampling is converted per row
+/// in the filter (filters/ssimulacra2.zig Yuv); everything else (GRAY,
+/// 4:1:1, a frame-0 _Matrix the conversion lacks) goes through toRGBS. The
+/// sRGB decode runs inside the filter (libjxl's TF_SRGB, see
+/// filters/srgb.zig) unless frame 0 says the clip is already linear.
 fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI) void {
-    const fmt = zapi.getVideoInfo(node.*).format;
+    const vi = zapi.getVideoInfo(node.*);
+    const fmt = vi.format;
     const native = fmt.colorFamily == .RGB and
         ((fmt.sampleType == .Integer and fmt.bitsPerSample <= 16) or (fmt.sampleType == .Float and fmt.bitsPerSample == 32));
-    if (!native) node.* = hz.toRGBS(node.*, zapi);
+    const yuv = fmt.colorFamily == .YUV and
+        filter_ssim.YuvSetup.supports(@intCast(fmt.subSamplingW), @intCast(fmt.subSamplingH), fmt.sampleType == .Float, @intCast(fmt.bitsPerSample)) and
+        frame0MatrixOk(node.*, zapi);
+    if (!native and !yuv) node.* = hz.toRGBS(node.*, zapi);
 
     const frame = zapi.getFrame(0, node.*, null);
     defer zapi.freeFrame(frame);
     src.srgb = zapi.initZMap(zapi.getFramePropertiesRO(frame)).getTransfer() != .LINEAR;
+
+    if (yuv) {
+        src.kind = .yuv;
+        const sample: filter_ssim.YuvSetup.Sample = if (fmt.sampleType == .Float) .f32 else if (fmt.bytesPerSample == 1) .u8 else .u16;
+        src.yuv = filter_ssim.YuvSetup.init(sample, @intCast(fmt.bitsPerSample), @intCast(vi.width), @intCast(vi.height), @intCast(fmt.subSamplingW), @intCast(fmt.subSamplingH)) catch unreachable;
+        return;
+    }
 
     const f = zapi.getVideoInfo(node.*).format;
     if (f.sampleType == .Integer) {
@@ -172,4 +209,10 @@ fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI) void {
     } else {
         src.kind = .f32;
     }
+}
+
+fn frame0MatrixOk(node: ?*vs.Node, zapi: *const ZAPI) bool {
+    const frame = zapi.getFrame(0, node, null);
+    defer zapi.freeFrame(frame);
+    return filter_ssim.YuvSetup.matrixOk(zapi.initZMap(zapi.getFramePropertiesRO(frame)).getInt(i64, "_Matrix"));
 }

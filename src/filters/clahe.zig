@@ -130,23 +130,62 @@ fn calcLut(
     const tiles_x = tiles[0];
     const tiles_y = tiles[1];
 
+    // Sub-histograms only pay off when a tile has many pixels per bin (runs
+    // of equal values); otherwise merging them is several times the pixel
+    // work (tiles=16 on 16-bit: ~8000 px per tile against 4 x 256 KiB).
+    const tile_px = @as(u64, tile_width) * tile_height;
+    const subs_n: u32 = if (tile_px >= @as(u64, n_sub) * hist_size) n_sub else 1;
     const subs = try allocator.alloc(u32, n_sub * hist_size);
     defer allocator.free(subs);
-    const tile_hist = try allocator.alloc(i32, hist_size);
-    defer allocator.free(tile_hist);
 
     // zeroed once; each tile's merge loop re-zeroes the bins it drains, so no
     // per-tile full-buffer memset sweep (1 MiB/tile for u16) is needed
-    @memset(subs, 0);
+    @memset(subs[0 .. subs_n * hist_size], 0);
+
+    // Bin range [lo, hi] of each tile's pixels; the last tile column/row also
+    // covers the leftover pixels past tiles*tile_size (they interpolate from
+    // the edge tiles but feed no histogram). Interpolation reads tile T's LUT
+    // only at bins of pixels inside T's 3x3 tile neighborhood, so each LUT row
+    // is built only over the union of those ranges.
+    const ranges = try allocator.alloc([2]u32, tiles_x * tiles_y);
+    defer allocator.free(ranges);
+    for (0..tiles_y) |tyi| {
+        const ty: u32 = @intCast(tyi);
+        const y_end = if (ty == tiles_y - 1) height else (ty + 1) * tile_height;
+        for (0..tiles_x) |txi| {
+            const tx: u32 = @intCast(txi);
+            const x_end = if (tx == tiles_x - 1) width else (tx + 1) * tile_width;
+            ranges[ty * tiles_x + tx] = binRange(T, B, bn, srcp, stride, tx * tile_width, x_end, ty * tile_height, y_end);
+        }
+    }
 
     var ty: u32 = 0;
     while (ty < tiles_y) : (ty += 1) {
         var tx: u32 = 0;
         while (tx < tiles_x) : (tx += 1) {
+            // own range (vector-aligned) and the neighborhood's
+            const own = ranges[ty * tiles_x + tx];
+            var nb = own;
+            // interpolateU8 packs whole LUT rows into its quad tables
+            if (comptime T == u8) nb = .{ 0, hist_size - 1 };
+            for (ty -| 1..@min(ty + 2, tiles_y)) |ny| {
+                for (tx -| 1..@min(tx + 2, tiles_x)) |nx| {
+                    const r = ranges[ny * tiles_x + nx];
+                    nb[0] = @min(nb[0], r[0]);
+                    nb[1] = @max(nb[1], r[1]);
+                }
+            }
+            const own_lo = own[0] - own[0] % vec_len;
+            const own_hi = own[1] - own[1] % vec_len + vec_len;
+            const nb_lo = nb[0] - nb[0] % vec_len;
+            const nb_hi = nb[1] - nb[1] % vec_len + vec_len;
+            std.debug.assert(nb_lo <= own_lo and own_hi <= nb_hi and nb_hi <= hist_size);
+
             const h0 = subs[0 * hist_size ..][0..hist_size];
-            const h1 = subs[1 * hist_size ..][0..hist_size];
-            const h2 = subs[2 * hist_size ..][0..hist_size];
-            const h3 = subs[3 * hist_size ..][0..hist_size];
+            // with one sub-histogram every scatter goes to h0
+            const h1 = subs[@as(u32, if (subs_n > 1) 1 else 0) * hist_size ..][0..hist_size];
+            const h2 = subs[@as(u32, if (subs_n > 1) 2 else 0) * hist_size ..][0..hist_size];
+            const h3 = subs[@as(u32, if (subs_n > 1) 3 else 0) * hist_size ..][0..hist_size];
 
             var y: u32 = ty * tile_height;
             while (y < @min((ty + 1) * tile_height, height)) : (y += 1) {
@@ -176,77 +215,103 @@ fn calcLut(
                 }
             }
 
-            // merge sub-histograms, clearing them behind the reads for the next tile
+            // Merge the sub-histograms into h0 (clearing the others for the
+            // next tile) and total the excess over the clip limit; h0 keeps
+            // the unclipped counts, clipped in the LUT pass below. All bins
+            // outside [own_lo, own_hi) are zero. clip_limit >= 1 always
+            // (applyCLAHE clamps it).
+            std.debug.assert(clip_limit > 0);
+            const limit_u: u32 = @intCast(clip_limit);
+            const limitv: U32V = @splat(limit_u);
+            var clipped_acc: U32V = @splat(0);
             {
                 const zerov: U32V = @splat(0);
-                var i: u32 = 0;
-                while (i < hist_size) : (i += vec_len) {
-                    const a: U32V = h0[i..][0..vec_len].*;
-                    const b: U32V = h1[i..][0..vec_len].*;
-                    const c: U32V = h2[i..][0..vec_len].*;
-                    const d: U32V = h3[i..][0..vec_len].*;
-                    h0[i..][0..vec_len].* = zerov;
-                    h1[i..][0..vec_len].* = zerov;
-                    h2[i..][0..vec_len].* = zerov;
-                    h3[i..][0..vec_len].* = zerov;
-                    const sum: I32V = @intCast(a + b + c + d);
-                    tile_hist[i..][0..vec_len].* = sum;
+                var i: u32 = own_lo;
+                while (i < own_hi) : (i += vec_len) {
+                    var sum: U32V = h0[i..][0..vec_len].*;
+                    if (subs_n > 1) {
+                        inline for (.{ h1, h2, h3 }) |hh| {
+                            sum += hh[i..][0..vec_len].*;
+                            hh[i..][0..vec_len].* = zerov;
+                        }
+                        h0[i..][0..vec_len].* = sum;
+                    }
+                    clipped_acc += sum - @min(sum, limitv);
                 }
             }
-
-            if (clip_limit > 0) {
-                const limitv: I32V = @splat(clip_limit);
-                const zerov: I32V = @splat(0);
-                var clipped_acc: I32V = @splat(0);
-                var i: u32 = 0;
-                while (i < hist_size) : (i += vec_len) {
-                    const b: I32V = tile_hist[i..][0..vec_len].*;
-                    clipped_acc += @max(b - limitv, zerov);
-                    tile_hist[i..][0..vec_len].* = @min(b, limitv);
-                }
-                const clipped: i32 = @reduce(.Add, clipped_acc);
-
-                const redist_batch: i32 = @divTrunc(clipped, hist_sizei);
-                var residual: i32 = clipped - redist_batch * hist_sizei;
-
-                if (redist_batch != 0) {
-                    const batchv: I32V = @splat(redist_batch);
-                    i = 0;
-                    while (i < hist_size) : (i += vec_len) {
-                        const b: I32V = tile_hist[i..][0..vec_len].*;
-                        tile_hist[i..][0..vec_len].* = b + batchv;
-                    }
-                }
-
-                if (residual != 0) {
-                    const residual_step = @max(@divTrunc(hist_sizei, residual), 1);
-                    i = 0;
-                    while ((i < hist_size) and (residual > 0)) : (i += @intCast(residual_step)) {
-                        tile_hist[i] += 1;
-                        residual -= 1;
-                    }
-                }
+            const clipped: i32 = @intCast(@reduce(.Add, clipped_acc));
+            const redist_batch: i32 = @divTrunc(clipped, hist_sizei);
+            const residual: i32 = clipped - redist_batch * hist_sizei;
+            // The residual +1s go to bins k*residual_step, k < residual, of
+            // the clipped histogram (k*step < hist_size always: step =
+            // hist_size/residual). Flag those inside the LUT range in bit 31
+            // (counts stay < 2^31), added after clipping.
+            const flag: u32 = 1 << 31;
+            const n_res: u32 = @intCast(residual);
+            const residual_step: u32 = if (residual != 0) @intCast(@max(@divTrunc(hist_sizei, residual), 1)) else 1;
+            {
+                var k: u32 = (nb_lo + residual_step - 1) / residual_step;
+                while (k < n_res and k * residual_step < nb_hi) : (k += 1) h0[k * residual_step] |= flag;
             }
 
-            // cumulative sum -> scaled LUT row
+            // clip + residual + uniform redistribution, cumulative sum ->
+            // scaled LUT row, re-zeroing h0. Only the scalar `run += last` is
+            // loop-carried; the in-register prefix and the lane extract hang
+            // off each block's own input (carrying `run` through broadcast +
+            // add + extract made this loop latency-bound).
             {
                 const lut_row = lut[(ty * tiles_x + tx) * hist_size ..][0..hist_size];
                 const scalev: F32V = @splat(lut_scale);
                 const halfv: F32V = @splat(0.5);
-                var run: i32 = 0;
-                var i: u32 = 0;
-                while (i < hist_size) : (i += vec_len) {
-                    const v: I32V = tile_hist[i..][0..vec_len].*;
-                    var p = prefixSum(v);
-                    p += @as(I32V, @splat(run));
-                    run = p[vec_len - 1];
-                    const f: F32V = @floatFromInt(p);
+                const batchv: I32V = @splat(redist_batch);
+                const zerov: U32V = @splat(0);
+                const countv: U32V = @splat(flag - 1);
+                // cumulative sum below nb_lo, where the histogram is zero:
+                // nb_lo * batch plus the residual bins below nb_lo
+                const res_below: u32 = @min(n_res, (nb_lo + residual_step - 1) / residual_step);
+                var run: i32 = @as(i32, @intCast(nb_lo)) * redist_batch + @as(i32, @intCast(res_below));
+                var i: u32 = nb_lo;
+                while (i < nb_hi) : (i += vec_len) {
+                    const h: U32V = h0[i..][0..vec_len].*;
+                    h0[i..][0..vec_len].* = zerov;
+                    const c = @min(h & countv, limitv) + (h >> @splat(31));
+                    const p = prefixSum(@as(I32V, @intCast(c)) + batchv);
+                    const last = p[vec_len - 1];
+                    const f: F32V = @floatFromInt(p + @as(I32V, @splat(run)));
+                    run += last;
                     const out: @Vector(vec_len, B.L) = @intFromFloat(@trunc(f * scalev + halfv));
                     lut_row[i..][0..vec_len].* = out;
                 }
             }
         }
     }
+}
+
+/// Min and max histogram bin over a rectangle of the plane.
+fn binRange(comptime T: type, comptime B: type, bn: B, srcp: []const T, stride: u32, x0: u32, x1: u32, y0: u32, y1: u32) [2]u32 {
+    var lo_v: U32V = @splat(std.math.maxInt(u32));
+    var hi_v: U32V = @splat(0);
+    var lo: u32 = std.math.maxInt(u32);
+    var hi: u32 = 0;
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        const row = srcp[y * stride ..];
+        var x = x0;
+        while (x + vec_len <= x1) : (x += vec_len) {
+            const b = bn.bins(row[x..][0..vec_len].*);
+            lo_v = @min(lo_v, b);
+            hi_v = @max(hi_v, b);
+        }
+        while (x < x1) : (x += 1) {
+            const b = bn.bin(row[x]);
+            lo = @min(lo, b);
+            hi = @max(hi, b);
+        }
+    }
+    lo = @min(lo, @reduce(.Min, lo_v));
+    hi = @max(hi, @reduce(.Max, hi_v));
+    if (lo > hi) return .{ 0, 0 }; // empty rectangle
+    return .{ lo, hi };
 }
 
 /// In-register inclusive prefix sum.

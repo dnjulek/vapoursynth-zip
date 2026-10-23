@@ -1,7 +1,8 @@
 const std = @import("std");
 const simd = @import("simd.zig");
 const math = std.math;
-const allocator = @import("../common.zig").kernel_allocator;
+const common = @import("../common.zig");
+const allocator = common.kernel_allocator;
 
 const XPSNR_GAMMA: u32 = 2;
 
@@ -389,9 +390,9 @@ fn calcSquaredError(comptime T: type, blk_org: []const T, stride: usize, blk_rec
 
         if (T == u8) {
             // vpmaddwd square-accumulate: d0*d0 + d1*d1 per i32 lane is exact
-            // for |d| <= 255 (see simd.maddwdI16); 32 lanes on AVX512BW, then
-            // 16 for the rest of the block.
-            if (comptime simd.use_avx512bw) {
+            // for |d| <= 255 (see simd.maddwdI16); 32 lanes on AVX512BW builds
+            // with 64-byte vectors, then 16 for the rest of the block.
+            if (comptime simd.use_avx512bw and common.vec_len == 64) {
                 const vl = 32;
                 var row_acc: @Vector(vl / 2, u32) = @splat(0);
                 while (x + vl <= block_width) : (x += vl) {
@@ -412,7 +413,8 @@ fn calcSquaredError(comptime T: type, blk_org: []const T, stride: usize, blk_rec
             }
             sse += @reduce(.Add, @as(@Vector(vl / 2, u64), @intCast(row_acc)));
         } else {
-            const vl = 8;
+            // two vectors of u64 accumulators
+            const vl = 2 * common.vec_len / @sizeOf(u64);
             var acc: @Vector(vl, u64) = @splat(0);
             while (x + vl <= block_width) : (x += vl) {
                 const o: @Vector(vl, T) = org_row[x..][0..vl].*;

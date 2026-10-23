@@ -7,6 +7,7 @@
 //! reference and ships on baseline/aarch64/macos.
 
 const std = @import("std");
+const common = @import("../common.zig");
 const builtin = @import("builtin");
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,21 @@ pub const use_avx512bw = use_avx512f and
 /// vpermi2b/vpermb (byte permutes). znver4+, Ice Lake+ (not Skylake-X).
 pub const use_avx512vbmi = use_avx512bw and
     std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512vbmi);
+
+/// Hardware fused multiply-add (x86 FMA3, aarch64 always). Without it
+/// `@mulAdd` lowers to a libm `fmaf` call per lane; use `madd`.
+pub const has_fma = switch (builtin.target.cpu.arch) {
+    .x86_64 => std.Target.x86.featureSetHas(builtin.target.cpu.features, .fma),
+    .aarch64 => true,
+    else => false,
+};
+
+/// a * b + c: fused where the target has FMA, plain mul + add otherwise (the
+/// result may differ in the last bit between the two; for kernels whose output
+/// is not bit-locked across targets).
+pub inline fn madd(comptime T: type, a: T, b: T, c: T) T {
+    return if (comptime has_fma) @mulAdd(T, a, b, c) else a * b + c;
+}
 
 // ---------------------------------------------------------------------------
 // Compiler workarounds
@@ -114,6 +130,49 @@ inline fn zpermt2ps(comptime n: comptime_int, comptime idx: [n]i32, a: @Vector(n
           [idx] "v" (iv),
           [b] "v" (b),
     );
+}
+
+/// Gathers the (value, next) pair at base[idx[l]] into lo[l], hi[l] (for
+/// LUT interpolation; indices unchecked). On AVX2 each 4 lanes are one
+/// vgatherdpd of 64-bit pairs plus a deinterleave: 12.8 TSC cycles per
+/// 8-lane lookup on Zen 3, against 18.9 for two vgatherdps (one per pair
+/// half) and 13.4 for LLVM's per-lane extract/load/insert chain (LLVM emits
+/// no gathers on its own). The asm reads memory behind `base`, hence the
+/// memory clobber. Portable twin: a per-lane load loop.
+pub inline fn gatherPairsF32(comptime n: comptime_int, base: [*]const [2]f32, idx: @Vector(n, u32)) [2]@Vector(n, f32) {
+    if (comptime use_avx2 and n % 8 == 0) {
+        var lo: [n]f32 = undefined;
+        var hi: [n]f32 = undefined;
+        const ia: [n]u32 = idx;
+        inline for (0..n / 8) |q| {
+            const a = gatherPd4(base, ia[q * 8 ..][0..4].*);
+            const b = gatherPd4(base, ia[q * 8 + 4 ..][0..4].*);
+            const af: @Vector(8, f32) = @bitCast(a);
+            const bf: @Vector(8, f32) = @bitCast(b);
+            lo[q * 8 ..][0..8].* = @shuffle(f32, af, bf, [8]i32{ 0, 2, 4, 6, -1, -3, -5, -7 });
+            hi[q * 8 ..][0..8].* = @shuffle(f32, af, bf, [8]i32{ 1, 3, 5, 7, -2, -4, -6, -8 });
+        }
+        return .{ lo, hi };
+    }
+    var lo: [n]f32 = undefined;
+    var hi: [n]f32 = undefined;
+    const ia: [n]u32 = idx;
+    inline for (0..n) |l| {
+        lo[l] = base[ia[l]][0];
+        hi[l] = base[ia[l]][1];
+    }
+    return .{ lo, hi };
+}
+
+inline fn gatherPd4(base: [*]const [2]f32, idx: @Vector(4, u32)) @Vector(4, f64) {
+    var mask: @Vector(4, u64) = undefined;
+    return asm ("vgatherdpd %[mask], (%[base],%[idx],8), %[out]"
+        : [out] "=&x" (-> @Vector(4, f64)),
+          [mask] "=&x" (mask),
+        : [mask_in] "1" (@as(@Vector(4, u64), @splat(0xFFFF_FFFF_FFFF_FFFF))),
+          [base] "r" (base),
+          [idx] "x" (idx),
+        : .{ .memory = true });
 }
 
 // ---------------------------------------------------------------------------
@@ -488,8 +547,10 @@ pub inline fn sadU8(comptime n: comptime_int, a: @Vector(n, u8), b: @Vector(n, u
     return r;
 }
 
-/// Widest accelerated sadU8 shape (0: none, callers keep their portable form).
-pub const sad_u8_lanes = if (use_avx512bw) 64 else if (use_avx2) 32 else 0;
+/// Widest accelerated sadU8 shape the build target's vectors cover (0: none,
+/// callers keep their portable form). zmm only where `vec_len` is 64: targets
+/// tuned `prefer-256-bit` (Intel AVX-512 models) stay on ymm.
+pub const sad_u8_lanes = if (use_avx512bw and common.vec_len == 64) 64 else if (use_avx2) 32 else 0;
 
 /// vpmaddwd: adjacent-pair dot product of i16 lanes into i32 lanes. LLVM
 /// never forms vpmaddwd from the portable widen-multiply-pairwise-add form

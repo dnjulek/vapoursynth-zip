@@ -119,6 +119,24 @@ MANIFEST = {
     "NLMeans": ("gs.vszip.NLMeans({a})", {"h": (False, 1.2, 1), "wref": (False, 1.0, 1)}, {}),
     "PlaneMinMax": ("c8.vszip.PlaneMinMax({a})", {"minthr": (False, 0.0, 1), "maxthr": (False, 0.0, 1)}, {}),
     "WNNM": ("gs.vszip.WNNM(block_size=4, {a})", {"sigma": (True, 3.0, 3)}, {}),
+    "Tonemap": (
+        "c16.vszip.Tonemap({a})",
+        {
+            "src_max": (False, 1000.0, 1),
+            "src_min": (False, 0.005, 1),
+            "dst_max": (False, 203.0, 1),
+            "dst_min": (False, 0.2, 1),
+            "smoothing_period": (False, 20.0, 1),
+            "scene_threshold_low": (False, 1.0, 1),
+            "scene_threshold_high": (False, 3.0, 1),
+            "percentile": (False, 100.0, 1),
+            "black_cutoff": (False, 1.0, 1),
+            "tone_mapping_param": (False, 0.5, 1),
+            "contrast_recovery": (False, 0.3, 1),
+            "contrast_smoothness": (False, 3.5, 1),
+        },
+        {},
+    ),
 }
 EXACT_LEN = {"Limiter", "Limiter@f16", "Limiter@int"}
 

@@ -386,17 +386,13 @@ def test_ssimulacra2_keeps_reference_alpha(env, pt):
     env.set_clip("ra", ref)
     env.set_clip("rc", plain)
     out = env.eval("avszip_SSIMULACRA2(ra, rc)")
-    assert out.has_alpha and out.bits == 32 and out.family == "rgb"
+    # YUV(A) is converted inside the metric: the reference comes back as is
+    assert out.has_alpha and out.family == "yuv"
     f = out.frame(0)
-    if bits == 32:
-        assert np.array_equal(f.planes[3], frames[0][3]), "float alpha unchanged"
-    else:
-        # integer alpha as full-range float (x * (1/peak) in f32)
-        want = frames[0][3].astype(np.float64) / ((1 << bits) - 1)
-        assert np.max(np.abs(f.planes[3] - want)) < 1e-7, "reference alpha (as full-range float)"
-    # color is unaffected by alpha: same score and RGB as the alpha-free call
+    for p in range(4):
+        assert np.array_equal(f.planes[p], frames[0][p]), f"plane {p} unchanged"
+    # color is unaffected by alpha: same score as the alpha-free call
     g = env.eval("avszip_SSIMULACRA2(rc, rc)").frame(0)
-    H.compare_planes(f, g, what=pt, planes=range(3))
     assert f.props["SSIMULACRA2"] == g.props["SSIMULACRA2"]
 
 

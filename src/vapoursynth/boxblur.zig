@@ -180,7 +180,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         };
     } else {
         get_frame = switch (d.p.hradius) {
-            inline 1...8 => |r| switch (dt) {
+            inline 1...boxblur_rt.Params.ct_max_radius => |r| switch (dt) {
                 .F16 => &BoxBlurCT(f16, r).getFrame,
                 .F32 => &BoxBlurCT(f32, r).getFrame,
                 .U8, .U16, .U32 => unreachable,

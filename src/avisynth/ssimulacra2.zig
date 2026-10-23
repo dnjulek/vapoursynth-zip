@@ -2,14 +2,17 @@
 //!
 //! Returns `reference` with the per-frame prop SSIMULACRA2. Planar RGB inputs
 //! (8-16 bit int, 32-bit float) are read natively, bit-exact with vszip.
-//! YUV/Gray inputs are converted to float RGB per frame, like zimg on the
-//! VapourSynth side: an internal stage normalizes each frame with its own
-//! `_ColorRange` (limited when unset); subsampled chroma is upsampled by
-//! AviSynth's ConvertToYUV444 (in float; vszip's zimg resampler differs
-//! slightly); then the frame's own `_Matrix` is applied (2 or unset: BT.709
-//! above 650 lines, else BT.601, vszip's default). A YUV reference is then
-//! returned as RGBPS (RGBAPS with its alpha when it has one). The sRGB transfer
-//! is undone in the filter unless frame 0 carries `_Transfer` = 8 (linear).
+//! YUV with 2x or no subsampling (8-16 bit int, 32-bit float) is converted to
+//! RGB row by row inside the filter with vszip's code (filters/ssimulacra2.zig
+//! YuvSetup: each frame's `_ColorRange`, `_Matrix` (2 or unset: BT.709 above
+//! 650 lines, else BT.601) and `_ChromaLocation`, zimg's Bicubic chroma
+//! upsampling), and the reference is returned as is. Gray and other YUV
+//! layouts are converted to float RGB per frame: an internal stage normalizes
+//! each frame with its own `_ColorRange` (limited when unset), AviSynth's
+//! ConvertToYUV444 upsamples other subsamplings, then the frame's `_Matrix`
+//! applies; such a reference is returned as RGBPS (RGBAPS with its alpha). The
+//! sRGB transfer is undone in the filter unless frame 0 carries `_Transfer` =
+//! 8 (linear).
 
 const std = @import("std");
 const math = std.math;
@@ -32,6 +35,13 @@ const Source = struct {
     srgb: bool = true,
     lut: []f32 = &.{},
     yuv: ?Yuv = null,
+    /// YUV converted inside the filter (the clip is read as is)
+    direct: ?filter_ssim.YuvSetup = null,
+
+    fn deinit(self: *Source) void {
+        allocator.free(self.lut);
+        if (self.direct) |*ys| ys.deinit();
+    }
 };
 
 const Yuv = struct {
@@ -54,8 +64,8 @@ const Data = struct {
     pub fn deinit(self: *Data) void {
         for (self.pool.items) |buf| allocator.free(buf);
         self.pool.deinit(allocator);
-        allocator.free(self.src1.lut);
-        allocator.free(self.src2.lut);
+        self.src1.deinit();
+        self.src2.deinit();
         self.other.deinit();
     }
 };
@@ -91,6 +101,32 @@ fn input(src: *const Source, frame: avs.Frame, scratch: *hz.Scratch) !filter_ssi
         planes[p] = can.ptr;
     }
     return .{ .kind = src.kind, .planes = planes, .stride = pitch, .lut = src.lut, .srgb = src.srgb };
+}
+
+/// Input view of a YUV frame converted inside the filter, from that frame's
+/// metadata (AviSynth `_ColorRange`: 0 full, 1 limited).
+fn directInput(ctx: *avs.FrameCtx, src: *const Source, frame: avs.Frame, n: c_int) !filter_ssim.Input {
+    const ys = &src.direct.?;
+    const props = frame.propsRO(ctx.env());
+    const unset = std.math.minInt(i64);
+    const opt = struct {
+        fn f(v: i64) ?i64 {
+            return if (v == unset) null else v;
+        }
+    }.f;
+    const full = props.intOr("_ColorRange", 1) == 0;
+    const m = opt(props.intOr("_Matrix", unset));
+    const y = ys.frame(full, m, opt(props.intOr("_ChromaLocation", unset))) orelse
+        return ctx.fail("frame {d}: unsupported _Matrix {d} (supported: 1, 4, 5, 6, 7, 9; 2 or unset uses BT.709 above 650 lines, else BT.601).", .{ n, m.? });
+    const ids = [3]c_int{ c.AVS_PLANAR_Y, c.AVS_PLANAR_U, c.AVS_PLANAR_V };
+    var planes: [3][*]const u8 = undefined;
+    var strides: [3]usize = undefined;
+    inline for (0..3) |p| {
+        const raw = frame.plane(u8, ids[p]);
+        planes[p] = raw.ptr;
+        strides[p] = raw.pitch;
+    }
+    return filter_ssim.YuvSetup.input(y, planes, strides, src.srgb);
 }
 
 /// YCbCr -> RGB coefficients for normalized full-range input (Y in [0, 1],
@@ -185,8 +221,8 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     const src2 = try ctx.getFrame(d.other.get(), n);
     defer src2.release();
 
-    const in1 = try input(&d.src1, frame, &scratch);
-    const in2: filter_ssim.Input = if (d.src2.yuv) |yuv| blk: {
+    const in1 = if (d.src1.direct != null) try directInput(ctx, &d.src1, frame, n) else try input(&d.src1, frame, &scratch);
+    const in2: filter_ssim.Input = if (d.src2.direct != null) try directInput(ctx, &d.src2, src2, n) else if (d.src2.yuv) |yuv| blk: {
         const pitch: usize = common.ceilN(w * @sizeOf(f32), 64);
         const buf = try scratch.plane(u8, pitch * 3, h);
         const planes = [3][*]u8{ buf.ptr, buf.ptr + pitch * h, buf.ptr + 2 * pitch * h };
@@ -264,6 +300,21 @@ fn prepare(ctx: *avs.Create, clip: avs.Clip, src: *Source) !avs.Clip {
     const f = try hz.planarFormat(ctx, vi);
     var out = clip.retain();
     errdefer out.release();
+    if (f.family == .yuv and filter_ssim.YuvSetup.supports(f.ssw, f.ssh, f.isFloat(), f.bits)) {
+        src.srgb = blk: {
+            const frame = out.getFrame(0) catch break :blk true;
+            defer frame.release();
+            break :blk frame.propsRO(ctx.env).intOr("_Transfer", 2) != 8;
+        };
+        src.kind = .yuv;
+        const sample: filter_ssim.YuvSetup.Sample = switch (f.sample) {
+            .u8 => .u8,
+            .u16 => .u16,
+            .f32 => .f32,
+        };
+        src.direct = try filter_ssim.YuvSetup.init(sample, @intCast(f.bits), @intCast(vi.width), @intCast(vi.height), @intCast(f.ssw), @intCast(f.ssh));
+        return out;
+    }
     if (f.family != .rgb) {
         // Float first, then chroma upsampling, then the matrix: like zimg, no
         // intermediate integer rounding (measured: max |diff| vs zimg 0.003
@@ -323,8 +374,8 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     var d: Data = .{ .other = .{} };
     errdefer {
-        allocator.free(d.src1.lut);
-        allocator.free(d.src2.lut);
+        d.src1.deinit();
+        d.src2.deinit();
     }
     const reference = try prepare(ctx, ref_in, &d.src1);
     defer reference.release();

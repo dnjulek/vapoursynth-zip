@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const hz = @import("../common.zig");
+const simd = @import("simd.zig");
 
 /// Kernel configuration, derived by `Data.init` from the parsed arguments
 /// (shared by the VapourSynth and AviSynth adapters).
@@ -251,11 +252,24 @@ pub fn bilateral(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, 
 }
 
 // O(1) cross/joint bilateral (PBFIC) — "Real-Time O(1) Bilateral Filtering", Yang et al.
+//
+// Streams one PBFIC level at a time instead of keeping all `num` levels as
+// full planes (16-17 planes, ~140 MB per 1080p luma call at the default
+// sigmaR, which made alg1 bandwidth- and page-fault-bound at 16T). Each pixel
+// only interpolates between levels k_i and k_i+1, so level k's result is
+// folded into `acc` (lower term) or finished into dst (upper term) as soon as
+// its row is final. Per level: one forward sweep in 8-row groups (build Wk/Jk,
+// horizontal recursion, vertical forward recursion, all cache-resident) and
+// one backward sweep (vertical backward recursion in a 4-row ring, fused with
+// the divide and the interpolation). Every element sees the same operations
+// in the same order whichever path (vector, scalar tail, 8-row or single-row
+// horizontal) computes it.
 fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: u32, width: u32, height: u32, plane: u32, d: *Data) error{OutOfMemory}!void {
     const is_float = @typeInfo(T) == .float;
     const num = d.PBFICnum[plane];
     const pcount: u32 = stride * height;
     const gr_lut = d.gr_lut[plane];
+    std.debug.assert(num >= 2 and num <= 256);
 
     const pbfick = try allocator.alloc(T, num);
     defer allocator.free(pbfick);
@@ -270,73 +284,191 @@ fn pbfic(comptime T: type, srcp: []const T, refp: []const T, dstp: []T, stride: 
         }
     }
 
-    var b: f32 = undefined;
-    var b1: f32 = undefined;
-    var b2: f32 = undefined;
-    var b3: f32 = undefined;
-    recursiveGaussianParameters(d.sigmaS[plane], &b, &b1, &b2, &b3);
+    var c: Coefs = undefined;
+    recursiveGaussianParameters(d.sigmaS[plane], &c.b, &c.b1, &c.b2, &c.b3);
 
-    // One contiguous backing buffer for all PBFICs (num * pcount), plus Wk/Jk scratch.
-    const pbfic_buf: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, num * pcount);
-    defer allocator.free(pbfic_buf);
     const wk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
     defer allocator.free(wk);
     const jk: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
     defer allocator.free(jk);
+    const acc: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, pcount);
+    defer allocator.free(acc);
+    // backward-recursion ring: 4 rows of Wk, then 4 rows of Jk
+    const ring: AlignedF32 = try allocator.alignedAlloc(f32, vszip.alignment, 8 * @as(usize, stride));
+    defer allocator.free(ring);
+    const kidx = try allocator.alloc(u8, pcount);
+    defer allocator.free(kidx);
+
+    pbficIntervals(T, refp, kidx, pbfick, stride, width, height);
 
     for (0..num) |k| {
-        const pbfic_k = pbfic_buf[k * pcount ..][0..pcount];
         const pk = pbfick[k];
-        // Wk = range weight at this PBFIC level; Jk = Wk*src. (Kept scalar: alg1
-        // is bound by the recursive-Gaussian passes, so vectorizing this builds
-        // measured no faster.)
-        for (0..height) |j| {
-            var i = stride * j;
-            const upper = i + width;
-            while (i < upper) : (i += 1) {
-                wk[i] = gr_lut[rangeIndex(T, pk, refp[i])];
-                jk[i] = wk[i] * valOf(T, srcp[i]);
+
+        var j0: u32 = 0;
+        while (j0 < height) : (j0 += 8) {
+            const rows = @min(8, height - j0);
+            for (j0..j0 + rows) |j| {
+                // Wk = range weight at this PBFIC level; Jk = Wk*src.
+                const lo = stride * j;
+                var i = lo;
+                const pkv: Vec(T) = @splat(pk);
+                while (i + VLEN <= lo + width) : (i += VLEN) {
+                    const wv = vRangeGather(T, gr_lut, pkv, refp[i..][0..VLEN].*);
+                    wk[i..][0..VLEN].* = wv;
+                    jk[i..][0..VLEN].* = wv * vToF(T, @as(Vec(T), srcp[i..][0..VLEN].*));
+                }
+                while (i < lo + width) : (i += 1) {
+                    wk[i] = gr_lut[rangeIndex(T, pk, refp[i])];
+                    jk[i] = wk[i] * valOf(T, srcp[i]);
+                }
             }
+
+            if (rows == 8) {
+                horizontal8(wk, jk, stride * j0, stride, width, c);
+            } else {
+                for (j0..j0 + rows) |j| horizontalRowPair(wk, jk, stride * j, width, c);
+            }
+
+            for (j0..j0 + rows) |j| verticalForwardRow(wk, jk, @intCast(j), stride, width, c);
         }
 
-        recursiveGaussian2DHorizontalPair(wk, jk, height, width, stride, b, b1, b2, b3);
-        recursiveGaussian2DVertical(wk, wk, height, width, stride, b, b1, b2, b3);
-        recursiveGaussian2DVertical(jk, jk, height, width, stride, b, b1, b2, b3);
-
-        // Divide all lanes, then blend the wk==0 lanes to 0: zero lanes only
-        // produce inf/NaN that the select discards, kept lanes are the same
-        // single IEEE division as the scalar tail — bit-exact.
-        const zero: Vf = @splat(0.0);
-        for (0..height) |j| {
-            var i = stride * j;
-            const upper = i + width;
-            while (i + VLEN <= upper) : (i += VLEN) {
-                const wv: Vf = wk[i..][0..VLEN].*;
-                const jv: Vf = jk[i..][0..VLEN].*;
-                pbfic_k[i..][0..VLEN].* = @select(f32, wv == zero, zero, jv / wv);
-            }
-            while (i < upper) : (i += 1) {
-                pbfic_k[i] = if (wk[i] == 0) 0 else (jk[i] / wk[i]);
-            }
+        var j: u32 = height;
+        while (j > 0) {
+            j -= 1;
+            pbficBackwardRow(T, wk, jk, ring, acc, kidx, refp, dstp, pbfick, @intCast(k), j, stride, width, height, c, d.peak);
         }
     }
+}
 
+const Coefs = struct { b: f32, b1: f32, b2: f32, b3: f32 };
+
+/// One recursive-Gaussian tap: b*x + b1*y1 + b2*y2 + b3*y3, where y1 is the
+/// previous output along the recursion. Associated so that only the last FMA
+/// depends on y1: the horizontal recursion is a loop-carried chain, and this
+/// cuts its per-step latency from mul+3 adds to one FMA.
+inline fn rec(comptime V: type, x: V, y1: V, y2: V, y3: V, c: Coefs) V {
+    const sp = struct {
+        inline fn f(v: f32) V {
+            return if (V == f32) v else @splat(v);
+        }
+    }.f;
+    return simd.madd(V, sp(c.b1), y1, simd.madd(V, sp(c.b2), y2, simd.madd(V, sp(c.b3), y3, sp(c.b) * x)));
+}
+
+/// k_i per pixel: the first k in [0, num-2) with pbfick[k] <= r < pbfick[k+1],
+/// else num-2 (also for r below pbfick[0], or NaN). pbfick is strictly
+/// increasing, so that is min(#{j >= 1 : pbfick[j] <= r}, num-2) when
+/// r >= pbfick[0]. Compared in f32, which is exact for every T.
+fn pbficIntervals(comptime T: type, refp: []const T, kidx: []u8, pbfick: []const T, stride: u32, width: u32, height: u32) void {
+    const num: u32 = @intCast(pbfick.len);
+    const last: Vu = @splat(num - 2);
+    const p0: Vf = @splat(valOf(T, pbfick[0]));
     for (0..height) |j| {
-        var i = stride * j;
-        const upper = i + width;
-        while (i < upper) : (i += 1) {
+        const lo = stride * j;
+        var i = lo;
+        while (i + VLEN <= lo + width) : (i += VLEN) {
+            const r = vToF(T, @as(Vec(T), refp[i..][0..VLEN].*));
+            var cnt: Vu = @splat(0);
+            for (pbfick[1..]) |p| cnt += @intFromBool(r >= @as(Vf, @splat(valOf(T, p))));
+            const kv = @select(u32, r >= p0, @min(cnt, last), last);
+            const kb: @Vector(VLEN, u8) = @intCast(kv);
+            kidx[i..][0..VLEN].* = kb;
+        }
+        while (i < lo + width) : (i += 1) {
             var k: u32 = 0;
             while (k < (num - 2)) : (k += 1) {
                 if ((refp[i] < pbfick[k + 1]) and (refp[i] >= pbfick[k])) break;
             }
+            kidx[i] = @intCast(k);
+        }
+    }
+}
 
-            const rf: f32 = valOf(T, refp[i]);
-            const p0f: f32 = valOf(T, pbfick[k]);
-            const p1f: f32 = valOf(T, pbfick[k + 1]);
-            const lo = pbfic_buf[k * pcount + i];
-            const hi = pbfic_buf[(k + 1) * pcount + i];
-            const vf: f32 = ((p1f - rf) * lo + (rf - p0f) * hi) / (p1f - p0f);
-            dstp[i] = finalize(T, vf, @as(f32, 1.0), d.peak);
+/// Row `cur + off` (clamped to the last row) as seen by the in-place backward
+/// recursion: rows past the bottom alias the current row, whose value at that
+/// point is still the forward result; later rows are already in the ring.
+inline fn backwardSrc(ring: []const f32, fwd: []const f32, stride: u32, height: u32, cur: u32, comptime off: u32, half: u32) []const f32 {
+    const row = @min(cur + off, height - 1);
+    if (row == cur) return fwd[@as(usize, stride) * cur ..];
+    return ring[(half * 4 + row % 4) * @as(usize, stride) ..];
+}
+
+/// Row j of the backward vertical recursion for Wk and Jk, then
+/// PBFIC_k = Jk/Wk (0 where Wk == 0) and its interpolation term: the lower
+/// term goes to `acc` for pixels with k_i == k, and pixels with k_i == k-1
+/// are finished into dst.
+fn pbficBackwardRow(comptime T: type, wk: []const f32, jk: []const f32, ring: []f32, acc: []f32, kidx: []const u8, refp: []const T, dstp: []T, pbfick: []const T, k: u32, j: u32, stride: u32, width: u32, height: u32, c: Coefs, peak: f32) void {
+    const num: u32 = @intCast(pbfick.len);
+    const lower: usize = @as(usize, stride) * j;
+    const w0 = wk[lower..];
+    const q0 = jk[lower..];
+    const w1 = backwardSrc(ring, wk, stride, height, j, 1, 0);
+    const w2 = backwardSrc(ring, wk, stride, height, j, 2, 0);
+    const w3 = backwardSrc(ring, wk, stride, height, j, 3, 0);
+    const q1 = backwardSrc(ring, jk, stride, height, j, 1, 1);
+    const q2 = backwardSrc(ring, jk, stride, height, j, 2, 1);
+    const q3 = backwardSrc(ring, jk, stride, height, j, 3, 1);
+    const wout = ring[(j % 4) * @as(usize, stride) ..];
+    const qout = ring[(4 + j % 4) * @as(usize, stride) ..];
+    const kr = kidx[lower..];
+    const rr = refp[lower..];
+    const ar = acc[lower..];
+    const dr = dstp[lower..];
+
+    const has_lo = k + 1 < num; // k_i == k needs pbfick[k + 1]
+    const has_hi = k > 0; //       k_i == k-1 needs pbfick[k - 1]
+    const lo_p1: f32 = if (has_lo) valOf(T, pbfick[k + 1]) else 0;
+    const hi_p0: f32 = if (has_hi) valOf(T, pbfick[k - 1]) else 0;
+    const hi_p1: f32 = valOf(T, pbfick[k]);
+    const k_lo: u8 = @truncate(k);
+    const k_hi: u8 = @truncate(k -% 1);
+
+    const zero: Vf = @splat(0.0);
+    const peakv: Vf = @splat(peak);
+    const Vk = @Vector(VLEN, u8);
+
+    var x: usize = 0;
+    while (x + VLEN <= width) : (x += VLEN) {
+        const wv = rec(Vf, w0[x..][0..VLEN].*, w1[x..][0..VLEN].*, w2[x..][0..VLEN].*, w3[x..][0..VLEN].*, c);
+        const qv = rec(Vf, q0[x..][0..VLEN].*, q1[x..][0..VLEN].*, q2[x..][0..VLEN].*, q3[x..][0..VLEN].*, c);
+        wout[x..][0..VLEN].* = wv;
+        qout[x..][0..VLEN].* = qv;
+        // Only lanes with k_i in {k-1, k} use this level. Real content is
+        // smooth, so most vectors have none: skipping them saves the divide
+        // and the ref/acc/dst traffic (alg1 is bandwidth-bound at 16T).
+        // k_hi wraps to 255 at k == 0, where only k_i == 0 passes.
+        const ki: Vk = kr[x..][0..VLEN].*;
+        if (!@reduce(.Or, ki -% @as(Vk, @splat(k_hi)) < @as(Vk, @splat(2)))) continue;
+        // Divide all lanes, then blend the wk==0 lanes to 0: zero lanes only
+        // produce inf/NaN that the select discards (== the scalar tail).
+        const p = @select(f32, wv == zero, zero, qv / wv);
+        const rf = vToF(T, @as(Vec(T), rr[x..][0..VLEN].*));
+        const av: Vf = ar[x..][0..VLEN].*;
+        if (has_hi) {
+            const m = ki == @as(Vk, @splat(k_hi));
+            if (@reduce(.Or, m)) {
+                const vf = (av + (rf - @as(Vf, @splat(hi_p0))) * p) / @as(Vf, @splat(hi_p1 - hi_p0));
+                const old: Vec(T) = dr[x..][0..VLEN].*;
+                dr[x..][0..VLEN].* = @select(T, m, vFinalize(T, vf, @as(Vf, @splat(1.0)), peakv), old);
+            }
+        }
+        if (has_lo) {
+            const m = ki == @as(Vk, @splat(k_lo));
+            if (@reduce(.Or, m)) ar[x..][0..VLEN].* = @select(f32, m, (@as(Vf, @splat(lo_p1)) - rf) * p, av);
+        }
+    }
+    while (x < width) : (x += 1) {
+        const wv = rec(f32, w0[x], w1[x], w2[x], w3[x], c);
+        const qv = rec(f32, q0[x], q1[x], q2[x], q3[x], c);
+        wout[x] = wv;
+        qout[x] = qv;
+        const p: f32 = if (wv == 0) 0 else (qv / wv);
+        const rf: f32 = valOf(T, rr[x]);
+        if (has_hi and kr[x] == k_hi) {
+            const vf: f32 = (ar[x] + (rf - hi_p0) * p) / (hi_p1 - hi_p0);
+            dr[x] = finalize(T, vf, @as(f32, 1.0), peak);
+        } else if (has_lo and kr[x] == k_lo) {
+            ar[x] = (lo_p1 - rf) * p;
         }
     }
 }
@@ -518,147 +650,158 @@ fn recursiveGaussianParameters(sigma: f64, b: *f32, b1: *f32, b2: *f32, b3: *f32
     b3.* = @floatCast(n3 / den);
 }
 
-// The y-recurrence is per COLUMN: within a row every x is independent, so the
-// x loops run VLEN columns at a time (lanes = columns, per-lane op order equal
-// to the scalar loop => bit-exact). LLVM won't auto-vectorize this itself only
-// because output==input in-place aliasing hides the independence. All row
-// loads happen before the store — same read-before-write as scalar, so the
-// aliased rows (x1..x3 clamped onto x0's own row at the borders) stay exact.
-fn recursiveGaussian2DVertical(output: []f32, input: []const f32, height: u32, width: u32, stride: u32, b: f32, b1: f32, b2: f32, b3: f32) void {
-    if (output.ptr != input.ptr) {
-        @memcpy(output[0..width], input[0..width]);
-    }
+// Forward vertical recursion of row j for both buffers, in place. The
+// y-recurrence is per COLUMN, so the x loop runs VLEN columns at a time (lanes
+// = columns, same per-lane ops as the scalar tail). All row
+// loads happen before the store, so rows clamped onto x0's own row at the top
+// read the pre-store value, as in scalar.
+fn verticalForwardRow(a: []f32, q: []f32, j: u32, stride: u32, width: u32, c: Coefs) void {
+    const lower: usize = @as(usize, stride) * j;
+    const upper: usize = lower + width;
+    var x0: usize = lower;
+    var x1: usize = if (j < 1) x0 else (x0 - stride);
+    var x2: usize = if (j < 2) x1 else (x1 - stride);
+    var x3: usize = if (j < 3) x2 else (x2 - stride);
 
-    const bv: Vf = @splat(b);
-    const b1v: Vf = @splat(b1);
-    const b2v: Vf = @splat(b2);
-    const b3v: Vf = @splat(b3);
-
-    for (0..height) |j| {
-        const lower: usize = stride * j;
-        const upper: usize = lower + width;
-
-        var x0: usize = lower;
-        var x1: usize = if (j < 1) x0 else (x0 - stride);
-        var x2: usize = if (j < 2) x1 else (x1 - stride);
-        var x3: usize = if (j < 3) x2 else (x2 - stride);
-
-        while (x0 + VLEN <= upper) : ({
-            x0 += VLEN;
-            x1 += VLEN;
-            x2 += VLEN;
-            x3 += VLEN;
-        }) {
-            const in0: Vf = input[x0..][0..VLEN].*;
-            const o1: Vf = output[x1..][0..VLEN].*;
-            const o2: Vf = output[x2..][0..VLEN].*;
-            const o3: Vf = output[x3..][0..VLEN].*;
-            output[x0..][0..VLEN].* = bv * in0 + b1v * o1 + b2v * o2 + b3v * o3;
-        }
-
-        while (x0 < upper) : ({
-            x0 += 1;
-            x1 += 1;
-            x2 += 1;
-            x3 += 1;
-        }) {
-            output[x0] = b * input[x0] + b1 * output[x1] + b2 * output[x2] + b3 * output[x3];
+    while (x0 + VLEN <= upper) : ({
+        x0 += VLEN;
+        x1 += VLEN;
+        x2 += VLEN;
+        x3 += VLEN;
+    }) {
+        inline for (.{ a, q }) |buf| {
+            buf[x0..][0..VLEN].* = rec(Vf, buf[x0..][0..VLEN].*, buf[x1..][0..VLEN].*, buf[x2..][0..VLEN].*, buf[x3..][0..VLEN].*, c);
         }
     }
-
-    var i: i32 = @bitCast(height - 1);
-    while (i >= 0) : (i -= 1) {
-        const j: u32 = @bitCast(i);
-        const lower: u32 = stride * j;
-        const upper: u32 = lower + width;
-
-        // `j + k >= height`, not `j >= height - k`: the subtraction wraps for
-        // planes under 3 rows (the original's signed ints made it negative,
-        // so every such row clamps onto x0's side, as here).
-        var x0: u32 = lower;
-        var x1: u32 = if (j + 1 >= height) x0 else (x0 + stride);
-        var x2: u32 = if (j + 2 >= height) x1 else (x1 + stride);
-        var x3: u32 = if (j + 3 >= height) x2 else (x2 + stride);
-
-        while (x0 + VLEN <= upper) : ({
-            x0 += VLEN;
-            x1 += VLEN;
-            x2 += VLEN;
-            x3 += VLEN;
-        }) {
-            const o0: Vf = output[x0..][0..VLEN].*;
-            const o1: Vf = output[x1..][0..VLEN].*;
-            const o2: Vf = output[x2..][0..VLEN].*;
-            const o3: Vf = output[x3..][0..VLEN].*;
-            output[x0..][0..VLEN].* = bv * o0 + b1v * o1 + b2v * o2 + b3v * o3;
-        }
-
-        while (x0 < upper) : ({
-            x0 += 1;
-            x1 += 1;
-            x2 += 1;
-            x3 += 1;
-        }) {
-            output[x0] = b * output[x0] + b1 * output[x1] + b2 * output[x2] + b3 * output[x3];
+    while (x0 < upper) : ({
+        x0 += 1;
+        x1 += 1;
+        x2 += 1;
+        x3 += 1;
+    }) {
+        inline for (.{ a, q }) |buf| {
+            buf[x0] = rec(f32, buf[x0], buf[x1], buf[x2], buf[x3], c);
         }
     }
 }
 
-// In-place horizontal pass over TWO buffers at once (pbfic always filters wk
-// and jk with the same coefficients). The x recurrence is genuinely
-// loop-carried and latency-bound (~10 cycles/px mul+add chain); carrying both
-// independent chains in one loop lets them overlap in the OoO core. Each
-// buffer keeps the exact single-buffer op order — bit-exact.
-fn recursiveGaussian2DHorizontalPair(buf_a: []f32, buf_c: []f32, height: u32, width: u32, stride: u32, b: f32, b1: f32, b2: f32, b3: f32) void {
-    for (0..height) |j| {
-        const lower: usize = stride * j;
-        const upper: usize = lower + width;
+const V8 = @Vector(8, f32);
 
-        var i: usize = lower;
-        var a1: f32 = buf_a[i];
-        var a2: f32 = a1;
-        var a3: f32 = a2;
-        var c1: f32 = buf_c[i];
-        var c2: f32 = c1;
-        var c3: f32 = c2;
-        buf_a[i] = a3;
-        buf_c[i] = c3;
-        i += 1;
+/// One step of the recursion: returns y[n] and shifts the state.
+inline fn recStep(x: V8, s: *[3]V8, c: Coefs) V8 {
+    const y = rec(V8, x, s[0], s[1], s[2], c);
+    s[2] = s[1];
+    s[1] = s[0];
+    s[0] = y;
+    return y;
+}
 
-        while (i < upper) : (i += 1) {
-            const a0 = b * buf_a[i] + b1 * a1 + b2 * a2 + b3 * a3;
-            const c0 = b * buf_c[i] + b1 * c1 + b2 * c2 + b3 * c3;
-            a3 = a2;
-            a2 = a1;
-            a1 = a0;
-            buf_a[i] = a0;
-            c3 = c2;
-            c2 = c1;
-            c1 = c0;
-            buf_c[i] = c0;
-        }
+inline fn loadCol(buf: []const f32, base: usize, stride: u32, x: usize) V8 {
+    var v: V8 = undefined;
+    inline for (0..8) |r| v[r] = buf[base + r * stride + x];
+    return v;
+}
 
-        i -= 1;
-        a1 = buf_a[i];
-        a2 = a1;
+inline fn storeCol(buf: []f32, base: usize, stride: u32, x: usize, v: V8) void {
+    inline for (0..8) |r| buf[base + r * stride + x] = v[r];
+}
+
+/// One 8x8 tile of the horizontal recursion: rows in, transposed to columns,
+/// 8 steps (ascending or descending x), transposed back.
+fn horizontalTile(comptime ascending: bool, buf: []f32, base: usize, stride: u32, x: usize, st: *[3]V8, c: Coefs) void {
+    @setEvalBranchQuota(100_000); // two inlined asm transposes (comptimePrint per instruction)
+    var rows: [8]V8 = undefined;
+    inline for (0..8) |r| rows[r] = buf[base + r * stride + x ..][0..8].*;
+    var cols = simd.transposeF32Reg(8, rows);
+    inline for (0..8) |s| {
+        const i = if (ascending) s else 7 - s;
+        cols[i] = recStep(cols[i], st, c);
+    }
+    rows = simd.transposeF32Reg(8, cols);
+    inline for (0..8) |r| buf[base + r * stride + x ..][0..8].* = rows[r];
+}
+
+/// In-place horizontal recursion (causal, then anti-causal) of 8 rows of both
+/// buffers, lanes = rows. The x recurrence is loop-carried (one
+/// FMA per step, see `rec`), so the per-row scalar loop is latency-bound;
+/// here each step advances 8 rows, and 8x8 in-register transposes turn row
+/// loads into column vectors. Same per-lane ops as `horizontalRowPair`.
+fn horizontal8(a: []f32, q: []f32, base: usize, stride: u32, width: u32, c: Coefs) void {
+    var sa: [3]V8 = @splat(loadCol(a, base, stride, 0));
+    var sq: [3]V8 = @splat(loadCol(q, base, stride, 0));
+    var x: usize = 1;
+    while (x + 8 <= width) : (x += 8) {
+        horizontalTile(true, a, base, stride, x, &sa, c);
+        horizontalTile(true, q, base, stride, x, &sq, c);
+    }
+    while (x < width) : (x += 1) {
+        storeCol(a, base, stride, x, recStep(loadCol(a, base, stride, x), &sa, c));
+        storeCol(q, base, stride, x, recStep(loadCol(q, base, stride, x), &sq, c));
+    }
+
+    if (width < 2) return;
+    sa = @splat(loadCol(a, base, stride, width - 1));
+    sq = @splat(loadCol(q, base, stride, width - 1));
+    var e: usize = width - 1; // columns [0, e) remain, processed from e-1 down
+    while (e >= 8) : (e -= 8) {
+        horizontalTile(false, a, base, stride, e - 8, &sa, c);
+        horizontalTile(false, q, base, stride, e - 8, &sq, c);
+    }
+    while (e > 0) {
+        e -= 1;
+        storeCol(a, base, stride, e, recStep(loadCol(a, base, stride, e), &sa, c));
+        storeCol(q, base, stride, e, recStep(loadCol(q, base, stride, e), &sq, c));
+    }
+}
+
+// Scalar in-place horizontal recursion of one row of both buffers: the
+// semantic reference for `horizontal8`, used for the last < 8 rows. Carrying
+// both independent chains in one loop lets them overlap in the OoO core.
+fn horizontalRowPair(buf_a: []f32, buf_c: []f32, lower: usize, width: u32, c: Coefs) void {
+    const upper: usize = lower + width;
+
+    var i: usize = lower;
+    var a1: f32 = buf_a[i];
+    var a2: f32 = a1;
+    var a3: f32 = a2;
+    var c1: f32 = buf_c[i];
+    var c2: f32 = c1;
+    var c3: f32 = c2;
+    i += 1;
+
+    while (i < upper) : (i += 1) {
+        const a0 = rec(f32, buf_a[i], a1, a2, a3, c);
+        const c0 = rec(f32, buf_c[i], c1, c2, c3, c);
         a3 = a2;
-        c1 = buf_c[i];
-        c2 = c1;
+        a2 = a1;
+        a1 = a0;
+        buf_a[i] = a0;
         c3 = c2;
-        if (i == lower) continue;
-        i -= 1;
-        while (true) : (i -= 1) {
-            const a0 = b * buf_a[i] + b1 * a1 + b2 * a2 + b3 * a3;
-            const c0 = b * buf_c[i] + b1 * c1 + b2 * c2 + b3 * c3;
-            a3 = a2;
-            a2 = a1;
-            a1 = a0;
-            buf_a[i] = a0;
-            c3 = c2;
-            c2 = c1;
-            c1 = c0;
-            buf_c[i] = c0;
-            if (i == lower) break;
-        }
+        c2 = c1;
+        c1 = c0;
+        buf_c[i] = c0;
+    }
+
+    i -= 1;
+    a1 = buf_a[i];
+    a2 = a1;
+    a3 = a2;
+    c1 = buf_c[i];
+    c2 = c1;
+    c3 = c2;
+    if (i == lower) return;
+    i -= 1;
+    while (true) : (i -= 1) {
+        const a0 = rec(f32, buf_a[i], a1, a2, a3, c);
+        const c0 = rec(f32, buf_c[i], c1, c2, c3, c);
+        a3 = a2;
+        a2 = a1;
+        a1 = a0;
+        buf_a[i] = a0;
+        c3 = c2;
+        c2 = c1;
+        c1 = c0;
+        buf_c[i] = c0;
+        if (i == lower) break;
     }
 }

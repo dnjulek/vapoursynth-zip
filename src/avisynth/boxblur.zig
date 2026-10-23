@@ -115,7 +115,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const gf = if (use_rt) switch (format.sample) {
         inline else => |s| F.getFrame(BoxBlurRT(s.Type()).getFrame),
     } else switch (d.p.hradius) {
-        inline 1...8 => |r| F.getFrame(BoxBlurCT(f32, r).getFrame),
+        inline 1...boxblur_rt.Params.ct_max_radius => |r| F.getFrame(BoxBlurCT(f32, r).getFrame),
         else => unreachable,
     };
 

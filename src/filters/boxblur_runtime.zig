@@ -1,6 +1,7 @@
 //! BoxBlur with runtime radius size
 
 const std = @import("std");
+const common = @import("../common.zig");
 const math = std.math;
 const simd = @import("simd.zig");
 const ct = @import("boxblur_comptime.zig");
@@ -149,7 +150,7 @@ const use_strip = strip_n > 1;
 pub fn Scratch(comptime T: type) type {
     return struct {
         const Self = @This();
-        block: []align(64) u8,
+        block: []align(common.vec_len) u8,
         temp1: []T, // blur_passes row ping-pong (tmp_size)
         temp2: []T,
         sums: []u32, // vertical running column sums (u32 or f32 bits)
@@ -174,13 +175,13 @@ pub fn Scratch(comptime T: type) type {
                 @as(usize, vpasses -| 1) * chain_rows * w * @sizeOf(T),
             };
             var total: usize = 0;
-            for (sizes) |sz| total += std.mem.alignForward(usize, sz, 64);
-            const block = try allocator.alignedAlloc(u8, .@"64", total);
+            for (sizes) |sz| total += std.mem.alignForward(usize, sz, common.vec_len);
+            const block = try allocator.alignedAlloc(u8, common.alignment, total);
             var off: usize = 0;
-            var parts: [sizes.len][]align(64) u8 = undefined;
+            var parts: [sizes.len][]align(common.vec_len) u8 = undefined;
             for (sizes, &parts) |sz, *part| {
                 part.* = @alignCast(block[off..][0..sz]);
-                off += std.mem.alignForward(usize, sz, 64);
+                off += std.mem.alignForward(usize, sz, common.vec_len);
             }
             return .{
                 .block = block,
@@ -912,18 +913,23 @@ pub const Params = struct {
     /// 2026-07-03 on Zen 3 (callgrind Ir at every radius + 3-rep wall-clock):
     ///  - integer: RT wins at every radius (Ir -7..-19%, wall >= CT incl. the
     ///    default r=1), so int always takes RT;
-    ///  - float: CT's O(ksize) tap kernels only beat the (scalar-h) running sum
-    ///    below ~r9 on this box; from r>=9 RT is 1.5-2.7x. CT therefore remains
-    ///    for float radius 1..8 only.
+    ///  - float: CT's O(ksize) tap kernels only beat the running sum at small
+    ///    radii. Re-measured 2026-10-23 after RT's float h-blur went to
+    ///    row-per-lane strips (YUV420PS 1080p, 1T fps CT/RT): r1 834/603,
+    ///    r2 736/603, r3 627/603, r4 518/602, r8 248/598; 16T is
+    ///    bandwidth-bound (~1300) for both. CT therefore remains for float
+    ///    radius 1..3 only.
     ///  - !hblur/!vblur must take RT: CT's hvBlur applies both directions
     ///    unconditionally (an hpasses=0 request used to get h-blurred anyway).
     /// Boundary moves change outputs slightly (CT and RT differ in pass order,
     /// fixed-point rounding and edge-mirror convention: interior <=2 LSB int /
     /// ~1e-5 f32, edge bands up to ~0.1% of range) — the same difference that
     /// always existed across the old r22 boundary.
+    pub const ct_max_radius = 3;
+
     pub fn useRT(p: Params, is_float: bool) bool {
         return !p.hblurOn() or !p.vblurOn() or !is_float or
-            (p.hradius != p.vradius) or (p.hradius > 8) or
+            (p.hradius != p.vradius) or (p.hradius > ct_max_radius) or
             (p.hpasses > 1) or (p.vpasses > 1);
     }
 };

@@ -42,14 +42,29 @@ const skip_table: [3][6]SkipInfo = blk: {
 /// native sample type, decoded to linear light one row at a time (so no
 /// linear plane is ever stored).
 pub const Input = struct {
-    pub const Kind = enum { u8, u16, f32 };
+    pub const Kind = enum { u8, u16, f32, yuv };
     kind: Kind,
     planes: [3][*]const u8,
-    stride: usize, // bytes
+    stride: usize, // bytes (RGB kinds)
     /// integer kinds: sample -> linear light (see buildLut)
     lut: []const f32 = &.{},
-    /// f32 kind: decode with the sRGB transfer (false: already linear)
+    /// f32 and yuv kinds: decode with the sRGB transfer (false: already linear)
     srgb: bool = true,
+    /// yuv kind: per-plane strides in bytes, and the conversion
+    strides: [3]usize = .{ 0, 0, 0 },
+    yuv: Yuv = undefined,
+
+    /// The three linear RGB rows of source row y.
+    fn rows(self: *const Input, y: u32, dst: [3][]f32, w: u32, h: u32, tmp: [4][]f32) void {
+        if (self.kind == .yuv) {
+            yuvRow(self, y, dst, w, h, tmp);
+            for (0..3) |c| {
+                if (self.srgb) linearizeRow(dst[c][0..w], dst[c][0..w]);
+            }
+            return;
+        }
+        for (0..3) |c| self.row(c, y, dst[c], w);
+    }
 
     fn row(self: Input, c: usize, y: u32, dst: []f32, w: u32) void {
         const base = self.planes[c] + y * self.stride;
@@ -65,9 +80,348 @@ pub const Input = struct {
                 const sp: [*]const f32 = @ptrCast(@alignCast(base));
                 if (self.srgb) linearizeRow(sp[0..w], dst[0..w]) else @memcpy(dst[0..w], sp[0..w]);
             },
+            .yuv => unreachable,
         }
     }
 };
+
+/// YUV input converted to RGB inside the scale-0 sweep, one row at a time,
+/// instead of through a resize.Bicubic(format=RGBS) node: those intermediate
+/// 1080p RGBS frames cost ~2.3 GB at 16 threads (they queue behind this slow
+/// consumer) and a third of the throughput. Same steps as zimg's graph:
+/// samples normalized to float (range from the frame), chroma upsampled with
+/// Bicubic b=0 c=0.5 (Catmull-Rom) at zimg's chroma-location phases with
+/// mirrored borders, then the YUV -> RGB matrix. Not bit-exact with zimg
+/// (rounding order), ~1e-7 on the RGB values.
+pub const Yuv = struct {
+    sample: enum { u8, u16, f32 },
+    /// 2x chroma subsampling per axis
+    ssw: bool,
+    ssh: bool,
+    cw: u32,
+    ch: u32,
+    /// normalized value = v * mul + add (float samples: 1, 0)
+    y_mul: f32 = 1,
+    y_add: f32 = 0,
+    c_mul: f32 = 1,
+    c_add: f32 = 0,
+    /// R = Y + cr_r*V, G = Y + cb_g*U + cr_g*V, B = Y + cb_b*U
+    cr_r: f32,
+    cb_g: f32,
+    cr_g: f32,
+    cb_b: f32,
+    /// ssw: taps of each output column (len = luma width)
+    htab: []const Tap = &.{},
+    /// ssh: chroma-location shift of the vertical source position
+    vshift: f64 = 0,
+
+    /// Range normalization of a `bits`-deep integer clip (zimg's: limited
+    /// Y (v - 16k)/219k, C (v - 128k)/224k with k = 2^(bits-8); full Y
+    /// v/(2^bits - 1), C (v - 2^(bits-1))/(2^bits - 1)).
+    pub fn setRange(y: *Yuv, bits_in: u8, full: bool) void {
+        if (y.sample == .f32) return;
+        std.debug.assert(bits_in >= 8 and bits_in <= 16);
+        const bits: u5 = @intCast(bits_in);
+        const k: f64 = @floatFromInt(@as(u32, 1) << (bits - 8));
+        const peak: f64 = @floatFromInt((@as(u32, 1) << bits) - 1);
+        if (full) {
+            y.y_mul = @floatCast(1.0 / peak);
+            y.y_add = 0;
+            y.c_mul = @floatCast(1.0 / peak);
+            y.c_add = @floatCast(-128.0 * k / peak);
+        } else {
+            y.y_mul = @floatCast(1.0 / (219.0 * k));
+            y.y_add = @floatCast(-16.0 / 219.0);
+            y.c_mul = @floatCast(1.0 / (224.0 * k));
+            y.c_add = @floatCast(-128.0 / 224.0);
+        }
+    }
+
+    /// Luma weights (kr, kb) of a VapourSynth/zimg non-constant-luminance
+    /// matrix, null for the others (RGB, YCgCo, 2020 CL, ICtCp, ...).
+    pub fn matrixWeights(m: i64) ?[2]f64 {
+        return switch (m) {
+            1 => .{ 0.2126, 0.0722 }, // BT.709
+            4 => .{ 0.30, 0.11 }, // FCC
+            5, 6 => .{ 0.299, 0.114 }, // BT.470BG, ST 170M
+            7 => .{ 0.212, 0.087 }, // ST 240M
+            9 => .{ 0.2627, 0.0593 }, // BT.2020 NCL
+            else => null,
+        };
+    }
+
+    /// YUV -> RGB coefficients for luma weights kr, kb (ncl).
+    pub fn setMatrix(y: *Yuv, kr: f64, kb: f64) void {
+        const kg = 1.0 - kr - kb;
+        y.cr_r = @floatCast(2.0 * (1.0 - kr));
+        y.cb_b = @floatCast(2.0 * (1.0 - kb));
+        y.cb_g = @floatCast(-2.0 * kb * (1.0 - kb) / kg);
+        y.cr_g = @floatCast(-2.0 * kr * (1.0 - kr) / kg);
+    }
+
+    inline fn sampleV(y: *const Yuv, base: [*]const u8, x: usize, comptime n: comptime_int, mul: f32, add: f32) @Vector(n, f32) {
+        const V = @Vector(n, f32);
+        const raw: V = switch (y.sample) {
+            .u8 => @floatFromInt(@as(@Vector(n, u8), base[x..][0..n].*)),
+            .u16 => @floatFromInt(@as(@Vector(n, u16), @as([*]const u16, @ptrCast(@alignCast(base)))[x..][0..n].*)),
+            .f32 => return @as([*]const f32, @ptrCast(@alignCast(base)))[x..][0..n].*,
+        };
+        return simd.madd(V, raw, @splat(mul), @splat(add));
+    }
+
+    inline fn sample1(y: *const Yuv, base: [*]const u8, x: usize, mul: f32, add: f32) f32 {
+        return sampleV(y, base, x, 1, mul, add)[0];
+    }
+};
+
+/// Per-clip state of a YUV input; `frame` makes each frame's `Yuv` from its
+/// metadata, with the rules of VapourSynth's resize (R80): the frame's
+/// _Matrix over the default (BT.709 above 650 rows, else BT.601, toRGBS's
+/// choice), range limited and chroma left-sited when unset.
+pub const YuvSetup = struct {
+    template: Yuv,
+    /// integer sample depth (8-16; 32 for float, unused)
+    bits: u8,
+    default_matrix: i64,
+    htab_left: []Tap = &.{},
+    htab_center: []Tap = &.{},
+
+    pub const Sample = @FieldType(Yuv, "sample");
+
+    /// The formats the in-filter conversion takes: 2x or no subsampling per
+    /// axis, 8-16 bit int or f32 samples.
+    pub fn supports(ssw: u32, ssh: u32, float: bool, bits: u32) bool {
+        return ssw <= 1 and ssh <= 1 and (if (float) bits == 32 else bits >= 8 and bits <= 16);
+    }
+
+    pub fn init(sample: Sample, bits: u8, w: u32, h: u32, ssw: u1, ssh: u1) error{OutOfMemory}!YuvSetup {
+        var s: YuvSetup = .{
+            .template = .{
+                .sample = sample,
+                .ssw = ssw == 1,
+                .ssh = ssh == 1,
+                .cw = w >> ssw,
+                .ch = h >> ssh,
+                .cr_r = undefined,
+                .cb_g = undefined,
+                .cr_g = undefined,
+                .cb_b = undefined,
+            },
+            .bits = bits,
+            .default_matrix = if (h > 650) 1 else 6,
+        };
+        if (ssw == 1) {
+            s.htab_left = try allocator.alloc(Tap, w);
+            errdefer allocator.free(s.htab_left);
+            s.htab_center = try allocator.alloc(Tap, w);
+            // chroma k sits at luma 2k (left) or 2k + 0.5 (center)
+            buildTaps(s.htab_left, s.template.cw, 0.25);
+            buildTaps(s.htab_center, s.template.cw, 0);
+        }
+        return s;
+    }
+
+    pub fn deinit(s: *YuvSetup) void {
+        allocator.free(s.htab_left);
+        allocator.free(s.htab_center);
+        s.htab_left = &.{};
+        s.htab_center = &.{};
+    }
+
+    /// Whether a frame's _Matrix (null: unset) can be converted.
+    pub fn matrixOk(matrix: ?i64) bool {
+        const m = matrix orelse return true;
+        return m == 2 or Yuv.matrixWeights(m) != null;
+    }
+
+    /// The conversion of one frame; null for an unsupported _Matrix.
+    /// `loc`: zimg chroma location (0 left, 1 center, 2 top-left, 3 top,
+    /// 4 bottom-left, 5 bottom).
+    pub fn frame(s: *const YuvSetup, full: bool, matrix: ?i64, loc: ?i64) ?Yuv {
+        var y = s.template;
+        y.setRange(s.bits, full);
+        const m = matrix orelse 2;
+        const kw = if (m == 2) Yuv.matrixWeights(s.default_matrix).? else Yuv.matrixWeights(m) orelse return null;
+        y.setMatrix(kw[0], kw[1]);
+        const l = loc orelse 0;
+        y.htab = if (l == 1 or l == 3 or l == 5) s.htab_center else s.htab_left;
+        y.vshift = switch (l) {
+            2, 3 => 0.25,
+            4, 5 => -0.25,
+            else => 0,
+        };
+        return y;
+    }
+
+    /// Input view of a YUV frame's planes (per-plane byte strides).
+    pub fn input(y: Yuv, planes: [3][*]const u8, strides: [3]usize, is_srgb: bool) Input {
+        return .{ .kind = .yuv, .planes = planes, .stride = 0, .strides = strides, .srgb = is_srgb, .yuv = y };
+    }
+};
+
+/// One output sample's 4 source taps (mirrored at the borders).
+pub const Tap = struct { idx: [4]u32, w: [4]f32 };
+
+/// Catmull-Rom (Bicubic b=0, c=0.5).
+fn catmullRom(x: f64) f64 {
+    const a = @abs(x);
+    if (a < 1) return (1.5 * a - 2.5) * a * a + 1;
+    if (a < 2) return ((-0.5 * a + 2.5) * a - 4) * a + 2;
+    return 0;
+}
+
+/// zimg's source position of output sample i when upsampling src_n -> dst_n
+/// with the chroma-location shift (in source samples).
+fn srcPos(i: u32, src_n: u32, dst_n: u32, shift: f64) f64 {
+    return (@as(f64, @floatFromInt(i)) + 0.5) * @as(f64, @floatFromInt(src_n)) / @as(f64, @floatFromInt(dst_n)) - 0.5 + shift;
+}
+
+/// zimg's border: mirrored with the edge sample repeated (-1 -> 0, n -> n-1).
+fn mirror(j: i64, n: u32) u32 {
+    const last: i64 = @as(i64, n) - 1;
+    var m = j;
+    if (m < 0) m = -m - 1;
+    if (m > last) m = 2 * last + 1 - m;
+    return @intCast(std.math.clamp(m, 0, last));
+}
+
+fn tapAt(pos: f64, src_n: u32) Tap {
+    const base: i64 = @as(i64, @intFromFloat(@floor(pos))) - 1;
+    var t: Tap = undefined;
+    var wd: [4]f64 = undefined;
+    var sum: f64 = 0;
+    for (0..4) |k| {
+        const j = base + @as(i64, @intCast(k));
+        wd[k] = catmullRom(pos - @as(f64, @floatFromInt(j)));
+        sum += wd[k];
+        t.idx[k] = mirror(j, src_n);
+    }
+    for (0..4) |k| t.w[k] = @floatCast(wd[k] / sum);
+    return t;
+}
+
+/// Horizontal taps for every output column (len taps = dst_n).
+pub fn buildTaps(taps: []Tap, src_n: u32, shift: f64) void {
+    const dst_n: u32 = @intCast(taps.len);
+    for (taps, 0..) |*t, i| t.* = tapAt(srcPos(@intCast(i), src_n, dst_n, shift), src_n);
+}
+
+/// RGB row r (not linearized) of a YUV input into out[0..3]; tmp holds 4 rows.
+fn yuvRow(in: *const Input, r: u32, out: [3][]f32, w: u32, h: u32, tmp: [4][]f32) void {
+    const y = &in.yuv;
+    const FV = @Vector(vec_size, f32);
+    // chroma rows at chroma width, normalized then vertically filtered
+    const vt: Tap = if (y.ssh) tapAt(srcPos(r, y.ch, h, y.vshift), y.ch) else undefined;
+    for (0..2) |c| {
+        const dst = tmp[c][0..y.cw];
+        const p = c + 1;
+        if (y.ssh) {
+            var rows: [4][*]const u8 = undefined;
+            for (0..4) |k| rows[k] = in.planes[p] + vt.idx[k] * in.strides[p];
+            var x: usize = 0;
+            while (x + vec_size <= y.cw) : (x += vec_size) {
+                var acc: FV = @as(FV, @splat(vt.w[0])) * y.sampleV(rows[0], x, vec_size, y.c_mul, y.c_add);
+                inline for (1..4) |k| acc = simd.madd(FV, @splat(vt.w[k]), y.sampleV(rows[k], x, vec_size, y.c_mul, y.c_add), acc);
+                dst[x..][0..vec_size].* = acc;
+            }
+            while (x < y.cw) : (x += 1) {
+                var acc: f32 = vt.w[0] * y.sample1(rows[0], x, y.c_mul, y.c_add);
+                inline for (1..4) |k| acc = simd.madd(f32, vt.w[k], y.sample1(rows[k], x, y.c_mul, y.c_add), acc);
+                dst[x] = acc;
+            }
+        } else {
+            const row = in.planes[p] + r * in.strides[p];
+            var x: usize = 0;
+            while (x + vec_size <= y.cw) : (x += vec_size) dst[x..][0..vec_size].* = y.sampleV(row, x, vec_size, y.c_mul, y.c_add);
+            while (x < y.cw) : (x += 1) dst[x] = y.sample1(row, x, y.c_mul, y.c_add);
+        }
+    }
+    var u: []const f32 = tmp[0];
+    var v: []const f32 = tmp[1];
+    if (y.ssw) {
+        upsampleRow(tmp[0], tmp[2], y.htab, w);
+        upsampleRow(tmp[1], tmp[3], y.htab, w);
+        u = tmp[2];
+        v = tmp[3];
+    }
+    const yrow = in.planes[0] + r * in.strides[0];
+    var x: usize = 0;
+    while (x + vec_size <= w) : (x += vec_size) {
+        const yv = y.sampleV(yrow, x, vec_size, y.y_mul, y.y_add);
+        const uv: FV = u[x..][0..vec_size].*;
+        const vv: FV = v[x..][0..vec_size].*;
+        out[0][x..][0..vec_size].* = simd.madd(FV, @splat(y.cr_r), vv, yv);
+        out[1][x..][0..vec_size].* = simd.madd(FV, @splat(y.cr_g), vv, simd.madd(FV, @splat(y.cb_g), uv, yv));
+        out[2][x..][0..vec_size].* = simd.madd(FV, @splat(y.cb_b), uv, yv);
+    }
+    while (x < w) : (x += 1) {
+        const yv = y.sample1(yrow, x, y.y_mul, y.y_add);
+        out[0][x] = simd.madd(f32, y.cr_r, v[x], yv);
+        out[1][x] = simd.madd(f32, y.cr_g, v[x], simd.madd(f32, y.cb_g, u[x], yv));
+        out[2][x] = simd.madd(f32, y.cb_b, u[x], yv);
+    }
+}
+
+/// 2x horizontal upsampling through the tap table. Interior output pairs
+/// (2k, 2k+1) have fixed phases, so they run as two vector filters on shifted
+/// loads, interleaved; columns whose taps were mirrored use the table. Both
+/// paths take the same weights in the same order.
+fn upsampleRow(src: []const f32, dst: []f32, tab: []const Tap, w: u32) void {
+    const FV = @Vector(vec_size, f32);
+    const n = vec_size;
+    // the pair at k = 2 is past any left mirroring for both phases
+    const k0: u32 = 2;
+    const e = tab[2 * k0];
+    const o = tab[2 * k0 + 1];
+    const oe: i64 = @as(i64, e.idx[0]) - k0;
+    const oo: i64 = @as(i64, o.idx[0]) - k0;
+    const cw: u32 = @intCast(src.len);
+    // interior pairs: every tap of both phases inside [0, cw)
+    const hi_tap: i64 = @max(oe, oo) + 3;
+    const k_end: i64 = @min(@as(i64, cw) - 1 - hi_tap + 1, @as(i64, w / 2));
+    var x: u32 = 0;
+    while (x < 2 * k0 and x < w) : (x += 1) dst[x] = tapRow(src, tab[x]);
+    var k: i64 = k0;
+    if (w >= 2 * k0) {
+        while (k + n <= k_end) : (k += n) {
+            const ke: usize = @intCast(k + oe);
+            const ko: usize = @intCast(k + oo);
+            var ev: FV = @as(FV, @splat(e.w[0])) * @as(FV, src[ke..][0..n].*);
+            var od: FV = @as(FV, @splat(o.w[0])) * @as(FV, src[ko..][0..n].*);
+            inline for (1..4) |j| {
+                ev = simd.madd(FV, @splat(e.w[j]), src[ke + j ..][0..n].*, ev);
+                od = simd.madd(FV, @splat(o.w[j]), src[ko + j ..][0..n].*, od);
+            }
+            const lo = comptime blk: {
+                var m: [n]i32 = undefined;
+                for (0..n / 2) |i| {
+                    m[2 * i] = i;
+                    m[2 * i + 1] = ~@as(i32, i);
+                }
+                break :blk m;
+            };
+            const hi = comptime blk: {
+                var m: [n]i32 = undefined;
+                for (0..n / 2) |i| {
+                    m[2 * i] = n / 2 + i;
+                    m[2 * i + 1] = ~@as(i32, n / 2 + i);
+                }
+                break :blk m;
+            };
+            const xo: usize = @intCast(2 * k);
+            dst[xo..][0..n].* = @shuffle(f32, ev, od, lo);
+            dst[xo + n ..][0..n].* = @shuffle(f32, ev, od, hi);
+        }
+        x = @intCast(2 * k);
+    }
+    while (x < w) : (x += 1) dst[x] = tapRow(src, tab[x]);
+}
+
+inline fn tapRow(src: []const f32, t: Tap) f32 {
+    var acc: f32 = t.w[0] * src[t.idx[0]];
+    inline for (1..4) |j| acc = simd.madd(f32, t.w[j], src[t.idx[j]], acc);
+    return acc;
+}
 
 // Encoded-value domain before the sRGB decode: [0, 1], what libjxl sees.
 // Its input is always PNG samples, so out-of-range float values (e.g. YUV ->
@@ -114,10 +468,11 @@ const RowScratch = struct {
     // Rings keyed by source row % ring_n: an output row's 9-tap window spans
     // at most 9 consecutive source rows (the edge mirrors stay inside it).
     const ring_n = 10;
-    // tmp/mu1/mu2/s12/sq + linear-RGB and XYB rings (2 images x 3 planes
-    // each) + product rings (2 x 3 planes)
-    const rows = 5 + 18 * ring_n;
+    // tmp/mu1/mu2/s12/sq + 4 YUV-conversion rows + linear-RGB and XYB rings
+    // (2 images x 3 planes each) + product rings (2 x 3 planes)
+    const rows = 9 + 18 * ring_n;
     tmp: []f32,
+    yuv: [4][]f32,
     mu1: []f32,
     mu2: []f32,
     s12: []f32,
@@ -138,7 +493,8 @@ const RowScratch = struct {
         rs.mu2 = buf[2 * rl ..][0..rl];
         rs.s12 = buf[3 * rl ..][0..rl];
         rs.sq = buf[4 * rl ..][0..rl];
-        var off: usize = 5 * rl;
+        for (0..4) |k| rs.yuv[k] = buf[(5 + k) * rl ..][0..rl];
+        var off: usize = 9 * rl;
         for (0..2) |img| {
             for (0..3) |p| {
                 rs.lin[img][p] = buf[off..][0..ring];
@@ -408,7 +764,7 @@ inline fn blurV(src: anytype, dstp: []f32, kernel: [ksize]f32, w: u32) void {
         inline for (0..ksize) |k| {
             const kv: Vec = @splat(kernel[k]);
             const sv: Vec = src[k][j..][0..vec_size].*;
-            accum = @mulAdd(Vec, kv, sv, accum);
+            accum = simd.madd(Vec, kv, sv, accum);
         }
         dstp[j..][0..vec_size].* = accum;
     }
@@ -497,10 +853,8 @@ fn sweepScale(s0: ?Scale0, in1: [3][]const f32, in2: [3][]const f32, stride: u32
                 if (s0) |z| {
                     inline for (0..2) |img| {
                         var lr: [3][]f32 = undefined;
-                        inline for (0..3) |c| {
-                            lr[c] = rs.at(rs.lin[img][c], r);
-                            z.in[img].row(c, r, lr[c], w);
-                        }
+                        inline for (0..3) |c| lr[c] = rs.at(rs.lin[img][c], r);
+                        z.in[img].rows(r, lr, w, h, rs.yuv);
                         toXYBRow(.{ lr[0], lr[1], lr[2] }, .{ rs.at(rs.xyb[img][0], r), rs.at(rs.xyb[img][1], r), rs.at(rs.xyb[img][2], r) }, w);
                     }
                 } else {
@@ -618,9 +972,9 @@ fn toXYBRow(srcp: [3][]const f32, dstp: [3][]f32, w: u32) void {
                 const g: FV = srcp[1][x..][0..vec_size].*;
                 const b: FV = srcp[2][x..][0..vec_size].*;
 
-                const ox = @mulAdd(FV, m00, r, @mulAdd(FV, m01, g, @mulAdd(FV, m02, b, bias)));
-                const oy = @mulAdd(FV, m10, r, @mulAdd(FV, m11, g, @mulAdd(FV, m12, b, bias)));
-                const oz = @mulAdd(FV, m20, r, @mulAdd(FV, m21, g, @mulAdd(FV, m22, b, bias)));
+                const ox = simd.madd(FV, m00, r, simd.madd(FV, m01, g, simd.madd(FV, m02, b, bias)));
+                const oy = simd.madd(FV, m10, r, simd.madd(FV, m11, g, simd.madd(FV, m12, b, bias)));
+                const oz = simd.madd(FV, m20, r, simd.madd(FV, m21, g, simd.madd(FV, m22, b, bias)));
                 const cx = vcl.cbrt(@max(ox, zero)) - kd1;
                 const cy = vcl.cbrt(@max(oy, zero)) - kd1;
                 const cz = vcl.cbrt(@max(oz, zero)) - kd1;
@@ -643,9 +997,9 @@ fn toXYBRow(srcp: [3][]const f32, dstp: [3][]f32, w: u32) void {
                 const g: F1 = @splat(srcp[1][x]);
                 const b: F1 = @splat(srcp[2][x]);
                 const b1: F1 = @splat(OPSIN_ABSORBANCE_BIAS);
-                const ox = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[0]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[1]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[2]), b, b1)));
-                const oy = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[3]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[4]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[5]), b, b1)));
-                const oz = @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[6]), r, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[7]), g, @mulAdd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[8]), b, b1)));
+                const ox = simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[0]), r, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[1]), g, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[2]), b, b1)));
+                const oy = simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[3]), r, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[4]), g, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[5]), b, b1)));
+                const oz = simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[6]), r, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[7]), g, simd.madd(F1, @splat(OPSIN_ABSORBANCE_MATRIX[8]), b, b1)));
                 const cx = vcl.cbrt(@max(ox, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
                 const cy = vcl.cbrt(@max(oy, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
                 const cz = vcl.cbrt(@max(oz, @as(F1, @splat(0.0)))) - @as(F1, @splat(K_D1));
@@ -692,8 +1046,8 @@ const SsimAcc = struct {
             const m22 = m2 * m2;
             const m12 = m1 * m2;
             const m_diff = m1 - m2;
-            const num_m: AccDV = @floatCast(@mulAdd(AccFV, m_diff, -m_diff, onef));
-            const num_s: AccDV = @floatCast(@mulAdd(AccFV, (s12v - m12), twof, e9f));
+            const num_m: AccDV = @floatCast(simd.madd(AccFV, m_diff, -m_diff, onef));
+            const num_s: AccDV = @floatCast(simd.madd(AccFV, (s12v - m12), twof, e9f));
             const denom_s: AccDV = @floatCast(sqv - twof * s12v - m11 - m22 + e9f);
             const d1: AccDV = @max(oned - ((num_m * num_s) / denom_s), zerod);
 
@@ -710,8 +1064,8 @@ const SsimAcc = struct {
             const m22 = m2 * m2;
             const m12 = m1 * m2;
             const m_diff = m1 - m2;
-            const num_m: f64 = @mulAdd(f32, m_diff, -m_diff, 1.0);
-            const num_s: f64 = @mulAdd(f32, (s12p[x] - m12), 2.0, 0.0009);
+            const num_m: f64 = simd.madd(f32, m_diff, -m_diff, 1.0);
+            const num_s: f64 = simd.madd(f32, (s12p[x] - m12), 2.0, 0.0009);
             const denom_s: f64 = (sqp[x] - 2.0 * s12p[x] - m11 - m22 + 0.0009);
             const d1: f64 = @max(1.0 - ((num_m * num_s) / denom_s), 0.0);
 
@@ -798,11 +1152,11 @@ fn score(plane_avg_ssim: [6][6]f64, plane_avg_edge: [6][12]f64) f64 {
         while (s < 6) : (s += 1) {
             var n: u32 = 0;
             while (n < 2) : (n += 1) {
-                ssim = @mulAdd(f64, weight[i], @abs(plane_avg_ssim[s][plane * 2 + n]), ssim);
+                ssim = simd.madd(f64, weight[i], @abs(plane_avg_ssim[s][plane * 2 + n]), ssim);
                 i += 1;
-                ssim = @mulAdd(f64, weight[i], @abs(plane_avg_edge[s][plane * 4 + n]), ssim);
+                ssim = simd.madd(f64, weight[i], @abs(plane_avg_edge[s][plane * 4 + n]), ssim);
                 i += 1;
-                ssim = @mulAdd(f64, weight[i], @abs(plane_avg_edge[s][plane * 4 + n + 2]), ssim);
+                ssim = simd.madd(f64, weight[i], @abs(plane_avg_edge[s][plane * 4 + n + 2]), ssim);
                 i += 1;
             }
         }

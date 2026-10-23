@@ -118,6 +118,56 @@ inline fn intRowStats(
     return .{ .sum = sum, .diff = diff, .excluded = excluded };
 }
 
+/// Vectorized float row statistics with f64 lane accumulators. The sums are
+/// grouped per lane instead of one left-to-right chain (a relative change
+/// around 1e-16); the scalar chain cost a serial vaddsd per pixel. Exclude
+/// matching compares in f32 like the scalar `v == e` (f16 widens exactly), and
+/// |v-j| is taken in T as in `hz.absDiff`.
+inline fn floatRowStats(
+    comptime T: type,
+    comptime use_ref: bool,
+    row: []const T,
+    ref_row: []const T,
+    exclude: []const f32,
+    w: u32,
+) struct { sum: f64, diff: f64, excluded: u32 } {
+    const n = comptime (std.simd.suggestVectorLength(f32) orelse 4);
+    const VF = @Vector(n, f32);
+    const VD = @Vector(n, f64);
+    const zero: VD = @splat(0);
+    var acc: VD = zero;
+    var dacc: VD = zero;
+    var cnt: @Vector(n, u32) = @splat(0);
+    var x: usize = 0;
+    const wv = w - w % n;
+    while (x < wv) : (x += n) {
+        const raw: @Vector(n, T) = row[x..][0..n].*;
+        const v: VF = if (T == f32) raw else @floatCast(raw);
+        var matched: @Vector(n, bool) = @splat(false);
+        for (exclude) |e| {
+            matched = @select(bool, v == @as(VF, @splat(e)), @as(@Vector(n, bool), @splat(true)), matched);
+        }
+        acc += @select(f64, matched, zero, @as(VD, @floatCast(v)));
+        cnt += @intFromBool(matched);
+        if (use_ref) {
+            const j: @Vector(n, T) = ref_row[x..][0..n].*;
+            dacc += @as(VD, @floatCast(@abs(raw - j)));
+        }
+    }
+    var sum: f64 = @reduce(.Add, acc);
+    var diff: f64 = if (use_ref) @reduce(.Add, dacc) else 0;
+    var excluded: u32 = @reduce(.Add, cnt);
+    while (x < w) : (x += 1) {
+        const v = row[x];
+        const found: bool = for (exclude) |e| {
+            if (v == e) break true;
+        } else false;
+        if (found) excluded += 1 else sum += v;
+        if (use_ref) diff += hz.absDiff(v, ref_row[x]);
+    }
+    return .{ .sum = sum, .diff = diff, .excluded = excluded };
+}
+
 fn intVecLanes(comptime T: type) comptime_int {
     if (@typeInfo(T) != .int or @bitSizeOf(T) > 16) return 1;
     return std.simd.suggestVectorLength(i32) orelse 1;
@@ -164,6 +214,16 @@ pub fn average(comptime T: type, src: []const T, stride: u32, w: u32, h: u32, ex
                 total -= st.excluded;
                 srcp = srcp[stride..];
             }
+        }
+        return result(T, acc, @floatFromInt(total), peak);
+    }
+
+    if (comptime @typeInfo(T) == .float) {
+        for (0..h) |_| {
+            const st = floatRowStats(T, false, srcp[0..w], srcp[0..w], exclude, w);
+            acc += st.sum;
+            total -= st.excluded;
+            srcp = srcp[stride..];
         }
         return result(T, acc, @floatFromInt(total), peak);
     }
@@ -221,6 +281,21 @@ pub fn averageRef(comptime T: type, src: []const T, ref: []const T, stride: u32,
         return .{
             .avg = result(T, acc, @floatFromInt(total), peak),
             .diff = @as(f64, @floatFromInt(diffacc)) / totalf / peak,
+        };
+    }
+
+    if (comptime @typeInfo(T) == .float) {
+        for (0..h) |_| {
+            const st = floatRowStats(T, true, srcp[0..w], refp[0..w], exclude, w);
+            acc += st.sum;
+            diffacc += st.diff;
+            total -= st.excluded;
+            srcp = srcp[stride..];
+            refp = refp[stride..];
+        }
+        return .{
+            .avg = result(T, acc, @floatFromInt(total), peak),
+            .diff = diffacc / @as(f64, @floatFromInt(_total)),
         };
     }
 

@@ -505,11 +505,11 @@ pub fn Zimg(comptime T: type, comptime U: type) type {
                     else => @compileError("unsupported source type"),
                 };
 
-                var x: f32 = @mulAdd(f32, val_in, scale, offset);
+                var x: f32 = simd.madd(f32, val_in, scale, offset);
                 var err0: f32 = err_left * FS_ERR_LEFT;
-                err0 = @mulAdd(f32, err_top_right, FS_ERR_TOP_RIGHT, err0);
+                err0 = simd.madd(f32, err_top_right, FS_ERR_TOP_RIGHT, err0);
                 var err1: f32 = err_top * FS_ERR_TOP;
-                err1 = @mulAdd(f32, err_top_left, FS_ERR_TOP_LEFT, err1);
+                err1 = simd.madd(f32, err_top_left, FS_ERR_TOP_LEFT, err1);
 
                 x += err0 + err1;
                 x = @max(0.0, @min(x, peak));
@@ -539,9 +539,9 @@ pub fn Zimg(comptime T: type, comptime U: type) type {
         ) void {
             const j_err = j + 1;
             var err0: f32x8 = err_left.* * @as(f32x8, @splat(FS_ERR_LEFT));
-            err0 = @mulAdd(f32x8, err_top_right.*, @splat(FS_ERR_TOP_RIGHT), err0);
+            err0 = simd.madd(f32x8, err_top_right.*, @splat(FS_ERR_TOP_RIGHT), err0);
             var err1: f32x8 = err_top.* * @as(f32x8, @splat(FS_ERR_TOP));
-            err1 = @mulAdd(f32x8, err_top_left.*, @splat(FS_ERR_TOP_LEFT), err1);
+            err1 = simd.madd(f32x8, err_top_left.*, @splat(FS_ERR_TOP_LEFT), err1);
             err0 = err0 + err1;
 
             var x = v.* + err0;
@@ -602,7 +602,7 @@ pub fn Zimg(comptime T: type, comptime U: type) type {
             while (j < vec_count) : (j += 8) {
                 var v: [8]f32x8 = undefined;
                 inline for (0..8) |r| {
-                    v[r] = @mulAdd(f32x8, load8(src_rows[r][j + 14 - 2 * r ..]), scale_v, offset_v);
+                    v[r] = simd.madd(f32x8, load8(src_rows[r][j + 14 - 2 * r ..]), scale_v, offset_v);
                 }
 
                 v = simd.transposeF32Reg(8, v);

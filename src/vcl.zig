@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("filters/simd.zig");
 
 pub fn atan(x: anytype) @TypeOf(x) {
     // Port of VCL2 vectormath_trig.h: atan_f
@@ -214,7 +215,7 @@ pub fn exp2Bounded(comptime degree: comptime_int, y: anytype) @TypeOf(y) {
 
 fn fma(a: anytype, b: @TypeOf(a), c: @TypeOf(a)) @TypeOf(a) {
     const F32V = @TypeOf(a);
-    return @mulAdd(F32V, a, b, c);
+    return simd.madd(F32V, a, b, c);
 }
 
 fn copysign_f32v(magnitude: anytype, sign_source: @TypeOf(magnitude)) @TypeOf(magnitude) {

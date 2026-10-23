@@ -4,6 +4,7 @@
 //! reference ssimulacra2 tool feeds its XYB conversion.
 
 const std = @import("std");
+const simd = @import("simd.zig");
 
 // Computed via af_cheb_rational (k=100) in libjxl; p/q in ascending degree.
 const p = [5]f32{ 2.200248328e-04, 1.043637593e-02, 1.624820318e-01, 7.961564959e-01, 8.210152774e-01 };
@@ -28,8 +29,8 @@ pub inline fn toLinear(v: anytype) @TypeOf(v) {
     var yp: V = @splat(p[4]);
     var yq: V = @splat(q[4]);
     inline for (0..4) |i| {
-        yp = @mulAdd(V, yp, x, @splat(p[3 - i]));
-        yq = @mulAdd(V, yq, x, @splat(q[3 - i]));
+        yp = simd.madd(V, yp, x, @splat(p[3 - i]));
+        yq = simd.madd(V, yq, x, @splat(q[3 - i]));
     }
     const poly = yp / yq;
     const lin = x * @as(V, @splat(low_div_inv));

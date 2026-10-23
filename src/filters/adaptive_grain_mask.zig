@@ -1,5 +1,7 @@
 const std = @import("std");
+const common = @import("../common.zig");
 const simd = @import("simd.zig");
+const vcl = @import("../vcl.zig");
 extern fn powf(x: f32, y: f32) f32;
 
 const C4: f32 = 18.188;
@@ -13,19 +15,12 @@ pub fn calcLumaScaling(average: f32, luma_scaling: f32) f32 {
     return a * a * luma_scaling;
 }
 
-const pow_consts = [_]f32{
-    7.0376836292e-2, -1.1514610310e-1, 1.1676998740e-1, -1.2420140846e-1,
-    1.4249322787e-1, -1.6668057665e-1, 2.0000714765e-1, -2.4999993993e-1,
-    3.3333331174e-1, 1.9875691500e-4,  1.3981999507e-3, 8.3334519073e-3,
-    4.1665795894e-2, 1.6666665459e-1,  5.0000001201e-1, 1.44269504088896341,
-
-    C4,              C3,               C2,              C1,
-    C0,
-};
+/// Constants of `poly`, kept in a pinned table (see `PowConsts.base`).
+const pow_consts = [_]f32{ C4, C3, C2, C1, C0 };
 
 fn PowConsts(comptime VL: usize) type {
     return struct {
-        const rows: [pow_consts.len][VL]f32 align(64) = blk: {
+        const rows: [pow_consts.len][VL]f32 align(common.vec_len) = blk: {
             var t: [pow_consts.len][VL]f32 = undefined;
             for (pow_consts, 0..) |c, i| t[i] = @splat(c);
             break :blk t;
@@ -56,11 +51,11 @@ fn PowConsts(comptime VL: usize) type {
 inline fn poly(comptime V: type, x: V, cb: anytype) V {
     const n = @typeInfo(V).vector.len;
     const P = PowConsts(n);
-    return @mulAdd(V, x, @mulAdd(V, x, @mulAdd(V, x, @mulAdd(V, x, P.get(cb, C4), P.get(cb, C3)), P.get(cb, C2)), P.get(cb, C1)), P.get(cb, C0));
+    return simd.madd(V, x, simd.madd(V, x, simd.madd(V, x, simd.madd(V, x, P.get(cb, C4), P.get(cb, C3)), P.get(cb, C2)), P.get(cb, C1)), P.get(cb, C0));
 }
 
 inline fn polyScalar(x: f32) f32 {
-    return @mulAdd(f32, x, @mulAdd(f32, x, @mulAdd(f32, x, @mulAdd(f32, x, C4, C3), C2), C1), C0);
+    return simd.madd(f32, x, simd.madd(f32, x, simd.madd(f32, x, simd.madd(f32, x, C4, C3), C2), C1), C0);
 }
 
 pub fn getMaskValueScalar(x: f32, temp: f32) f32 {
@@ -175,98 +170,77 @@ pub fn computeAverage(comptime T: type, src: []const T, stride: u32, w: u32, h: 
     return @floatCast(avg);
 }
 
-fn logPs(comptime VL: usize, x_in: @Vector(VL, f32), cb: PowConsts(VL).Base) @Vector(VL, f32) {
-    const P = PowConsts(VL);
+/// log2(x) for the mask's base (inputs below the smallest normal are clamped
+/// to it, as the Cephes logf the vector path used before). x = m * 2^e with m in [sqrt(1/2), sqrt(2));
+/// log2(m) = (2/ln2) * atanh(s), s = (m-1)/(m+1), |s| <= 0.1716, by its odd
+/// series through s^9 (truncation < 1e-9). Shorter dependency chain than
+/// Cephes's degree-9 Horner on the mantissa.
+inline fn log2Fast(comptime VL: usize, x_in: @Vector(VL, f32)) @Vector(VL, f32) {
     const V = @Vector(VL, f32);
-    const VI = @Vector(VL, i32);
     const VU = @Vector(VL, u32);
-    const one: V = @splat(1.0);
-    const min_norm_pos: V = @bitCast(@as(VU, @splat(0x00800000)));
-    var x = @max(x_in, min_norm_pos);
-    const xu: VU = @bitCast(x);
-
-    var e: V = @floatFromInt(@as(VI, @intCast(xu >> @as(@Vector(VL, u5), @splat(23)))) - @as(VI, @splat(0x7f)));
-    e += one;
-    const mant: VU = (xu & @as(VU, @splat(0x807fffff))) | @as(VU, @splat(0x3f000000));
-    x = @bitCast(mant);
-
-    const sqrthf: V = @splat(0.707106781186547524);
-    const mask = x < sqrthf;
-    const tmp = @select(f32, mask, x, @as(V, @splat(0.0)));
-    x = x - one;
-    e = e - @select(f32, mask, one, @as(V, @splat(0.0)));
-    x = x + tmp;
-
-    const z = x * x;
-    var y: V = P.get(cb, 7.0376836292e-2);
-    y = @mulAdd(V, y, x, P.get(cb, -1.1514610310e-1));
-    y = @mulAdd(V, y, x, P.get(cb, 1.1676998740e-1));
-    y = @mulAdd(V, y, x, P.get(cb, -1.2420140846e-1));
-    y = @mulAdd(V, y, x, P.get(cb, 1.4249322787e-1));
-    y = @mulAdd(V, y, x, P.get(cb, -1.6668057665e-1));
-    y = @mulAdd(V, y, x, P.get(cb, 2.0000714765e-1));
-    y = @mulAdd(V, y, x, P.get(cb, -2.4999993993e-1));
-    y = @mulAdd(V, y, x, P.get(cb, 3.3333331174e-1));
-    y = y * x;
-    y = y * z;
-
-    y = @mulAdd(V, e, @as(V, @splat(-2.12194440e-4)), y);
-    y = y - (z * @as(V, @splat(0.5)));
-    x = x + y;
-    x = @mulAdd(V, e, @as(V, @splat(0.693359375)), x);
-    return x;
+    const VI = @Vector(VL, i32);
+    const x = @max(x_in, @as(V, @bitCast(@as(VU, @splat(0x00800000)))));
+    const off: VU = @splat(0x3f3504f3); // bits of sqrt(1/2)
+    const t = @as(VU, @bitCast(x)) -% off;
+    const e: V = @floatFromInt(@as(VI, @bitCast(t)) >> @splat(23));
+    const m: V = @bitCast((t & @as(VU, @splat(0x007fffff))) +% off);
+    const f = m - @as(V, @splat(1.0));
+    const sv = f / (f + @as(V, @splat(2.0)));
+    const z = sv * sv;
+    const l2e = 2.0 / std.math.ln2;
+    var p: V = @splat(l2e / 9.0);
+    p = simd.madd(V, p, z, @splat(l2e / 7.0));
+    p = simd.madd(V, p, z, @splat(l2e / 5.0));
+    p = simd.madd(V, p, z, @splat(l2e / 3.0));
+    p = simd.madd(V, p, z, @splat(l2e));
+    return simd.madd(V, sv, p, e);
 }
 
-fn expPs(comptime VL: usize, x_in: @Vector(VL, f32), cb: PowConsts(VL).Base) @Vector(VL, f32) {
-    const P = PowConsts(VL);
+/// Exponent of the mask, temp * log2(base), capped at 127.99 so exp2 stays
+/// finite (~3.4e38; powf would give inf).
+inline fn maskExponent(comptime VL: usize, xv: @Vector(VL, f32), temp: @Vector(VL, f32), cb: PowConsts(VL).Base) @Vector(VL, f32) {
     const V = @Vector(VL, f32);
-    const VI = @Vector(VL, i32);
-    const VU = @Vector(VL, u32);
-
-    const one: V = @splat(1.0);
-    var x = @min(x_in, @as(V, @splat(88.3762626647949)));
-    x = @max(x, @as(V, @splat(-88.3762626647949)));
-    const fx = @floor(@mulAdd(V, x, P.get(cb, 1.44269504088896341), @as(V, @splat(0.5))));
-
-    x = x - (fx * @as(V, @splat(0.693359375)));
-    x = x - (fx * @as(V, @splat(-2.12194440e-4)));
-
-    const z = x * x;
-    var y: V = P.get(cb, 1.9875691500e-4);
-    y = @mulAdd(V, y, x, P.get(cb, 1.3981999507e-3));
-    y = @mulAdd(V, y, x, P.get(cb, 8.3334519073e-3));
-    y = @mulAdd(V, y, x, P.get(cb, 4.1665795894e-2));
-    y = @mulAdd(V, y, x, P.get(cb, 1.6666665459e-1));
-    y = @mulAdd(V, y, x, P.get(cb, 5.0000001201e-1));
-    y = @mulAdd(V, y, z, x) + one;
-
-    const n: VI = @intFromFloat(fx);
-    const pow2: V = @bitCast((@as(VU, @intCast(n + @as(VI, @splat(0x7f)))) << @as(@Vector(VL, u5), @splat(23))));
-    return y * pow2;
-}
-
-fn powPs(comptime VL: usize, base: @Vector(VL, f32), exp: @Vector(VL, f32), cb: PowConsts(VL).Base) @Vector(VL, f32) {
-    return expPs(VL, exp * logPs(VL, base, cb), cb);
+    const x = simd.clampV(VL, xv, @as(V, @splat(0.0)), @as(V, @splat(1.0)));
+    const base = @as(V, @splat(1.0)) - (x * poly(V, x, cb));
+    return @min(temp * log2Fast(VL, base), @as(V, @splat(127.99)));
 }
 
 const FVL: usize = std.simd.suggestVectorLength(f32) orelse 8;
+
+/// Float mask: (1 - x*poly(x))^temp per pixel, x clamped to [0, 1], as
+/// 2^(temp * log2(base)) with the approximations above (exp2Bounded returns 0
+/// below -126); within ~1e-6 relative of the libm powf the Rust adg
+/// reference uses.
+///
+/// Loop fission over L1-sized blocks: the fused per-vector chain (poly, log2,
+/// exp2) is latency-bound because the ROB holds only a few iterations
+/// (llvm-mca: 32 cycles/vector against a 12-cycle port bound). Stage 1 writes
+/// the exponent to a stack block and stage 2 takes exp2 of it, so the same
+/// ROB keeps twice the work in flight. The scalar tail runs the same vector
+/// code on a padded vector, so every pixel gets the same function.
 pub fn processFloat(src: []const f32, dst: []f32, temp: f32) void {
     const VL = FVL;
     const V = @Vector(VL, f32);
-    const one: V = @splat(1.0);
-    const zero: V = @splat(0.0);
     const tempv: V = @splat(temp);
-
     const cb = PowConsts(VL).base();
-    var i: usize = 0;
-    while (i + VL <= dst.len) : (i += VL) {
-        const x = simd.clampV(VL, src[i..][0..VL].*, zero, one);
-        const base = one - (x * poly(V, x, cb));
-        dst[i..][0..VL].* = powPs(VL, base, tempv, cb);
-    }
 
-    while (i < dst.len) : (i += 1) {
-        const x = @min(@max(src[i], 0.0), 1.0);
-        dst[i] = getMaskValueScalar(x, temp);
+    const block = 64 * VL;
+    var t: [block]f32 align(common.vec_len) = undefined;
+    var i: usize = 0;
+    while (i + block <= dst.len) : (i += block) {
+        var k: usize = 0;
+        while (k < block) : (k += VL) t[k..][0..VL].* = maskExponent(VL, src[i + k ..][0..VL].*, tempv, cb);
+        k = 0;
+        while (k < block) : (k += VL) dst[i + k ..][0..VL].* = vcl.exp2Bounded(6, @as(V, t[k..][0..VL].*));
+    }
+    while (i + VL <= dst.len) : (i += VL) {
+        dst[i..][0..VL].* = vcl.exp2Bounded(6, maskExponent(VL, src[i..][0..VL].*, tempv, cb));
+    }
+    if (i < dst.len) {
+        var buf: [VL]f32 = @splat(0.0);
+        const r = dst.len - i;
+        @memcpy(buf[0..r], src[i..]);
+        const out: [VL]f32 = vcl.exp2Bounded(6, maskExponent(VL, buf, tempv, cb));
+        @memcpy(dst[i..], out[0..r]);
     }
 }

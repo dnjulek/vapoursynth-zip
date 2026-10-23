@@ -104,7 +104,7 @@ def test_golden_cases(golden, clip, case):
 
 @pytest.mark.parametrize("fn", ["BM3DBasic", "BM3DVBasic"])
 def test_flat_input_stays_flat(core, fn):
-    src = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=3, color=0.4)
+    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=3, color=0.4)
     for f in frames(getattr(src.vszip, fn)()):
         assert np.abs(f[0] - 0.4).max() < 2e-6
 
@@ -186,7 +186,7 @@ def test_opp_round_trip(clip):
 
 
 def test_vaggregate_oracle(core):
-    r, n_fr, w, h = 2, 5, 37, 11
+    r, n_fr, w, h = 2, 5, 67, 64
     rng = np.random.default_rng(9)
     data = rng.random((n_fr, 2 * (2 * r + 1), h, w), dtype=np.float32) + np.float32(0.25)
     base = core.std.BlankClip(None, w, h * 2 * (2 * r + 1), vs.GRAYS, length=n_fr)
@@ -236,24 +236,25 @@ def test_vaggregate_oracle(core):
     ],
 )
 def test_validation_errors(core, fn, args, msg):
-    src = core.std.BlankClip(None, 64, 48, vs.GRAY8, length=1)
+    src = core.std.BlankClip(None, 64, 64, vs.GRAY8, length=1)
     with pytest.raises(vs.Error, match=f"{fn}: .*{msg}"):
         getattr(src.vszip, fn)(**args)
 
 
 def test_format_errors(core):
     with pytest.raises(vs.Error, match="sub-sampled format is not supported"):
-        core.std.BlankClip(None, 64, 48, vs.YUV420P8, length=1).vszip.BM3DBasic(sigma=[10, 5, 5])
+        core.std.BlankClip(None, 64, 64, vs.YUV420P8, length=1).vszip.BM3DBasic(sigma=[10, 5, 5])
     with pytest.raises(vs.Error, match="only 8-16 bit integer or 32 bit float"):
-        core.std.BlankClip(None, 64, 48, vs.GRAYH, length=1).vszip.BM3DBasic()
-    with pytest.raises(vs.Error, match="must not exceed width or height"):
-        core.std.BlankClip(None, 64, 6, vs.GRAY8, length=1).vszip.BM3DBasic()
+        core.std.BlankClip(None, 64, 64, vs.GRAYH, length=1).vszip.BM3DBasic()
+    for w, h in ((64, 63), (63, 64)):
+        with pytest.raises(vs.Error, match="at least 64x64"):
+            core.std.BlankClip(None, w, h, vs.GRAY8, length=1).vszip.BM3DBasic()
     with pytest.raises(vs.Error, match="must be of the same format"):
-        core.std.BlankClip(None, 64, 48, vs.GRAY8, length=1).vszip.BM3DFinal(core.std.BlankClip(None, 64, 48, vs.GRAY16, length=1))
+        core.std.BlankClip(None, 64, 64, vs.GRAY8, length=1).vszip.BM3DFinal(core.std.BlankClip(None, 64, 64, vs.GRAY16, length=1))
     with pytest.raises(vs.Error, match="must be of RGB color family"):
-        core.std.BlankClip(None, 64, 48, vs.GRAY8, length=1).vszip.RGB2OPP()
+        core.std.BlankClip(None, 64, 64, vs.GRAY8, length=1).vszip.RGB2OPP()
     with pytest.raises(vs.Error, match="BM3D_OPP=1\\\" is missing"):
-        core.std.BlankClip(None, 64, 48, vs.YUV444P8, length=1).vszip.OPP2RGB().get_frame(0)
+        core.std.BlankClip(None, 64, 64, vs.YUV444P8, length=1).vszip.OPP2RGB().get_frame(0)
 
 
 # --- optional: parity with bm3d r12 ----------------------------------------------

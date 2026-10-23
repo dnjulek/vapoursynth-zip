@@ -89,7 +89,7 @@ pub const Plane = struct {
     /// `height` samples, `src_stride` elements per row). Return the scratch
     /// with `deinit(pool)`.
     pub fn init(comptime T: type, src: []const T, src_stride: u32, width: u32, height: u32, pool: *Pool) error{OutOfMemory}!Plane {
-        // A multiple of every vec_len, so the last vector of a row stays in it.
+        // A multiple of the build's vector (vec_len), so the last vector of a row stays in it.
         const stride = hz.ceilN(width + 2 * RD, hz.scratchAlignmentT(@sizeOf(f32)));
         const n = (height + 2 * RD) * stride;
         const block = try pool.take(n + SourceRows.len(width));

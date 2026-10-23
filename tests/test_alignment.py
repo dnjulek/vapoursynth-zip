@@ -1,4 +1,8 @@
-"""Binary-level contracts that protect measured hot-table alignment."""
+"""Binary-level contracts that protect hot-table alignment.
+
+The tables are `align(common.vec_len)`: 16 bytes on baseline x86-64/aarch64,
+32 on AVX2, 64 on AVX-512 builds. The binary does not report its `vec_len`, so
+the test checks the 16-byte floor every target meets."""
 
 import shutil
 import subprocess
@@ -6,6 +10,8 @@ import subprocess
 import pytest
 
 from conftest import _plugin_path
+
+MIN_VEC_LEN = 16
 
 
 ALIGNED_TABLES = [
@@ -38,13 +44,13 @@ def _symbol_addresses() -> dict[str, int]:
 
 
 @pytest.mark.skipif(__import__("sys").platform == "win32", reason="nm symbol test is Unix-only")
-def test_hot_tables_are_cache_line_aligned():
+def test_hot_tables_are_vector_aligned():
     addresses = _symbol_addresses()
     found = {name: addresses[name] for name in ALIGNED_TABLES if name in addresses}
     if not found:
         pytest.skip("annotated symbols unavailable in stripped binary")
-    misaligned = {name: hex(address) for name, address in found.items() if address % 64}
-    assert not misaligned, f"tables lost align(64): {misaligned}"
+    misaligned = {name: hex(address) for name, address in found.items() if address % MIN_VEC_LEN}
+    assert not misaligned, f"tables lost align(vec_len): {misaligned}"
 
     dither_tables = [name for name in ALIGNED_TABLES if "dither_pattern" in name]
     missing = [name for name in dither_tables if name not in addresses]

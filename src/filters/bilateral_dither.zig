@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("../common.zig");
 const subspl = @import("bilateral_dither_subspl.zig");
 const simd = @import("simd.zig");
 const allocator = std.heap.c_allocator;
@@ -186,8 +187,9 @@ pub fn processPlane(
         const swmin4: v4 = @splat(sum_w_min);
         const zero4: v4 = @splat(0.0);
         const peak4: v4 = @splat(peak);
-        // wide body: 4-px groups per vector, 16 lanes on AVX-512 else 8
-        const BW = if (simd.use_avx512f) 16 else 8;
+        // wide body: 4-px groups per vector, one vector of the build target
+        // (16 lanes on AVX-512) but at least 8 (2 groups, see below)
+        const BW = @max(8, common.vec_len / @sizeOf(f32));
         const G = BW / 4;
         const VB = @Vector(BW, f32);
         const mb: VB = @splat(m);
@@ -239,8 +241,8 @@ pub fn processPlane(
                     const w1 = @max(simd.minPs(BW, mb - @abs(r1 - cr1), wmaxb), zerob);
                     sw0 += w0;
                     sw1 += w1;
-                    sum0 = @mulAdd(VB, v0 - cen0, w0, sum0);
-                    sum1 = @mulAdd(VB, v1 - cen1, w1, sum1);
+                    sum0 = simd.madd(VB, v0 - cen0, w0, sum0);
+                    sum1 = simd.madd(VB, v1 - cen1, w1, sum1);
                 }
                 dst[drow + x ..][0..BW].* = fromAccum(T, BW, cen0 + sum0 / @max(sw0, swminb), peakb, zerob);
                 dst[drow + x + BW ..][0..BW].* = fromAccum(T, BW, cen1 + sum1 / @max(sw1, swminb), peakb, zerob);
@@ -267,7 +269,7 @@ pub fn processPlane(
                     // like @min — drops the vcmpunordps + vblendvps fixup.
                     const wgt = @max(simd.minPs(8, m8 - dist, wmax8), zero8);
                     sum_w += wgt;
-                    sum = @mulAdd(v8, diff, wgt, sum); // FMA
+                    sum = simd.madd(v8, diff, wgt, sum); // FMA
                 }
                 const denom = @max(sum_w, swmin8);
                 const p = cen + sum / denom;
@@ -291,7 +293,7 @@ pub fn processPlane(
                     const dist = @abs(vr - cen_ref);
                     const wgt = @max(simd.minPs(4, m4 - dist, wmax4), zero4);
                     sum_w += wgt;
-                    sum = @mulAdd(v4, diff, wgt, sum); // FMA
+                    sum = simd.madd(v4, diff, wgt, sum); // FMA
                 }
                 const denom = @max(sum_w, swmin4);
                 const p = cen + sum / denom;
@@ -340,7 +342,7 @@ pub fn processPlane(
                     const dist = @abs(vr - cen_ref);
                     const wgt = @max(simd.minPs(vec_len, m_v - dist, wmax_v), zero_v);
                     sum_w += wgt;
-                    sum = @mulAdd(f32v, diff, wgt, sum); // FMA
+                    sum = simd.madd(f32v, diff, wgt, sum); // FMA
                 }
             }
 

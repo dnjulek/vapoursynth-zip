@@ -108,7 +108,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 const stride: u32 = @intCast(dp.stride());
                 const intermediate = bufs.intermediate[0 .. 2 * h * w];
                 @memset(intermediate, 0.0);
-                processPlane(BS, &d.cfg, bufs, &.{sp.fullSlice()}, &.{rp.fullSlice()}, intermediate.ptr, w, w, h, stride, d.cfg.sigma[plane]) catch
+                processPlane(BS, &d.cfg, bufs, &.{sp.fullSlice()}, &.{rp.fullSlice()}, intermediate.ptr, w, h, w, h, stride, d.cfg.sigma[plane], {}) catch
                     return ctx.fail("out of memory", .{});
                 filter.aggregation(dp.fullSlice(), intermediate, w, h, stride);
             }
@@ -163,7 +163,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 const stride: u32 = @intCast(dp.stride());
                 const dstp = dp.fullSlice();
                 @memset(dstp[0 .. 2 * num_frames * h * stride], 0.0);
-                processPlane(BS, &d.cfg, bufs, srcps[0..num_frames], refps[0..num_frames], dstp.ptr, stride, w, h, stride, d.cfg.sigma[plane]) catch
+                processPlane(BS, &d.cfg, bufs, srcps[0..num_frames], refps[0..num_frames], dstp.ptr, stride, h, w, h, stride, d.cfg.sigma[plane], {}) catch
                     return ctx.fail("out of memory", .{});
             }
             return dst;
@@ -196,7 +196,7 @@ const VagData = struct {
     process: [3]bool,
     max_w: u32,
     num_frames: c_int,
-    pool: Pool([]align(64) f32) = .{},
+    pool: Pool([]align(common.vec_len) f32) = .{},
 
     pub fn deinit(self: *VagData) void {
         for (self.pool.items.items) |b| allocator.free(b);
@@ -227,7 +227,7 @@ fn vagGetFrame(d: *VagData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     const process: [4]bool = .{ d.process[0], d.process[1], d.process[2], false };
     hz.copyUnprocessed(ctx.env(), dst, src, d.format, &process);
 
-    const buffer = d.pool.take() orelse (allocator.alignedAlloc(f32, .@"64", 2 * d.max_w) catch return ctx.fail("out of memory", .{}));
+    const buffer = d.pool.take() orelse (allocator.alignedAlloc(f32, common.alignment, 2 * d.max_w) catch return ctx.fail("out of memory", .{}));
     defer if (!d.pool.put(buffer)) allocator.free(buffer);
 
     for (0..d.format.color_planes) |plane| {

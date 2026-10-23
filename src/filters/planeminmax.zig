@@ -114,7 +114,7 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
         // integers, so the merged histogram is identical. u8 only: 4x256
         // bins stay in L1 and the merge is 256 adds; for 65536-bin
         // histograms the extra zeroing/merge traffic costs more than it saves.
-        var sub: [4][256]u32 align(64) = undefined;
+        var sub: [4][256]u32 align(vszip.vec_len) = undefined;
         for (&sub) |*hh| @memset(hh, 0);
         var srcp: []const T = src;
         for (0..h) |_| {
@@ -151,26 +151,18 @@ inline fn minMaxImpl(comptime T: type, comptime use_ref: bool, src: []const T, r
         const n = comptime (std.simd.suggestVectorLength(f32) orelse 1);
         const wv = if (comptime n > 1) w - w % n else 0;
         var srcp: []const T = src;
-        var refp: []const T = ref;
         for (0..h) |_| {
             var x: usize = 0;
             while (x < wv) : (x += n) {
                 const idx = floatIdxVec(T, n, srcp[x..][0..n]);
-                inline for (0..n) |l| {
-                    accum_buf[idx[l]] += 1;
-                    // The Diff prop keeps the original per-pixel left-to-
-                    // right scalar f64 chain (and f16 subtraction stays in
-                    // f16) — only the index math is vectorized.
-                    if (use_ref) diffacc += @abs(srcp[x + l] - refp[x + l]);
-                }
+                inline for (0..n) |l| accum_buf[idx[l]] += 1;
             }
             while (x < w) : (x += 1) {
                 accum_buf[math.lossyCast(u16, @as(f32, srcp[x]) * 65535.0 + 0.5)] += 1;
-                if (use_ref) diffacc += @abs(srcp[x] - refp[x]);
             }
             srcp = srcp[stride..];
-            if (use_ref) refp = refp[stride..];
         }
+        if (use_ref) diffacc = absDiffSumFloat(T, src, ref, stride, w, h);
     }
 
     const totalmin: u32 = @trunc(total * d.minthr);
@@ -326,6 +318,32 @@ fn absDiffSumInt(comptime T: type, src: []const T, ref: []const T, stride: u32, 
     return acc;
 }
 
+/// Float |src-ref| plane sum (the subtraction in T, so f16 stays f16) with
+/// f64 lane accumulators. The additions are grouped per lane instead of one
+/// left-to-right chain, a relative change around 1e-16 in the Diff prop; the
+/// scalar chain cost a serial vaddsd per pixel.
+fn absDiffSumFloat(comptime T: type, src: []const T, ref: []const T, stride: u32, w: u32, h: u32) f64 {
+    const n = comptime (std.simd.suggestVectorLength(f32) orelse 4);
+    const VD = @Vector(n, f64);
+    var acc: VD = @splat(0);
+    var tail: f64 = 0;
+    const wv = w - w % n;
+    var srcp: []const T = src;
+    var refp: []const T = ref;
+    for (0..h) |_| {
+        var x: usize = 0;
+        while (x < wv) : (x += n) {
+            const v: @Vector(n, T) = srcp[x..][0..n].*;
+            const j: @Vector(n, T) = refp[x..][0..n].*;
+            acc += @as(VD, @floatCast(@abs(v - j)));
+        }
+        while (x < w) : (x += 1) tail += @abs(srcp[x] - refp[x]);
+        srcp = srcp[stride..];
+        refp = refp[stride..];
+    }
+    return @reduce(.Add, acc) + tail;
+}
+
 pub fn minMaxNoThrRef(comptime T: type, src: []const T, ref: []const T, stride: u32, props: anytype, w: u32, h: u32, d: *Data) void {
     const total: f64 = @floatFromInt(w * h);
     var diffacc: f64 = 0;
@@ -333,18 +351,7 @@ pub fn minMaxNoThrRef(comptime T: type, src: []const T, ref: []const T, stride: 
     if (@typeInfo(T) == .int) {
         diffacc = @floatFromInt(absDiffSumInt(T, src, ref, stride, w, h));
     } else {
-        // Float diff stays a scalar left-to-right f64 accumulation: vector
-        // partial sums would change the FP addition order and drift the Diff
-        // prop. min/max (order-free) are still vectorized separately below.
-        var srcp: []const T = src;
-        var refp: []const T = ref;
-        for (0..h) |_| {
-            for (srcp[0..w], refp[0..w]) |v, j| {
-                diffacc += @abs(v - j);
-            }
-            srcp = srcp[stride..];
-            refp = refp[stride..];
-        }
+        diffacc = absDiffSumFloat(T, src, ref, stride, w, h);
     }
 
     const mm = minMaxPlane(T, src, stride, w, h);

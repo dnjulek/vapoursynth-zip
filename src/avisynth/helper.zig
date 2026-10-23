@@ -215,7 +215,7 @@ pub fn planeIndex(comptime table: anytype, planes: [3]bool, fallback: u32) u32 {
 /// (or `reset`) frees them all. Grows as needed: temporal filters can hold
 /// many copies (WNNM: 2 per frame of a 31-frame window per plane).
 pub const Scratch = struct {
-    bufs: std.ArrayList([]align(64) u8) = .empty,
+    bufs: std.ArrayList([]align(common.vec_len) u8) = .empty,
     /// Canonical copies made so far, so a plane requested again (WNNM's
     /// reference when it is the source, clamped edge frames of a temporal
     /// window) shares one copy. Keyed by the source plane's address and
@@ -223,7 +223,7 @@ pub const Scratch = struct {
     /// releasing a source frame that a later `canonical` call could alias.
     memo: std.ArrayList(Memo) = .empty,
 
-    const Memo = struct { src: usize, pitch: usize, rows: usize, row_bytes: usize, want: usize, out: [*]align(64) u8 };
+    const Memo = struct { src: usize, pitch: usize, rows: usize, row_bytes: usize, want: usize, out: [*]align(common.vec_len) u8 };
 
     pub fn deinit(self: *Scratch) void {
         for (self.bufs.items) |b| std.heap.c_allocator.free(b);
@@ -248,22 +248,22 @@ pub const Scratch = struct {
         return p[0 .. stride * height];
     }
 
-    fn alloc(self: *Scratch, n: usize) error{OutOfMemory}![]align(64) u8 {
+    fn alloc(self: *Scratch, n: usize) error{OutOfMemory}![]align(common.vec_len) u8 {
         try self.bufs.ensureUnusedCapacity(std.heap.c_allocator, 1);
-        const b = try std.heap.c_allocator.alignedAlloc(u8, .@"64", n);
+        const b = try std.heap.c_allocator.alignedAlloc(u8, common.alignment, n);
         self.bufs.appendAssumeCapacity(b);
         return b;
     }
 };
 
 /// Source plane in vszip's canonical layout: pitch `want_pitch` (normally the
-/// output frame's) and a 64-byte aligned start, so `fullSlice()` is safe and
+/// output frame's) and a `vec_len`-aligned start, so `fullSlice()` is safe and
 /// single-stride kernels can address source and destination alike. Freshly
 /// allocated upstream frames already qualify (no copy); horizontally cropped
 /// or foreign-pitch planes are repacked into `scratch` (one copy per distinct
 /// source plane, see `Scratch.memo`).
 pub fn canonical(comptime T: type, src: avs.Plane(T), want_pitch: usize, scratch: *Scratch) error{OutOfMemory}!avs.Plane(T) {
-    if (src.pitch == want_pitch and src.isAligned(64)) return src;
+    if (src.pitch == want_pitch and src.isAligned(common.vec_len)) return src;
     std.debug.assert(want_pitch >= src.rowBytes());
     const key: Scratch.Memo = .{
         .src = @intFromPtr(src.ptr),

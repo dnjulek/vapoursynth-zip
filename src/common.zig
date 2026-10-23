@@ -42,14 +42,12 @@ pub const alignment = std.mem.Alignment.fromByteUnits(vec_len);
 /// Single-threaded `std.Io` used for the mutexes guarding scratch pools.
 pub const io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
-/// Row alignment for filter-owned scratch buffers. vszip padded scratch rows
-/// to VapourSynth's runtime frame alignment (32/64); a fixed 64 covers both
-/// and keeps rows vector-aligned on AVX-512 too. Never index host frames with
-/// a scratch stride (host pitches are independent).
-pub const scratch_alignment: u32 = 64;
-
+/// Row padding, in elements of `div` bytes, for filter-owned scratch buffers:
+/// one vector of the build target (`vec_len` bytes), so a row's last vector
+/// stays inside it. Never index host frames with a scratch stride (host
+/// pitches are independent).
 pub fn scratchAlignmentT(div: u32) u32 {
-    return @divExact(scratch_alignment, div);
+    return @divExact(vec_len, div);
 }
 
 pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
