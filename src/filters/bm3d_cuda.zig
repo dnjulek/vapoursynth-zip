@@ -663,51 +663,28 @@ inline fn distance(comptime e: BmError, rb: *const RefBlock, p: [*]const f32, st
     return reduce8(a[0] + a[1]);
 }
 
-/// For each 8-bit mask, the indices of its set bits, ascending (padded with
-/// 0): vpermps compaction of the kept lanes.
-const compact_lut: [256][8]u8 = blk: {
-    @setEvalBranchQuota(10000);
-    var t: [256][8]u8 = undefined;
-    for (0..256) |mask| {
-        var n: usize = 0;
-        t[mask] = @splat(0);
-        for (0..8) |j| {
-            if (mask >> j & 1 != 0) {
-                t[mask][n] = j;
-                n += 1;
-            }
-        }
-    }
-    break :blk t;
-};
-
 /// Second pass of searchWindow's chunk: raster-order insertion of the
 /// distances at or below the largest per-lane minimum (inf, from a lane
 /// without finite candidates, keeps everything).
 ///
-/// The kept candidates are first compacted in order without branches, then
-/// inserted without the `e < worst` gate: there it is a no-op (every kept
-/// error is `<= e`, the slot comes out as 8), and NaN never passes the
-/// bound. The gated loop mispredicted on most groups.
+/// On real video ~36% of a default window passes the bound but only ~3%
+/// enters, so lanes are also masked by the current worst error and gated
+/// again per insert (the worst only decreases). Branch-free compaction plus
+/// ungated inserts, which won on a synthetic image, ran every kept candidate
+/// through place()'s dependency chain: 37% of r=2 time.
 fn insertBounded(m: *Match, d: []const V8, gx: []const u32, gy: []const u32, lmin: V8, z: i32) void {
     const bound: V8 = @splat(@reduce(.Max, lmin));
-    // 8 lanes of slack for the last group's full-width store
-    var ce: [64 * 8 + 8]f32 = undefined;
-    var cx: [64 * 8 + 8]i32 = undefined;
-    var cy: [64 * 8 + 8]i32 = undefined;
-    var n: usize = 0;
     for (d, gx, gy) |dv, x, y| {
-        const keep: u8 = @bitCast(dv <= bound);
-        const perm: @Vector(8, i32) = @as(@Vector(8, u8), compact_lut[keep]);
-        const xv = @as(I8, @splat(@intCast(x))) + std.simd.iota(i32, 8);
-        ce[n..][0..8].* = simd.permuteVar8(f32, dv, perm);
-        cx[n..][0..8].* = simd.permuteVar8(i32, xv, perm);
-        cy[n..][0..8].* = @as(I8, @splat(@intCast(y)));
-        n += @popCount(keep);
-    }
-    for (ce[0..n], cx[0..n], cy[0..n]) |e, x, y| {
-        const le: u8 = @bitCast(m.err <= @as(V8, @splat(e)));
-        m.place(@popCount(le), e, x, y, z);
+        var mask = @as(u8, @bitCast(dv <= bound)) & @as(u8, @bitCast(dv < @as(V8, @splat(m.err[7]))));
+        if (mask == 0) continue;
+        const da: [8]f32 = dv;
+        while (mask != 0) : (mask &= mask - 1) {
+            const j = @ctz(mask);
+            const e = da[j];
+            if (!(e < m.err[7])) continue;
+            const le: u8 = @bitCast(m.err <= @as(V8, @splat(e)));
+            m.place(@popCount(le), e, @intCast(x + j), @intCast(y), z);
+        }
     }
 }
 

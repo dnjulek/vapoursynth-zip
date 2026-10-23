@@ -304,12 +304,6 @@ const Cand = struct {
     y: i32,
     x: i32,
 
-    fn lessKYX(a: Cand, b: Cand) bool {
-        if (a.key != b.key) return a.key < b.key;
-        if (a.y != b.y) return a.y < b.y;
-        return a.x < b.x;
-    }
-
     fn lessKZYX(a: Cand, b: Cand) bool {
         if (a.key != b.key) return a.key < b.key;
         if (a.z != b.z) return a.z < b.z;
@@ -320,27 +314,64 @@ const Cand = struct {
 
 /// The best `cap` candidates of one frame, kept sorted by (key, y, x), in any
 /// arrival order.
+///
+/// Each candidate is one u64, the key's bits above the raster index y * width
+/// + x: keys are >= +0 (sums of squares; NaN and inf never pass the reject
+/// test), so the integer order of the bits is the float order, and the u64
+/// order is (key, y, x). The 3-way compare (lessKYX) was ~9% of BM3DBasic.
 const Top = struct {
-    items: []Cand,
+    keys: [max_group]u64 = undefined,
+    cap: u32,
     len: u32 = 0,
-    /// `Matcher.rejectBound` of the current worst key, kept across rows
-    reject: ?f32 = null,
-    reject_worst: ?f32 = null,
+    width: u32,
+    m: *const Matcher,
+    /// `Matcher.rejectBound` of the worst key, refreshed by `bound()`
+    reject: f32,
+    /// bits of the worst key `reject` was computed from (once full)
+    reject_worst: ?u32 = null,
 
-    fn insert(t: *Top, c: Cand) void {
-        const cap: u32 = @intCast(t.items.len);
+    fn init(m: *const Matcher, cap: u32, width: u32, height: u32) Top {
+        std.debug.assert(cap <= max_group);
+        std.debug.assert(@as(u64, width) * height <= std.math.maxInt(u32));
+        return .{ .cap = cap, .width = width, .m = m, .reject = m.lim };
+    }
+
+    inline fn sortKey(t: *const Top, key: f32, y: u32, x: u32) u64 {
+        return @as(u64, @as(u32, @bitCast(key))) << 32 | (y * t.width + x);
+    }
+
+    fn insert(t: *Top, sk: u64) void {
+        const cap = t.cap;
         if (cap == 0) return;
-        if (t.len == cap and !Cand.lessKYX(c, t.items[cap - 1])) return;
+        if (t.len == cap and sk >= t.keys[cap - 1]) return;
         var pos = if (t.len < cap) t.len else cap - 1;
-        while (pos > 0 and Cand.lessKYX(c, t.items[pos - 1])) : (pos -= 1) {
-            t.items[pos] = t.items[pos - 1];
+        while (pos > 0 and sk < t.keys[pos - 1]) : (pos -= 1) {
+            t.keys[pos] = t.keys[pos - 1];
         }
-        t.items[pos] = c;
+        t.keys[pos] = sk;
         if (t.len < cap) t.len += 1;
     }
 
-    fn slice(t: *const Top) []const Cand {
-        return t.items[0..t.len];
+    /// The reject bound for the next group: `Matcher.rejectBound` of the
+    /// current worst key, recomputed only when the worst changed since the
+    /// last call (refreshing on every insert was ~3.5% of BM3DVBasic).
+    inline fn bound(t: *Top) f32 {
+        if (t.len == t.cap and t.cap > 0) {
+            const wk: u32 = @intCast(t.keys[t.cap - 1] >> 32);
+            if (t.reject_worst != wk) {
+                t.reject_worst = wk;
+                t.reject = t.m.rejectBound(@bitCast(wk));
+            }
+        }
+        return t.reject;
+    }
+
+    /// The kept candidates, ascending, as Cand of window frame `z`.
+    fn write(t: *const Top, out: []Cand, z: i32) void {
+        for (t.keys[0..t.len], out[0..t.len]) |sk, *o| {
+            const idx: u32 = @truncate(sk);
+            o.* = .{ .key = @bitCast(@as(u32, @intCast(sk >> 32))), .z = z, .y = @intCast(idx / t.width), .x = @intCast(idx % t.width) };
+        }
     }
 };
 
@@ -349,15 +380,23 @@ const Matcher = struct {
     ref: [max_block * max_block]f32,
     block: u32,
     th_sse: f32,
+    /// the f32 just above th_sse (`rejectBound` without a worst key)
+    lim: f32,
     dist_mul: f64,
 
     fn init(m: *Matcher, p: *const Params, plane: PlaneIn, x: u32, y: u32) void {
         const b = p.block;
         m.block = b;
-        for (0..b) |r| @memcpy(m.ref[r * b ..][0..b], plane.at(x, y + @as(u32, @intCast(r)))[0..b]);
+        if (b == 8) {
+            // one vector per row: runtime-length @memcpy calls the library
+            for (0..8) |r| m.ref[r * 8 ..][0..8].* = plane.at(x, y + @as(u32, @intCast(r)))[0..8].*;
+        } else {
+            for (0..b) |r| @memcpy(m.ref[r * b ..][0..b], plane.at(x, y + @as(u32, @intCast(r)))[0..b]);
+        }
         const mse2sse = @as(f64, @floatFromInt(b * b)) * 1.0 * 1.0 / @as(f64, 255 * 255);
         m.dist_mul = 1.0 / mse2sse;
         m.th_sse = @floatCast(p.th_mse * mse2sse);
+        m.lim = std.math.nextAfter(f32, m.th_sse, std.math.inf(f32));
     }
 
     /// SSD of one candidate in the plugin's SSE2 order.
@@ -447,6 +486,39 @@ const Matcher = struct {
         return dist;
     }
 
+    /// `ssd8` for B = 8 on N groups of 8 candidates at p + off[i], sharing
+    /// each broadcast reference value between the groups. Bit `i` of the
+    /// result is set when group i survived the half-way check (`ssd8`'s null).
+    ///
+    /// The broadcasts take an FP pipe slot on Zen 3 (llvm-mca): one group per
+    /// call fills all four FP pipes with 64 broadcasts + 192 sub/mul/add, 3
+    /// groups per call measured 31% faster than `ssd8` per group (12
+    /// accumulators + temporaries still fit 16 ymm registers; 4 would spill).
+    /// Same per-lane order as `ssd8`.
+    fn ssdGroups(m: *const Matcher, comptime N: usize, p: [*]const f32, off: [N]u32, stride: usize, reject: f32, out: *[N]V8) u8 {
+        std.debug.assert(m.block == 8);
+        const rv: V8 = @splat(reject);
+        var s: [N][4]V8 = @splat(@splat(@splat(0)));
+        var alive: u8 = (1 << N) - 1;
+        inline for (0..8) |r| {
+            if (r == 4) {
+                inline for (0..N) |gi| {
+                    if (@reduce(.And, ((s[gi][0] + s[gi][1]) + s[gi][2]) + s[gi][3] >= rv)) alive &= ~@as(u8, 1 << gi);
+                }
+                if (alive == 0) return 0;
+            }
+            inline for (0..8) |c| {
+                const rb: V8 = @splat(m.ref[r * 8 + c]);
+                inline for (0..N) |gi| {
+                    const d = rb - @as(V8, (p + off[gi] + r * stride + c)[0..8].*);
+                    s[gi][c % 4] += d * d;
+                }
+            }
+        }
+        inline for (0..N) |gi| out[gi] = ((s[gi][0] + s[gi][1]) + s[gi][2]) + s[gi][3];
+        return alive;
+    }
+
     /// A distance from which no candidate can enter: above th_sse, or (top
     /// full) a key not below the worst kept key. The second is the f32 one
     /// ulp above the nearest f32 of w / mul, so it exceeds w / mul exactly
@@ -454,20 +526,67 @@ const Matcher = struct {
     /// d at or above it has d * mul >= w, hence key(d) >= w. It is at most
     /// two ulps above the tightest bound, which only costs a rare reject.
     fn rejectBound(m: *const Matcher, worst: ?f32) f32 {
-        const inf = std.math.inf(f32);
-        const lim = std.math.nextAfter(f32, m.th_sse, inf);
-        const w = worst orelse return lim;
+        const w = worst orelse return m.lim;
         const q: f32 = @floatCast(@as(f64, w) / m.dist_mul);
-        return @min(lim, std.math.nextAfter(f32, q, inf));
+        // q is finite and >= +0 (a key over a positive factor): the next
+        // float up is the bit pattern + 1 (nextAfter's NaN/sign handling
+        // showed up in the profile)
+        std.debug.assert(q >= 0 and std.math.isFinite(q));
+        return @min(m.lim, @as(f32, @bitCast(@as(u32, @bitCast(q)) + 1)));
     }
 
     inline fn key(m: *const Matcher, dist: f32) f32 {
         return @floatCast(@as(f64, dist) * m.dist_mul);
     }
 
+    /// `row`'s vector path for B = 8: up to 3 groups per `ssdGroups` call.
+    ///
+    /// The result depends on when the reject bound tightens (it rejects
+    /// keys equal to the worst kept one, whatever their position), so each
+    /// group's hits are taken against `top.reject` as it is after the
+    /// previous groups' inserts, exactly as one group at a time. The call's
+    /// half-way check uses the bound at its start, which is never tighter:
+    /// it only drops groups that would have had no hits.
+    fn rowGroups(m: *const Matcher, base: [*]const f32, stride: usize, y: u32, x0: u32, x1: u32, skip_x: ?u32, top: *Top) void {
+        var x = x0;
+        while (x <= x1) {
+            var xs: [3]u32 = undefined;
+            var live: [3]u8 = undefined;
+            var n: usize = 0;
+            while (n < 3 and x <= x1) : (n += 1) {
+                const s = @min(x, x1 - 7);
+                var lv: u8 = @truncate(@as(u32, 0xff) << @intCast(x - s));
+                if (skip_x) |sx| {
+                    if (sx >= s and sx - s < 8) lv &= ~(@as(u8, 1) << @intCast(sx - s));
+                }
+                xs[n] = s;
+                live[n] = lv;
+                x = s + 8;
+            }
+            const reject = top.bound();
+            var d: [3]V8 = undefined;
+            const alive = switch (n) {
+                3 => m.ssdGroups(3, base, xs, stride, reject, &d),
+                2 => m.ssdGroups(2, base, xs[0..2].*, stride, reject, d[0..2]),
+                else => m.ssdGroups(1, base, xs[0..1].*, stride, reject, d[0..1]),
+            };
+            for (0..n) |gi| {
+                if (alive >> @intCast(gi) & 1 == 0) continue;
+                // d < reject covers d <= th_sse (reject <= next float above it)
+                var hit = live[gi] & @as(u8, @bitCast(d[gi] < @as(V8, @splat(top.bound()))));
+                if (hit == 0) continue;
+                const keys: [8]f32 = @as(V8, @floatCast(@as(@Vector(8, f64), d[gi]) * @as(@Vector(8, f64), @splat(m.dist_mul))));
+                while (hit != 0) : (hit &= hit - 1) {
+                    const l = @ctz(hit);
+                    top.insert(top.sortKey(keys[l], y, xs[gi] + l));
+                }
+            }
+        }
+    }
+
     /// Tests row y, columns x0, x0 + step, ... x1 (inclusive); `skip_x` is
     /// left out (the reference position in its own frame).
-    fn row(m: *const Matcher, plane: PlaneIn, width: u32, y: u32, x0: u32, x1: u32, step: u32, skip_x: ?u32, z: i32, top: *Top) void {
+    fn row(m: *const Matcher, plane: PlaneIn, width: u32, y: u32, x0: u32, x1: u32, step: u32, skip_x: ?u32, top: *Top) void {
         const base = plane.at(0, y);
         var x = x0;
         // 8 consecutive candidates per vector while the reads stay in the
@@ -476,25 +595,23 @@ const Matcher = struct {
             // x1 + block <= width holds for every window, so a vector ending
             // at x1 stays in the row: the last partial vector is shifted back
             // to x1 - 7 and its lanes below `x` (already tested) are masked
-            const lane: @Vector(8, u32) = std.simd.iota(u32, 8);
+            if (m.block == 8) return m.rowGroups(base, plane.stride, y, x0, x1, skip_x, top);
             while (x <= x1) {
                 const xs = @min(x, x1 - 7);
-                const w: ?f32 = if (top.len == top.items.len and top.len > 0) top.items[top.len - 1].key else null;
-                if (top.reject == null or w != top.reject_worst) {
-                    top.reject_worst = w;
-                    top.reject = m.rejectBound(w);
+                var live: u8 = @truncate(@as(u32, 0xff) << @intCast(x - xs));
+                if (skip_x) |sx| {
+                    if (sx >= xs and sx - xs < 8) live &= ~(@as(u8, 1) << @intCast(sx - xs));
                 }
-                const live = @as(@Vector(8, u32), @splat(xs)) + lane >= @as(@Vector(8, u32), @splat(x));
                 x = xs + 8;
-                const reject = top.reject.?;
+                const reject = top.bound();
                 const d = m.ssd8(base + xs, plane.stride, reject) orelse continue;
                 // d < reject covers d <= th_sse (reject <= next float above it)
-                const hit = @select(bool, live, d < @as(V8, @splat(reject)), @as(@Vector(8, bool), @splat(false)));
-                if (!@reduce(.Or, hit)) continue;
-                const keys: V8 = @floatCast(@as(@Vector(8, f64), d) * @as(@Vector(8, f64), @splat(m.dist_mul)));
-                inline for (0..8) |l| {
-                    const xl: u32 = xs + @as(u32, l);
-                    if (hit[l] and xl != skip_x) top.insert(.{ .key = keys[l], .z = z, .y = @intCast(y), .x = @intCast(xl) });
+                var hit = live & @as(u8, @bitCast(d < @as(V8, @splat(reject))));
+                if (hit == 0) continue;
+                const keys: [8]f32 = @as(V8, @floatCast(@as(@Vector(8, f64), d) * @as(@Vector(8, f64), @splat(m.dist_mul))));
+                while (hit != 0) : (hit &= hit - 1) {
+                    const l = @ctz(hit);
+                    top.insert(top.sortKey(keys[l], y, xs + l));
                 }
             }
             return;
@@ -502,7 +619,7 @@ const Matcher = struct {
         while (x <= x1) : (x += step) {
             if (x == skip_x) continue;
             const d = m.ssd1(base + x, plane.stride);
-            if (d <= m.th_sse) top.insert(.{ .key = m.key(d), .z = z, .y = @intCast(y), .x = @intCast(x) });
+            if (d <= m.th_sse) top.insert(top.sortKey(m.key(d), y, x));
         }
     }
 };
@@ -535,21 +652,21 @@ const Window = struct {
 /// Spatial group of the reference block at (x, y) of window frame `cur`:
 /// the reference first, then up to group - 1 matches by (key, y, x).
 /// Returns the count written to `out`.
-fn matchFrame(p: *const Params, m: *const Matcher, plane: PlaneIn, x: u32, y: u32, z: i32, out: []Cand, scratch: []Cand) u32 {
+fn matchFrame(p: *const Params, m: *const Matcher, plane: PlaneIn, x: u32, y: u32, z: i32, out: []Cand) u32 {
     out[0] = .{ .key = 0, .z = z, .y = @intCast(y), .x = @intCast(x) };
     if (p.group == 1 or p.th_mse <= 0) return 1;
-    var top: Top = .{ .items = scratch[0 .. p.group - 1] };
+    var top: Top = .init(m, p.group - 1, p.width, p.height);
     const win = Window.init(x, y, p.width, p.height, p.block, p.bm_range, p.bm_step);
     // the reference row first, then rows alternately above and below: near
     // blocks tend to match best, which tightens `Top.reject` early (the
     // result does not depend on the order)
-    m.row(plane, p.width, y, win.l, win.r, p.bm_step, x, z, &top);
+    m.row(plane, p.width, y, win.l, win.r, p.bm_step, x, &top);
     var off = p.bm_step;
     while (off <= y - win.t or off <= win.b - y) : (off += p.bm_step) {
-        if (off <= y - win.t) m.row(plane, p.width, y - off, win.l, win.r, p.bm_step, null, z, &top);
-        if (off <= win.b - y) m.row(plane, p.width, y + off, win.l, win.r, p.bm_step, null, z, &top);
+        if (off <= y - win.t) m.row(plane, p.width, y - off, win.l, win.r, p.bm_step, null, &top);
+        if (off <= win.b - y) m.row(plane, p.width, y + off, win.l, win.r, p.bm_step, null, &top);
     }
-    @memcpy(out[1..][0..top.len], top.slice());
+    top.write(out[1..], z);
     return 1 + top.len;
 }
 
@@ -573,6 +690,33 @@ fn searchRuns(p: *const Params, seeds: []const Cand, runs: *std.ArrayList(Run), 
         by0 = @min(by0, w.t);
         bx1 = @max(bx1, w.r);
         by1 = @max(by1, w.b);
+    }
+    if (p.ps_step == 1) {
+        // contiguous windows: each row's runs are the union of the covering
+        // windows' [l, r], merged when they overlap or touch, which is what
+        // the mask scan below finds (the mask was ~7% of BM3DVBasic)
+        std.debug.assert(seeds.len <= 8);
+        var y = by0;
+        while (y <= by1) : (y += 1) {
+            var iv: [8][2]u32 = undefined;
+            var n: usize = 0;
+            for (wins[0..seeds.len]) |w| {
+                if (y < w.t or y > w.b) continue;
+                var k = n;
+                while (k > 0 and iv[k - 1][0] > w.l) : (k -= 1) iv[k] = iv[k - 1];
+                iv[k] = .{ w.l, w.r };
+                n += 1;
+            }
+            var i: usize = 0;
+            while (i < n) {
+                const l = iv[i][0];
+                var r = iv[i][1];
+                i += 1;
+                while (i < n and iv[i][0] <= r + 1) : (i += 1) r = @max(r, iv[i][1]);
+                try runs.append(allocator, .{ .y = y, .x0 = l, .x1 = r });
+            }
+        }
+        return;
     }
     const bw = bx1 - bx0 + 1;
     const bh = by1 - by0 + 1;
@@ -601,16 +745,17 @@ fn searchRuns(p: *const Params, seeds: []const Cand, runs: *std.ArrayList(Run), 
 
 /// BlockMatchingMulti over search positions: the best `group` by (key, y, x).
 fn matchRuns(p: *const Params, m: *const Matcher, plane: PlaneIn, runs: []const Run, z: i32, out: []Cand) u32 {
-    var top: Top = .{ .items = out[0..p.group] };
+    var top: Top = .init(m, p.group, p.width, p.height);
     for (runs) |r| {
         if (p.ps_step == 1) {
-            m.row(plane, p.width, r.y, r.x0, r.x1, 1, null, z, &top);
+            m.row(plane, p.width, r.y, r.x0, r.x1, 1, null, &top);
         } else {
             // windows of step > 1 interleave: test the marked positions only
             var x = r.x0;
-            while (x <= r.x1) : (x += 1) m.row(plane, p.width, r.y, x, x, 1, null, z, &top);
+            while (x <= r.x1) : (x += 1) m.row(plane, p.width, r.y, x, x, 1, null, &top);
         }
     }
+    top.write(out, z);
     return top.len;
 }
 
@@ -620,23 +765,18 @@ pub const MatchScratch = struct {
     mask: std.ArrayList(bool) = .empty,
     /// window-frame lists, then the merged group
     lists: []Cand = &.{},
-    tmp: []Cand = &.{},
 
     fn ensure(s: *MatchScratch, n: usize) error{OutOfMemory}!void {
         if (s.lists.len >= n) return;
         allocator.free(s.lists);
-        allocator.free(s.tmp);
         s.lists = &.{};
-        s.tmp = &.{};
         s.lists = try allocator.alloc(Cand, n);
-        s.tmp = try allocator.alloc(Cand, n);
     }
 
     pub fn deinit(s: *MatchScratch) void {
         s.runs.deinit(allocator);
         s.mask.deinit(allocator);
         allocator.free(s.lists);
-        allocator.free(s.tmp);
     }
 };
 
@@ -654,7 +794,7 @@ fn matchTemporal(p: *const Params, m: *const Matcher, mp: []const PlaneIn, cur: 
         return 1;
     }
     var all = s.lists;
-    var n = matchFrame(p, m, mp[cur], x, y, curz, all, s.tmp);
+    var n = matchFrame(p, m, mp[cur], x, y, curz, all);
     const cur_n = n;
     const n_seed = @min(p.ps_num, cur_n);
 
@@ -910,6 +1050,14 @@ fn loadGroup(dst: []f32, planes: []const PlaneIn, code: []const Cand, b: u32) vo
     var i: usize = 0;
     for (code) |c| {
         const pl = planes[@intCast(c.z)];
+        if (b == 8) {
+            // one vector per row: the runtime-length @memcpy was a library
+            // call per row (~7% of BM3DFinal with Matcher.init's)
+            const src = pl.at(@intCast(c.x), @intCast(c.y));
+            inline for (0..8) |r| dst[i + r * 8 ..][0..8].* = (src + r * pl.stride)[0..8].*;
+            i += 64;
+            continue;
+        }
         for (0..b) |r| {
             const src = pl.at(@intCast(c.x), @intCast(c.y + @as(i32, @intCast(r))));
             @memcpy(dst[i..][0..b], src[0..b]);
@@ -989,7 +1137,7 @@ pub fn stage(
             const n = if (frames > 1)
                 try matchTemporal(p, &m, mp, cur, i, j, &sc.match, code_buf)
             else
-                matchFrame(p, &m, mp[0], i, j, 0, code_buf, sc.match.tmp);
+                matchFrame(p, &m, mp[0], i, j, 0, code_buf);
             const code = code_buf[0..n];
             const g: u32 = n;
             const len = @as(usize, g) * b * b;
@@ -1099,10 +1247,45 @@ pub fn rgbToOpp(comptime T: type, y: [*]f32, u: ?[*]f32, v: ?[*]f32, dst_stride:
     const off_y: f32 = -sf * 3.0 * gain_y + 0.0;
     const gain_u: f32 = 1.0 / (srange * 2.0);
     const gain_v: f32 = 1.0 / (srange * 4.0);
+    const gy: V8 = @splat(gain_y);
+    const oy: V8 = @splat(off_y);
+    const gu: V8 = @splat(gain_u);
+    const gv: V8 = @splat(gain_v);
+    const zero: V8 = @splat(0.0);
     for (0..h) |row| {
         const so = row * src_stride;
         const do_ = row * dst_stride;
-        for (0..w) |x| {
+        // 8 pixels per step (LLVM left the loop scalar: half the speed of the
+        // integer-output path). For integer input the sums are formed in i32
+        // and converted once: (R+G)+B, R-B and (R-2G)+B are exact in f32 for
+        // 8-16 bit samples (|s| < 2^24), so they equal the float sums bit for
+        // bit.
+        var x: usize = 0;
+        while (x + 8 <= w) : (x += 8) {
+            var sy: V8 = undefined;
+            var su: V8 = undefined;
+            var sv: V8 = undefined;
+            if (T == f32) {
+                const R: V8 = r[so + x ..][0..8].*;
+                const G: V8 = g[so + x ..][0..8].*;
+                const B: V8 = b[so + x ..][0..8].*;
+                sy = (R + G) + B;
+                su = R - B;
+                sv = (R - G * @as(V8, @splat(2.0))) + B;
+            } else {
+                const I8v = @Vector(8, i32);
+                const R: I8v = r[so + x ..][0..8].*;
+                const G: I8v = g[so + x ..][0..8].*;
+                const B: I8v = b[so + x ..][0..8].*;
+                sy = @floatFromInt((R + G) + B);
+                su = @floatFromInt(R - B);
+                sv = @floatFromInt((R - G * @as(I8v, @splat(2))) + B);
+            }
+            y[do_ + x ..][0..8].* = sy * gy + oy;
+            if (u) |up| up[do_ + x ..][0..8].* = su * gu + zero;
+            if (v) |vp| vp[do_ + x ..][0..8].* = sv * gv + zero;
+        }
+        while (x < w) : (x += 1) {
             const R = toF(T, r[so + x]);
             const G = toF(T, g[so + x]);
             const B = toF(T, b[so + x]);
@@ -1166,6 +1349,14 @@ pub fn oppToRgbQ(comptime S: type, comptime T: type, r: [*]T, g: [*]T, b: [*]T, 
         inline fn store(p: [*]T, t: V8, top: V8) void {
             if (T == f32) {
                 p[0..8].* = t;
+            } else if (S != f32) {
+                // integer OPP input: t is finite and far inside i32, so
+                // truncating first and clamping in i32 equals the float
+                // clamp (see clip16x8Bounded), with integer min/max
+                const I = @Vector(8, i32);
+                const i: I = @intFromFloat(t);
+                const c = @min(@max(i, @as(I, @splat(0))), @as(I, @intFromFloat(top)));
+                p[0..8].* = @as(@Vector(8, T), @truncate(@as(@Vector(8, u32), @bitCast(c))));
             } else {
                 const i: @Vector(8, i32) = @intFromFloat(@min(@max(t, @as(V8, @splat(0))), top));
                 p[0..8].* = @as(@Vector(8, T), @truncate(@as(@Vector(8, u32), @bitCast(i))));
@@ -1247,12 +1438,36 @@ pub fn rgbToOpp16(comptime S: type, y: [*]u16, u: [*]u16, v: [*]u16, dst_stride:
         const do_ = row * dst_stride;
         var x: usize = 0;
         while (x + 8 <= w) : (x += 8) {
-            const R = toF64x8(S, r[so + x ..][0..8].*);
-            const G = toF64x8(S, g[so + x ..][0..8].*);
-            const B = toF64x8(S, b[so + x ..][0..8].*);
-            y[do_ + x ..][0..8].* = clip16x8(((R + G) + B) * gy + oy);
-            u[do_ + x ..][0..8].* = clip16x8((R - B) * gu + oc);
-            v[do_ + x ..][0..8].* = clip16x8(((R - G * @as(F8, @splat(2.0))) + B) * gv + oc);
+            var sy: F8 = undefined;
+            var su: F8 = undefined;
+            var sv: F8 = undefined;
+            if (S == f32) {
+                const R = toF64x8(S, r[so + x ..][0..8].*);
+                const G = toF64x8(S, g[so + x ..][0..8].*);
+                const B = toF64x8(S, b[so + x ..][0..8].*);
+                sy = (R + G) + B;
+                su = R - B;
+                sv = (R - G * @as(F8, @splat(2.0))) + B;
+            } else {
+                // integer sums, one conversion each: exact in f64, so equal
+                // to the f64 sums (half the f64 lane work)
+                const I8v = @Vector(8, i32);
+                const R: I8v = r[so + x ..][0..8].*;
+                const G: I8v = g[so + x ..][0..8].*;
+                const B: I8v = b[so + x ..][0..8].*;
+                sy = @floatFromInt((R + G) + B);
+                su = @floatFromInt(R - B);
+                sv = @floatFromInt((R - G * @as(I8v, @splat(2))) + B);
+            }
+            if (S == f32) {
+                y[do_ + x ..][0..8].* = clip16x8(sy * gy + oy);
+                u[do_ + x ..][0..8].* = clip16x8(su * gu + oc);
+                v[do_ + x ..][0..8].* = clip16x8(sv * gv + oc);
+            } else {
+                y[do_ + x ..][0..8].* = clip16x8Bounded(sy * gy + oy);
+                u[do_ + x ..][0..8].* = clip16x8Bounded(su * gu + oc);
+                v[do_ + x ..][0..8].* = clip16x8Bounded(sv * gv + oc);
+            }
         }
         while (x < w) : (x += 1) {
             const R: f64 = toF(S, r[so + x]);
@@ -1282,6 +1497,18 @@ inline fn clip16x8(v: @Vector(8, f64)) @Vector(8, u16) {
     return @truncate(@as(@Vector(8, u32), @bitCast(i)));
 }
 
+/// `clip16x8` for values known to lie well inside the i32 range (finite,
+/// from integer samples): truncate first, then clamp in i32, which is what
+/// the float clamp gives (v <= 0 truncates to <= 0, v >= 65535 to >= 65535)
+/// and lets the clamp and narrowing become integer min/max + vpackusdw
+/// instead of f64 min/max on two vector halves.
+inline fn clip16x8Bounded(v: @Vector(8, f64)) @Vector(8, u16) {
+    const I = @Vector(8, i32);
+    const i: I = @intFromFloat(v);
+    // @min with the comptime bound already narrows the type to u16
+    return @min(@max(i, @as(I, @splat(0))), @as(I, @splat(65535)));
+}
+
 inline fn clipF(v: f32, hi: f32) f32 {
     return if (v <= 0) 0 else if (v >= hi) hi else v;
 }
@@ -1290,5 +1517,3 @@ inline fn clipF(v: f32, hi: f32) f32 {
 pub fn divideRow(out: []f32, num: []const f32, den: []const f32) void {
     for (out, num, den) |*o, n, d| o.* = n / d;
 }
-
-

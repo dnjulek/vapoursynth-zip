@@ -719,4 +719,3 @@ pub const PlaneCache = struct {
         }
     }
 };
-

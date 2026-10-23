@@ -272,6 +272,7 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
     if (!vapoursynth.vshelper.isConstantVideoFormat(d.vi) or fmt.sampleType != .Float or fmt.bitsPerSample != 32) {
         return fail(map_out, "only constant format 32 bit float input supported.");
     }
+    if (d.vi.width < 64 or d.vi.height < 64) return fail(map_out, "clip must be at least 64x64.");
     if (d.ref_node) |rn| {
         const rvi = zapi.getVideoInfo(rn);
         const rf = rvi.format;
@@ -507,6 +508,7 @@ pub const VAggregate = struct {
         if (!vapoursynth.vshelper.isConstantVideoFormat(d.src_vi) or d.src_vi.height <= 0 or sf.sampleType != .Float or sf.bitsPerSample != 32) {
             return map_out.setError("VAggregate: \"src\" must be 32 bit float.");
         }
+        if (d.src_vi.width < 64 or d.src_vi.height < 64) return map_out.setError("VAggregate: \"src\" must be at least 64x64.");
         const cf = vi.format;
         if (cf.colorFamily != sf.colorFamily or cf.sampleType != sf.sampleType or cf.bitsPerSample != sf.bitsPerSample or
             cf.subSamplingW != sf.subSamplingW or cf.subSamplingH != sf.subSamplingH or vi.numFrames != d.src_vi.numFrames)

@@ -306,7 +306,6 @@ fn run(comptime wiener: bool, d: *Data, sc: *Scratch, src: ZF, ref: ZF, rdef: bo
     try filter.stage(p, rp[0..1], 0, sp[0..np], rp[0..np], 0, sc.k, &sink);
 }
 
-
 fn Temporal(comptime wiener: bool, comptime name: []const u8) type {
     return struct {
         const max_win = 2 * filter.max_radius + 1;
@@ -544,6 +543,7 @@ fn createImpl(comptime wiener: bool, comptime temporal: bool, comptime name: [:0
     if ((fmt.sampleType == .Integer and fmt.bitsPerSample > 16) or (fmt.sampleType == .Float and fmt.bitsPerSample != 32)) {
         return fail(map_out, "Invalid input clip, only 8-16 bit integer or 32 bit float formats supported");
     }
+    if (vi.width < 64 or vi.height < 64) return fail(map_out, "Invalid input clip, must be at least 64x64");
     d.float = fmt.sampleType == .Float;
     d.bits = @intCast(fmt.bitsPerSample);
     d.kind = switch (fmt.colorFamily) {
@@ -587,7 +587,6 @@ fn createImpl(comptime wiener: bool, comptime temporal: bool, comptime name: [:0
 
     const block = map_in.getValue(i64, "block_size") orelse def.block_size;
     if (map_in.getValue(i64, "block_size") != null and (block < 1 or block > 64)) return fail(map_out, "Invalid \"block_size\" assigned, must be an integer in [1, 64]");
-    if (block > vi.width or block > vi.height) return fail(map_out, "Invalid \"block_size\", must not exceed width or height of the frame");
     const step = map_in.getValue(i64, "block_step") orelse @min(def.block_step, block);
     if (step < 1 or step > block) return fail(map_out, "Invalid \"block_step\" assigned, must be an integer in [1, block_size]");
     const group = map_in.getValue(i64, "group_size") orelse def.group_size;
@@ -879,6 +878,7 @@ pub const VAggregate = struct {
         d.float_out = sample == 1;
         d.vi_out = vi.*;
         d.vi_out.height = @intCast(@divExact(vi.height, slots));
+        if (vi.width < 64 or d.vi_out.height < 64) return map_out.setError(name ++ ": Invalid input clip, the aggregated frames must be at least 64x64");
         _ = zapi.queryVideoFormat(&d.vi_out.format, vi.format.colorFamily, if (d.float_out) .Float else .Integer, if (d.float_out) 32 else 16, vi.format.subSamplingW, vi.format.subSamplingH);
 
         const data = allocator.create(AggData) catch return map_out.setError(name ++ ": failed to allocate memory");
@@ -908,9 +908,6 @@ fn Opp(comptime forward: bool) type {
         };
 
         fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
-            defer if (activation_reason == .AllFramesReady) { // TEMP-PROF
-                _ = prof_n.fetchAdd(1, .monotonic); // TEMP-PROF
-            }; // TEMP-PROF
             const d: *OppData = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
             if (activation_reason == .Initial) {
@@ -936,8 +933,6 @@ fn Opp(comptime forward: bool) type {
             const h: u32 = @intCast(d.vi.height);
             const bits: u32 = @intCast(d.vi.format.bitsPerSample);
             const float_in = d.vi.format.sampleType == .Float;
-            var tk0 = rdtscP(); // TEMP-PROF
-            for (0..2) |pass| { // TEMP-PROF
             switch (bits) {
                 inline 8, 16, 32, 9, 10, 12, 14 => |bb| {
                     const S = if (bb == 32) f32 else if (bb == 8) u8 else u16;
@@ -961,10 +956,6 @@ fn Opp(comptime forward: bool) type {
                 },
                 else => unreachable,
             }
-            const tk1 = rdtscP(); // TEMP-PROF
-            _ = (if (pass == 0) prof_k else prof_a).fetchAdd(tk1 - tk0, .monotonic); // TEMP-PROF
-            tk0 = tk1; // TEMP-PROF
-            } // TEMP-PROF
             const dp = dst.getPropertiesRW();
             if (forward) {
                 dp.setInt("_Matrix", 2, .Replace);
@@ -980,8 +971,6 @@ fn Opp(comptime forward: bool) type {
 
         fn free(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
             const d: *OppData = @ptrCast(@alignCast(instance_data));
-            const pn = @max(prof_n.load(.monotonic), 1); // TEMP-PROF
-            std.debug.print("TEMP-PROF frames {d} first pass {d} kcyc/frame, second (warm) pass {d} kcyc/frame\n", .{ pn, prof_k.load(.monotonic) / pn / 1000, prof_a.load(.monotonic) / pn / 1000 }); // TEMP-PROF
             ZAPI.init(vsapi, core, null).freeNode(d.node);
             allocator.destroy(d);
         }
@@ -1019,13 +1008,3 @@ fn Opp(comptime forward: bool) type {
         }
     };
 }
-
-fn rdtscP() u64 { // TEMP-PROF
-    var lo: u32 = undefined; // TEMP-PROF
-    var hi: u32 = undefined; // TEMP-PROF
-    asm volatile ("rdtsc" : [lo] "={eax}" (lo), [hi] "={edx}" (hi)); // TEMP-PROF
-    return (@as(u64, hi) << 32) | lo; // TEMP-PROF
-} // TEMP-PROF
-var prof_k = std.atomic.Value(u64).init(0); // TEMP-PROF
-var prof_a = std.atomic.Value(u64).init(0); // TEMP-PROF
-var prof_n = std.atomic.Value(u64).init(0); // TEMP-PROF

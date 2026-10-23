@@ -102,25 +102,6 @@ inline fn zop2i(comptime mnem: []const u8, comptime imm: u8, comptime Out: type,
     );
 }
 
-/// Lane i = v[idx[i]] for 8 lanes of 32 bits and runtime indices (0..7):
-/// vpermps on AVX2 (@shuffle needs comptime indices).
-pub inline fn permuteVar8(comptime T: type, v: @Vector(8, T), idx: @Vector(8, i32)) @Vector(8, T) {
-    comptime std.debug.assert(@sizeOf(T) == 4);
-    if (use_avx2) {
-        const r = asm ("vpermps %[v], %[idx], %[out]"
-            : [out] "=x" (-> @Vector(8, f32)),
-            : [v] "x" (@as(@Vector(8, f32), @bitCast(v))),
-              [idx] "x" (idx),
-        );
-        return @bitCast(r);
-    } else {
-        const a: [8]T = v;
-        var out: [8]T = undefined;
-        inline for (0..8) |i| out[i] = a[@intCast(idx[i])];
-        return out;
-    }
-}
-
 /// dst = permute of concat(a, b) by comptime lane indices (0..31), via
 /// vpermt2ps: `a` rides in as the tied first table operand and is replaced by
 /// the result; `idx` materializes from the constant pool once per loop.
