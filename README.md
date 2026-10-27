@@ -33,5 +33,6 @@
 - [PlaneMinMax](https://github.com/dnjulek/vapoursynth-zip/wiki/PlaneMinMax): Vapoursynth [PlaneStats](https://www.vapoursynth.com/doc/functions/video/planestats.html) with threshold.
 - [RFS](https://github.com/dnjulek/vapoursynth-zip/wiki/RFS): Replace frames plugin.
 - [SSIMULACRA2](https://github.com/dnjulek/vapoursynth-zip/wiki/SSIMULACRA2): Image metric [SSIMULACRA2](https://github.com/cloudinary/ssimulacra2).
+- [Tonemap](https://github.com/dnjulek/vapoursynth-zip/wiki/Tonemap): HDR tone and gamut mapping (HDR10/HLG to SDR, HDR10 or HLG), a CPU port of [vs-placebo](https://github.com/Lypheo/vs-placebo)'s Tonemap ([libplacebo](https://code.videolan.org/videolan/libplacebo)'s color mapping) with deterministic peak detection.
 - [WNNM](https://github.com/dnjulek/vapoursynth-zip/wiki/WNNM): Weighted Nuclear Norm Minimization denoiser, a dependency-free port of [VapourSynth-WNNM](https://github.com/WolframRhodium/VapourSynth-WNNM).
 - [XPSNR](https://github.com/dnjulek/vapoursynth-zip/wiki/XPSNR): Image metric [XPSNR](https://github.com/fraunhoferhhi/xpsnr).

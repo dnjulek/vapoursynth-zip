@@ -43,6 +43,8 @@ const kernels = .{
     @import("filters/simd.zig"),
     @import("filters/srgb.zig"),
     @import("filters/ssimulacra2.zig"),
+    @import("filters/tonemap.zig"),
+    @import("filters/tonemap_color.zig"),
     @import("filters/wnnm.zig"),
     @import("filters/xpsnr.zig"),
     @import("vcl.zig"),

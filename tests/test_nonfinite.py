@@ -134,6 +134,24 @@ MANIFEST = {
             "tone_mapping_param": (False, 0.5, 1),
             "contrast_recovery": (False, 0.3, 1),
             "contrast_smoothness": (False, 3.5, 1),
+            "mastering_clip": (False, 1.0, 1),
+            "film_strength": (False, 0.3, 1),
+            "knee_adaptation": (False, 0.4, 1),
+            "knee_minimum": (False, 0.1, 1),
+            "knee_maximum": (False, 0.8, 1),
+            "knee_default": (False, 0.4, 1),
+            "knee_offset": (False, 1.0, 1),
+            "slope_tuning": (False, 1.5, 1),
+            "slope_offset": (False, 0.2, 1),
+            "spline_contrast": (False, 0.5, 1),
+            "reinhard_contrast": (False, 0.5, 1),
+            "linear_knee": (False, 0.3, 1),
+            "exposure": (False, 1.0, 1),
+            "perceptual_deadzone": (False, 0.3, 1),
+            "perceptual_strength": (False, 0.8, 1),
+            "colorimetric_gamma": (False, 1.8, 1),
+            "softclip_knee": (False, 0.7, 1),
+            "softclip_desat": (False, 0.35, 1),
         },
         {},
     ),
@@ -232,8 +250,10 @@ except vs.Error:
         )
         script = (SETUP.format(tests=str(TESTS_DIR)) if setup is None else setup) + body
         try:
+            # the script goes in on stdin: as a `-c` argument, a function with
+            # many float parameters (Tonemap) exceeds Windows' 32K command line
             proc = subprocess.run(
-                [sys.executable, "-c", script], cwd=TESTS_DIR, env=os.environ.copy(),
+                [sys.executable, "-"], input=script, cwd=TESTS_DIR, env=os.environ.copy(),
                 capture_output=True, text=True, timeout=timeout,
             )
             stdout, code = proc.stdout, proc.returncode

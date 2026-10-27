@@ -52,6 +52,7 @@ const modules = .{
     @import("vapoursynth/planeminmax.zig"),
     @import("vapoursynth/rfs.zig"),
     @import("vapoursynth/ssimulacra2.zig"),
+    @import("vapoursynth/tonemap.zig"),
     @import("vapoursynth/wnnm.zig"),
     @import("vapoursynth/xpsnr.zig"),
 };
