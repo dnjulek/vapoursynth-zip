@@ -48,7 +48,6 @@ const Data = struct {
     process: [3]bool = @splat(false),
     entries: [3]PlaneEntry = undefined,
     n_entries: usize = 0,
-    rcp: [*]const u8 = undefined,
     cache: bc.TemporalCache = undefined,
 
     pool_lock: std.Io.Mutex = .init,
@@ -101,7 +100,7 @@ fn Spatial(comptime final: bool, comptime name: []const u8) type {
                         sink.stride[i] = dst.getStride2(f32, pl);
                     }
                 }
-                filter.stage(final, &e.p, srcs[0..e.p.n_planes], refs[0..e.p.n_planes], ring, d.rcp, &sink);
+                filter.stage(final, &e.p, srcs[0..e.p.n_planes], refs[0..e.p.n_planes], ring, &sink);
             }
             return dst.frame;
         }
@@ -152,7 +151,7 @@ fn Temporal(comptime final: bool, comptime name: []const u8) type {
                     }
                     const sink: FoldSink = .{ .cache = &d.cache, .m = m, .planes = e.planes };
                     const n = e.p.n_planes * tw;
-                    filter.stage(final, &e.p, srcs[0..n], refs[0..n], ring, d.rcp, &sink);
+                    filter.stage(final, &e.p, srcs[0..n], refs[0..n], ring, &sink);
                 }
             }
         };
@@ -393,8 +392,6 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
         }
     }
 
-    d.rcp = bc.rcpTable() catch return fail(map_out, "out of memory.");
-
     if (d.radius > 0) {
         var info: vs.CoreInfo = undefined;
         zapi.getCoreInfo(core, &info);
@@ -406,7 +403,7 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
             pw[p] = w >> ssw;
             ph[p] = h >> ssh;
         }
-        d.cache = bc.TemporalCache.init(.cuda, d.radius, d.vi.numFrames, d.process, pw, ph, @intCast(@max(info.numThreads, 1)));
+        d.cache = bc.TemporalCache.init(d.radius, d.vi.numFrames, d.process, pw, ph, @intCast(@max(info.numThreads, 1)));
     }
 
     const data = allocator.create(Data) catch return fail(map_out, "out of memory.");
@@ -550,16 +547,17 @@ pub const VAggregate = struct {
 /// Ascending-t sums of the stacked numerators and weights, then a correctly
 /// rounded divide (the GPU's vaggregate kernel).
 fn aggRow(out: []f32, rows: []const [*]const f32, wts: []const [*]const f32) void {
-    const V8 = bc.V8;
+    const VF = bc.VF;
+    const n = bc.vf_len;
     var x: usize = 0;
-    while (x + 8 <= out.len) : (x += 8) {
-        var sv: V8 = @splat(0);
-        var sw: V8 = @splat(0);
+    while (x + n <= out.len) : (x += n) {
+        var sv: VF = @splat(0);
+        var sw: VF = @splat(0);
         for (rows, wts) |rp, wp| {
-            sv += @as(V8, rp[x..][0..8].*);
-            sw += @as(V8, wp[x..][0..8].*);
+            sv += @as(VF, rp[x..][0..n].*);
+            sw += @as(VF, wp[x..][0..n].*);
         }
-        out[x..][0..8].* = sv / sw;
+        out[x..][0..n].* = sv / sw;
     }
     while (x < out.len) : (x += 1) {
         var sv: f32 = 0;

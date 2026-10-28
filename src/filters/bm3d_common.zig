@@ -1,22 +1,24 @@
-//! Parts shared by the two BM3D kernels (`bm3d_cuda.zig`, `bm3d_classic.zig`):
+//! Accumulation and temporal aggregation for BM3D (`bm3d_cuda.zig`), also
+//! used by the VapourSynth WNNM:
 //!
 //! - `Ring`: per-thread numerator/denominator accumulators that hold only the
 //!   rows a stage can still touch. A stage walks its reference blocks top to
 //!   bottom and every group member lies within `reach` rows of its reference
 //!   block, so rows above `y_ref - reach` are final and are handed to a sink
 //!   (division into the output frame, or a fold into the temporal cache).
-//! - `rcp`: bit-exact emulation of the GPU's approximate reciprocal.
 //! - `TemporalCache`: the fused temporal aggregation (one BM3D pass per center
 //!   frame, its slices summed per output frame in VAggregate's order).
 
 const std = @import("std");
 const common = @import("../common.zig");
-const simd = @import("simd.zig");
 
 const allocator = common.kernel_allocator;
 const io = common.io;
 
 pub const V8 = @Vector(8, f32);
+/// Row-wise f32 vector of the build target (8 lanes on AVX2, 16 on AVX-512).
+pub const vf_len = common.vec_len / @sizeOf(f32);
+pub const VF = @Vector(vf_len, f32);
 
 // ---------------------------------------------------------------------------
 // Ring accumulators
@@ -29,17 +31,17 @@ pub const Ring = struct {
     rows: u32,
     width: u32,
     height: u32,
-    /// floats per ring row (multiple of 16, at least width + 8)
+    /// floats per ring row (whole vectors of the build target, at least width + 8)
     stride: u32,
     /// first row not yet flushed
     lo: u32 = 0,
-    buf: []align(64) f32,
+    buf: []align(common.vec_len) f32,
 
     pub fn create(slots: u32, planes: u32, rows: u32, width: u32, height: u32) error{OutOfMemory}!Ring {
         std.debug.assert(rows >= 8 and rows <= height);
-        const stride = std.mem.alignForward(u32, width + 8, 16);
+        const stride = std.mem.alignForward(u32, width + 8, common.vec_len / @sizeOf(f32));
         const n = @as(usize, slots) * planes * 2 * rows * stride;
-        const buf = try allocator.alignedAlloc(f32, .@"64", n);
+        const buf = try allocator.alignedAlloc(f32, common.alignment, n);
         @memset(buf, 0);
         return .{ .slots = slots, .planes = planes, .rows = rows, .width = width, .height = height, .stride = stride, .buf = buf };
     }
@@ -123,124 +125,23 @@ pub const Ring = struct {
 };
 
 // ---------------------------------------------------------------------------
-// GPU reciprocal
-
-/// `rcp.approx.ftz.f32` (MUFU.RCP, the reciprocal `1.0f / x` compiles to under
-/// -use_fast_math) as measured on sm_86: it depends only on the mantissa
-/// (verified over exponents -60..100) and is the correctly rounded 1/x plus
-/// -1, 0 or +1 ulp. `bm3d_rcp.zlib` holds that correction for all 2^23
-/// mantissas, 2 bits each (code = delta + 1, four per byte, low bits first).
-const rcp_zlib = @embedFile("bm3d_rcp.zlib");
-const rcp_table_len = (1 << 23) / 4;
-
-var rcp_once_lock: std.Io.Mutex = .init;
-var rcp_table: std.atomic.Value(?[*]const u8) = .init(null);
-
-/// The decoded correction table (2 MiB), decompressed on first use and kept
-/// for the life of the process.
-pub fn rcpTable() error{OutOfMemory}![*]const u8 {
-    if (rcp_table.load(.acquire)) |t| return t;
-    rcp_once_lock.lockUncancelable(io);
-    defer rcp_once_lock.unlock(io);
-    if (rcp_table.load(.acquire)) |t| return t;
-    // never freed: shared by every filter instance of the process; 3 bytes
-    // of padding for rcp's 4-byte gathers at the last entries
-    const buf = try std.heap.c_allocator.alloc(u8, rcp_table_len + 3);
-    @memset(buf[rcp_table_len..], 0);
-    var in: std.Io.Reader = .fixed(rcp_zlib);
-    var dec: std.compress.flate.Decompress = .init(&in, .zlib, &.{});
-    var out: std.Io.Writer = .fixed(buf[0..rcp_table_len]);
-    const n = dec.reader.streamRemaining(&out) catch unreachable; // embedded, checked by the tests
-    std.debug.assert(n == rcp_table_len);
-    rcp_table.store(buf.ptr, .release);
-    return buf.ptr;
-}
-
-/// GPU `1.0f / x` for positive normal x whose reciprocal is normal.
-pub inline fn rcpScalar(table: [*]const u8, x: f32) f32 {
-    const m: u32 = @as(u32, @bitCast(x)) & 0x7f_ffff;
-    const code: i32 = (table[m >> 2] >> @intCast((m & 3) * 2)) & 3;
-    const r: i32 = @bitCast(1.0 / x);
-    return @bitCast(r + code - 1);
-}
-
-pub inline fn rcp(comptime N: comptime_int, table: [*]const u8, x: @Vector(N, f32)) @Vector(N, f32) {
-    const U = @Vector(N, u32);
-    const r: @Vector(N, f32) = @as(@Vector(N, f32), @splat(1.0)) / x;
-    const m: U = @as(U, @bitCast(x)) & @as(U, @splat(0x7f_ffff));
-    var delta: @Vector(N, i32) = undefined;
-    if (N == 8 and simd.use_avx2) {
-        // the table bytes of all 8 lanes in one gather (the per-lane
-        // extract / load / insert was ~18% of the Wiener stage's time)
-        const word = gather8(table, @bitCast(m >> @splat(2)));
-        const sh: @Vector(N, u5) = @intCast((m & @as(U, @splat(3))) * @as(U, @splat(2)));
-        delta = @as(@Vector(N, i32), @bitCast((word >> sh) & @as(U, @splat(3)))) - @as(@Vector(N, i32), @splat(1));
-    } else {
-        inline for (0..N) |i| {
-            const code: i32 = (table[m[i] >> 2] >> @intCast((m[i] & 3) * 2)) & 3;
-            delta[i] = code - 1;
-        }
-    }
-    return @bitCast(@as(@Vector(N, i32), @bitCast(r)) + delta);
-}
-
-/// vpgatherdd: lane i = the 4 bytes at base + idx[i] (little endian).
-inline fn gather8(base: [*]const u8, idx: @Vector(8, i32)) @Vector(8, u32) {
-    var out: @Vector(8, u32) = undefined;
-    var mask: @Vector(8, i32) = @splat(-1);
-    asm ("vpgatherdd %[mask], (%[base],%[idx],1), %[out]"
-        : [out] "=&x" (out),
-          [mask] "=&x" (mask),
-        : [base] "r" (base),
-          [idx] "x" (idx),
-          [mask_in] "1" (mask),
-    );
-    return out;
-}
-
-// ---------------------------------------------------------------------------
 // Fused temporal aggregation
 
 /// Which BM3D pass and stack slot feeds contribution `i` of output frame n.
 pub const Contrib = struct { m: i32, slot: u32 };
 
-/// The temporal window conventions of the two plugins.
-pub const Window = enum {
-    /// vszipcu / BM3DCUDA BM3Dv2: stage m covers frames clamp(m - r + z),
-    /// z = 0..2r; output n sums stage clamp(n - r + i), slot aggZ(i), for
-    /// i = 0..2r (edge stages count twice, like VAggregate).
-    cuda,
-    /// VapourSynth-BM3D VBasic/VFinal + VAggregate: stage m covers frames
-    /// m + k, k = -min(m, r)..min(N-1-m, r), in slot r + k; output n sums
-    /// the stages n + k over the same clamped range, oldest first.
-    classic,
-
-    /// Contributions of output frame n, in summation order.
-    pub fn contribs(w: Window, n: i32, nf: i32, r: i32, out: []Contrib) []Contrib {
-        switch (w) {
-            .cuda => {
-                const k: usize = @intCast(2 * r + 1);
-                for (0..k) |i_| {
-                    const i: i32 = @intCast(i_);
-                    const z = @min(@max(2 * r - i, n - nf + 1 + r), n + r);
-                    out[i_] = .{ .m = std.math.clamp(n - r + i, 0, nf - 1), .slot = @intCast(z) };
-                }
-                return out[0..k];
-            },
-            .classic => {
-                const b = -@min(n, r);
-                const f = @min(nf - 1 - n, r);
-                var c: usize = 0;
-                var k = b;
-                while (k <= f) : (k += 1) {
-                    out[c] = .{ .m = n + k, .slot = @intCast(r - k) };
-                    c += 1;
-                }
-                return out[0..c];
-            },
-        }
+/// Contributions of output frame n, in summation order (vszipcu / BM3DCUDA
+/// BM3Dv2): stage m covers frames clamp(m - r + z), z = 0..2r; output n sums
+/// stage clamp(n - r + i), slot aggZ(i), for i = 0..2r (edge stages count
+/// twice, like VAggregate).
+pub fn contribs(n: i32, nf: i32, r: i32, out: []Contrib) []Contrib {
+    const k: usize = @intCast(2 * r + 1);
+    for (0..k) |i_| {
+        const i: i32 = @intCast(i_);
+        out[i_] = .{ .m = std.math.clamp(n - r + i, 0, nf - 1), .slot = @intCast(aggZ(i, n, nf, r)) };
     }
-};
+    return out[0..k];
+}
 
 pub const max_window = 33;
 
@@ -261,7 +162,6 @@ pub const max_window = 33;
 /// reads. (Computing stages ahead of the window instead of waiting was
 /// measured: no gain at 16 threads, so requests stay at n - 2r .. n + 2r.)
 pub const TemporalCache = struct {
-    window: Window,
     radius: i32,
     num_frames: i32,
     /// processed planes and their geometry (VapourSynth plane index)
@@ -334,13 +234,12 @@ pub const TemporalCache = struct {
         }
     };
 
-    pub fn init(window: Window, radius: u32, num_frames: i32, process: [3]bool, width: [3]u32, height: [3]u32, threads: u32) TemporalCache {
+    pub fn init(radius: u32, num_frames: i32, process: [3]bool, width: [3]u32, height: [3]u32, threads: u32) TemporalCache {
         var rows: u32 = 0;
         for (0..3) |p| {
             if (process[p]) rows += height[p];
         }
         return .{
-            .window = window,
             .radius = @intCast(radius),
             .num_frames = num_frames,
             .process = process,
@@ -389,7 +288,7 @@ pub const TemporalCache = struct {
             .next = t.next,
             .parked = t.parked,
         };
-        t.k = @intCast(self.window.contribs(n, self.num_frames, self.radius, &t.contribs).len);
+        t.k = @intCast(contribs(n, self.num_frames, self.radius, &t.contribs).len);
         for (0..3) |p| {
             if (self.process[p]) @memset(t.next[p], 0);
         }
@@ -444,7 +343,7 @@ pub const TemporalCache = struct {
 
     fn feeds(self: *const TemporalCache, n: i32, m: i32, slot: u32) bool {
         var buf: [max_window]Contrib = undefined;
-        for (self.window.contribs(n, self.num_frames, self.radius, &buf)) |c| {
+        for (contribs(n, self.num_frames, self.radius, &buf)) |c| {
             if (c.m == m and c.slot == slot) return true;
         }
         return false;
@@ -540,9 +439,9 @@ pub const TemporalCache = struct {
             return;
         }
         var x: usize = 0;
-        while (x + 8 <= w) : (x += 8) {
-            tn[x..][0..8].* = @as(V8, tn[x..][0..8].*) + @as(V8, num[x..][0..8].*);
-            td[x..][0..8].* = @as(V8, td[x..][0..8].*) + @as(V8, den[x..][0..8].*);
+        while (x + vf_len <= w) : (x += vf_len) {
+            tn[x..][0..vf_len].* = @as(VF, tn[x..][0..vf_len].*) + @as(VF, num[x..][0..vf_len].*);
+            td[x..][0..vf_len].* = @as(VF, td[x..][0..vf_len].*) + @as(VF, den[x..][0..vf_len].*);
         }
         while (x < w) : (x += 1) {
             tn[x] += num[x];
@@ -609,113 +508,3 @@ pub const TemporalCache = struct {
 pub fn aggZ(i: i32, n: i32, nf: i32, r: i32) i32 {
     return @min(@max(2 * r - i, n - nf + 1 + r), n + r);
 }
-
-// ---------------------------------------------------------------------------
-// Shared converted frames
-
-/// f32 planes of source frames, shared by every stage that reads them: a
-/// frame is converted once however many windows it is in. Entries are
-/// pinned while a stage uses them; unpinned ones are evicted (oldest
-/// first) above `cap`. A frame being converted by one thread is waited for
-/// by the others.
-pub const PlaneCache = struct {
-    floats: usize,
-    cap: u32,
-    lock: std.Io.Mutex = .init,
-    cond: std.Io.Condition = .init,
-    entries: std.AutoHashMapUnmanaged(u64, *Entry) = .empty,
-    tick: u64 = 0,
-
-    const Entry = struct {
-        data: []f32,
-        ready: bool = false,
-        pins: u32 = 0,
-        last: u64 = 0,
-    };
-
-    pub fn init(floats: usize, cap: u32) PlaneCache {
-        return .{ .floats = floats, .cap = cap };
-    }
-
-    pub fn deinit(self: *PlaneCache) void {
-        var it = self.entries.valueIterator();
-        while (it.next()) |e| {
-            allocator.free(e.*.data);
-            allocator.destroy(e.*);
-        }
-        self.entries.deinit(allocator);
-    }
-
-    /// The planes of `key`, pinned; `fill.fill(data)` converts them when
-    /// absent. Pair with `release`.
-    pub fn acquire(self: *PlaneCache, key: u64, fill: anytype) ![]const f32 {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        while (true) {
-            if (self.entries.get(key)) |e| {
-                if (!e.ready) {
-                    self.cond.waitUncancelable(io, &self.lock);
-                    continue;
-                }
-                e.pins += 1;
-                self.tick += 1;
-                e.last = self.tick;
-                return e.data;
-            }
-            self.evict();
-            const e = try allocator.create(Entry);
-            e.* = .{ .data = allocator.alloc(f32, self.floats) catch |err| {
-                allocator.destroy(e);
-                return err;
-            } };
-            e.pins = 1;
-            self.entries.put(allocator, key, e) catch |err| {
-                allocator.free(e.data);
-                allocator.destroy(e);
-                return err;
-            };
-            // convert unlocked; others wait on `ready`
-            self.lock.unlock(io);
-            const r = fill.fill(e.data);
-            self.lock.lockUncancelable(io);
-            r catch |err| {
-                _ = self.entries.remove(key);
-                allocator.free(e.data);
-                allocator.destroy(e);
-                self.cond.broadcast(io);
-                return err;
-            };
-            e.ready = true;
-            self.tick += 1;
-            e.last = self.tick;
-            self.cond.broadcast(io);
-            return e.data;
-        }
-    }
-
-    pub fn release(self: *PlaneCache, key: u64) void {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        if (self.entries.get(key)) |e| e.pins -= 1;
-    }
-
-    fn evict(self: *PlaneCache) void {
-        while (self.entries.count() >= self.cap) {
-            var victim: ?u64 = null;
-            var oldest: u64 = std.math.maxInt(u64);
-            var it = self.entries.iterator();
-            while (it.next()) |kv| {
-                const e = kv.value_ptr.*;
-                if (e.pins > 0 or !e.ready) continue;
-                if (e.last < oldest) {
-                    oldest = e.last;
-                    victim = kv.key_ptr.*;
-                }
-            }
-            const k = victim orelse return;
-            const e = self.entries.fetchRemove(k).?.value;
-            allocator.free(e.data);
-            allocator.destroy(e);
-        }
-    }
-};

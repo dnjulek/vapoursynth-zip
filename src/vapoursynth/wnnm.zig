@@ -157,7 +157,7 @@ fn Wnnm(comptime BS: ?u32) type {
 
         /// radius > 0. The cache sums the stages' window slices per output
         /// frame in the order of the stacked clip + VAggregate it replaces
-        /// (bm3d_common.Window.cuda == the old slab choice), so the output is
+        /// (bm3d_common.contribs == the old slab choice), so the output is
         /// the same float sum.
         pub fn getFrameTemporal(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
             const d: *Data = @ptrCast(@alignCast(instance_data));
@@ -312,7 +312,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     // Config.process flags planes past numPlanes too (sigma repeats)
     var cache_planes: [3]bool = @splat(false);
     for (0..num_planes) |p| cache_planes[p] = d.cfg.process[p];
-    data.cache = bc.TemporalCache.init(.cuda, d.cfg.radius, d.vi.numFrames, cache_planes, plane_w, plane_h, @intCast(@max(info.numThreads, 1)));
+    data.cache = bc.TemporalCache.init(d.cfg.radius, d.vi.numFrames, cache_planes, plane_w, plane_h, @intCast(@max(info.numThreads, 1)));
 
     var deps_buf: [2]vs.FilterDependency = undefined;
     var n_deps: usize = 1;

@@ -50,18 +50,6 @@ MANIFEST = {
     "Bilateral": ("c16.vszip.Bilateral({a})", {"sigmaS": (True, 3.0, 3), "sigmaR": (True, 0.02, 3)}, {}),
     "BM3D": ("gs.vszip.BM3D({a})", {"sigma": (True, 3.0, 3)}, {}),
     "BM3Dv2": ("gs.vszip.BM3Dv2({a})", {"sigma": (True, 3.0, 3)}, {}),
-    "BM3DBasic": (
-        "c8.vszip.BM3DBasic({a})",
-        {"sigma": (True, 10.0, 3), "th_mse": (False, 400.0, 1), "hard_thr": (False, 2.7, 1)},
-        {},
-    ),
-    "BM3DFinal": ("c8.vszip.BM3DFinal(c8, {a})", {"sigma": (True, 10.0, 3), "th_mse": (False, 200.0, 1)}, {}),
-    "BM3DVBasic": (
-        "c8.vszip.BM3DVBasic({a})",
-        {"sigma": (True, 10.0, 3), "th_mse": (False, 400.0, 1), "hard_thr": (False, 2.7, 1)},
-        {},
-    ),
-    "BM3DVFinal": ("c8.vszip.BM3DVFinal(c8, {a})", {"sigma": (True, 10.0, 3), "th_mse": (False, 200.0, 1)}, {}),
     "BilateralDither": (
         "c16.vszip.BilateralDither({a})",
         {"thr": (True, 2.5, 3), "flat": (True, 0.4, 3), "wmin": (True, 0.0, 3), "subspl": (True, 0.0, 3)},

@@ -1,15 +1,14 @@
 //! BM3D, CUDA-output variant: a CPU port of vszipcu's `bm3d.cu` (itself
 //! BM3DCUDA_RTC), fixed 8x8 blocks and groups of 8.
 //!
-//! Exactness: every arithmetic step follows what the GPU executes, read from
-//! the NVRTC PTX and the sm_86 SASS of `bm3d.cu` (compiled with vszipcu's
-//! -use_fast_math):
+//! Same algorithm as the GPU (matching, transforms, thresholding, weights,
+//! aggregation, `extractor_exp`), not the GPU's exact rounding: `1.0f / x`
+//! and the Wiener divide are plain IEEE operations here, where the GPU's
+//! -use_fast_math makes them approximate (MUFU.RCP, ±1 ulp). The arithmetic
+//! otherwise still follows the GPU's operation order:
 //! - block distance: per column, an fma chain over the even rows and one over
 //!   the odd rows, their sum, then a butterfly over the columns (xor 1, 2, 4);
-//! - transforms: FFTW-derived 8-point kernels; `FMA`/`FNMS`/`FMS` are fused
-//!   (nvcc contracts a*b+c, ptxas fuses the c-a*b muls), plain `x * y` scaling
-//!   stays a separate multiply;
-//! - `1.0f / x` and the Wiener divide are MUFU.RCP based (`bm3d_common.rcp`);
+//! - transforms: FFTW-derived 8-point kernels with the GPU's fma points;
 //! - accumulation is `fma(w, v, E) - E` / `(w + E) - E`.
 //! The GPU sums its block estimates with atomics, so its own output is only
 //! deterministic with `extractor_exp` (pre-rounding makes the sums exact);
@@ -134,7 +133,7 @@ fn K(comptime x: comptime_float) V8 {
 }
 
 inline fn fma(a: V8, b: V8, c: V8) V8 {
-    return @mulAdd(V8, a, b, c);
+    return simd.madd(V8, a, b, c);
 }
 
 /// FFTW e10_8 / e01_8 (normalized, scaled DCT-II / DCT-III).
@@ -394,13 +393,19 @@ inline fn transpose(v: *[8]V8) void {
 /// is the same.
 const Group = [64]V8;
 
+/// Forward leaves each block's coefficients transposed (y transform, then x
+/// after one transpose); the inverse takes them that way (x, transpose, y)
+/// and returns rows. Thresholding, Wiener and the 1D transform across blocks
+/// are element-wise, and the DC stays at index 0 lane 0, so they don't care.
+/// Two transposes per round trip instead of the GPU's four (it returns to rows
+/// after each direction); only the order of the separable passes, i.e. the
+/// rounding, differs.
 fn transform3d(comptime forward: bool, t2d: Transform, t1d: Transform, g: *Group) void {
     for (0..8) |b| {
         const blk: *[8]V8 = g[b * 8 ..][0..8];
         transform(t2d, forward, blk);
         transpose(blk);
         transform(t2d, forward, blk);
-        transpose(blk);
     }
     for (0..8) |r| {
         var col: [8]V8 = undefined;
@@ -574,8 +579,13 @@ const Match = struct {
 
     /// Branchless: the list is sorted, so the slot is the number of kept
     /// errors `<= e` (ties stay ahead), and the tail shifts by one lane.
-    inline fn insert(m: *Match, e: f32, x: i32, y: i32, z: i32) void {
-        if (!(e < m.err[7])) return;
+    /// Only the first `keep` slots are maintained: an entry at or above
+    /// err[keep - 1] is skipped. Slots from `keep` on then hold stale but
+    /// sorted values >= err[keep - 1], never counted for a smaller `e`, and
+    /// the first `keep` slots equal a full top-8 list's (stable insertion:
+    /// an entry's slot depends only on the kept entries at or below it).
+    inline fn insert(m: *Match, comptime keep: u32, e: f32, x: i32, y: i32, z: i32) void {
+        if (!(e < m.err[keep - 1])) return;
         const le: u8 = @bitCast(m.err <= @as(V8, @splat(e)));
         m.place(@popCount(le), e, x, y, z);
     }
@@ -672,24 +682,64 @@ inline fn distance(comptime e: BmError, rb: *const RefBlock, p: [*]const f32, st
 /// again per insert (the worst only decreases). Branch-free compaction plus
 /// ungated inserts, which won on a synthetic image, ran every kept candidate
 /// through place()'s dependency chain: 37% of r=2 time.
-fn insertBounded(m: *Match, d: []const V8, gx: []const u32, gy: []const u32, lmin: V8, z: i32) void {
-    const bound: V8 = @splat(@reduce(.Max, lmin));
+///
+/// With `keep` < 8 (the predictive searches, whose first ps_num matches are
+/// all that is used) the bound is the keep-th smallest lane minimum: those
+/// are `keep` distinct candidates, so anything above it can't be in the top
+/// `keep`. On real video that cut the predictive searches' inserts (10% of
+/// their candidates with a top-8 list) and their bound checks.
+fn insertBounded(m: *Match, comptime keep: u32, d: []const V8, gx: []const u32, gy: []const u32, lmin: V8, z: i32) void {
+    // lane minima are never NaN (vminps keeps lmin), only finite or inf
+    const bound: V8 = @splat(switch (keep) {
+        8 => @reduce(.Max, lmin),
+        1 => @reduce(.Min, lmin),
+        else => sort8(lmin)[keep - 1],
+    });
     for (d, gx, gy) |dv, x, y| {
-        var mask = @as(u8, @bitCast(dv <= bound)) & @as(u8, @bitCast(dv < @as(V8, @splat(m.err[7]))));
+        var mask = @as(u8, @bitCast(dv <= bound)) & @as(u8, @bitCast(dv < @as(V8, @splat(m.err[keep - 1]))));
         if (mask == 0) continue;
         const da: [8]f32 = dv;
         while (mask != 0) : (mask &= mask - 1) {
             const j = @ctz(mask);
             const e = da[j];
-            if (!(e < m.err[7])) continue;
+            if (!(e < m.err[keep - 1])) continue;
             const le: u8 = @bitCast(m.err <= @as(V8, @splat(e)));
             m.place(@popCount(le), e, @intCast(x + j), @intCast(y), z);
         }
     }
 }
 
+/// Ascending lanes (no NaN), branch-free: a bitonic network, 6 stages of
+/// shuffle + min + max + blend.
+inline fn sort8(v_in: V8) V8 {
+    var v = v_in;
+    comptime var k: u32 = 2;
+    inline while (k <= 8) : (k *= 2) {
+        comptime var j: u32 = k / 2;
+        inline while (j >= 1) : (j /= 2) {
+            const perm = comptime blk: {
+                var a: [8]i32 = undefined;
+                for (&a, 0..) |*e, i| e.* = @intCast(i ^ j);
+                break :blk a;
+            };
+            // lane i keeps the min when its pair is ascending and i is the
+            // lower index, or descending and i is the upper one
+            const take_min = comptime blk: {
+                var a: [8]bool = undefined;
+                for (&a, 0..) |*e, i| e.* = ((i & j) == 0) == ((i & k) == 0);
+                break :blk a;
+            };
+            const p = @shuffle(f32, v, undefined, perm);
+            v = @select(f32, @as(@Vector(8, bool), take_min), @min(v, p), @max(v, p));
+            if (j == 1) break;
+        }
+    }
+    return v;
+}
+
 /// Exhaustive search of the window around (cx, cy) in one plane.
-fn searchWindow(comptime e: BmError, mp: *Match, rb: *const RefBlock, plane: PlaneIn, w: u32, h: u32, cx: i32, cy: i32, range: u32, z: i32) void {
+/// `keep`: how many of the best matches the caller uses (see insertBounded).
+fn searchWindow(comptime e: BmError, mp: *Match, comptime keep: u32, rb: *const RefBlock, plane: PlaneIn, w: u32, h: u32, cx: i32, cy: i32, range: u32, z: i32) void {
     // local copy: see Match
     var lm = mp.*;
     defer mp.* = lm;
@@ -706,8 +756,8 @@ fn searchWindow(comptime e: BmError, mp: *Match, rb: *const RefBlock, plane: Pla
         // are 8 distinct candidates of the chunk, so anything above the bound
         // has 8 strictly smaller ones and can't be in the (stable) top 8:
         // same result as inserting everything, with ~15 inserts per default
-        // window instead of ~45. (An early reject on the rows 0..3 partial,
-        // as bm3d_classic does, was measured slower: within a top 8 of
+        // window instead of ~45. (An early reject on the rows 0..3 partial
+        // was measured slower: within a top 8 of
         // similar noisy blocks the half distance rarely reaches the worst
         // kept one.) Plain locals, not a struct behind a pointer: see Match.
         //
@@ -720,6 +770,7 @@ fn searchWindow(comptime e: BmError, mp: *Match, rb: *const RefBlock, plane: Pla
         var n: u32 = 0;
         // per-lane minimum (NaN never wins: vminps(d, lmin))
         var lmin = inf;
+
         var y = top;
         while (y <= bottom) : (y += 1) {
             const row = plane.at(0, y);
@@ -734,34 +785,47 @@ fn searchWindow(comptime e: BmError, mp: *Match, rb: *const RefBlock, plane: Pla
                 n += k;
                 x += 8 * k;
                 if (n == 64) {
-                    insertBounded(m, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
+                    insertBounded(m, keep, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
                     n = 0;
                     lmin = inf;
                 }
             }
             if (x <= right) {
-                // the 1..7 leftover candidates through the same path
-                // (reduce8x8 equals reduce8 per lane)
+                // the 1..7 leftover candidates (reduce8x8 equals reduce8 per
+                // lane). Up to 3 of them are reduced one by one: reduce8x8's
+                // tree costs ~24 shuffles and adds whatever the count, ~6 per
+                // candidate here. The 9-wide predictive windows leave 1 per
+                // row, which the full tree made ~2.7x a grouped candidate
+                // (r=2: ~15% of the time).
+                @setEvalBranchQuota(20000);
                 const rem = right - x + 1;
-                var cs: [8]V8 = @splat(@splat(0));
-                inline for (0..7) |j| {
-                    if (j < rem) cs[j] = columnSums(e, rb, row + x + j, plane.stride);
-                }
-                const used = std.simd.iota(u32, 8) < @as(@Vector(8, u32), @splat(rem));
-                const d = @select(f32, used, reduce8x8(&cs), @as(V8, @splat(std.math.nan(f32))));
+                const nan: V8 = @splat(std.math.nan(f32));
+                const d: V8 = switch (@as(u3, @intCast(rem))) {
+                    inline 1...3 => |cnt| blk: {
+                        var v = nan;
+                        inline for (0..cnt) |j| v[j] = reduce8(columnSums(e, rb, row + x + j, plane.stride));
+                        break :blk v;
+                    },
+                    inline else => |cnt| blk: {
+                        var cs: [8]V8 = @splat(@splat(0));
+                        inline for (0..cnt) |j| cs[j] = columnSums(e, rb, row + x + j, plane.stride);
+                        const used = std.simd.iota(u32, 8) < @as(@Vector(8, u32), @splat(cnt));
+                        break :blk @select(f32, used, reduce8x8(&cs), nan);
+                    },
+                };
                 lmin = @select(f32, d < lmin, d, lmin);
                 dbuf[n] = d;
                 gx[n] = x;
                 gy[n] = y;
                 n += 1;
                 if (n == 64) {
-                    insertBounded(m, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
+                    insertBounded(m, keep, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
                     n = 0;
                     lmin = inf;
                 }
             }
         }
-        insertBounded(m, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
+        insertBounded(m, keep, dbuf[0..n], gx[0..n], gy[0..n], lmin, z);
         return;
     }
     var y = top;
@@ -769,7 +833,7 @@ fn searchWindow(comptime e: BmError, mp: *Match, rb: *const RefBlock, plane: Pla
         const row = plane.at(0, y);
         var x = left;
         while (x <= right) : (x += 1) {
-            m.insert(distance(e, rb, row + x, plane.stride), @intCast(x), @intCast(y), z);
+            m.insert(keep, distance(e, rb, row + x, plane.stride), @intCast(x), @intCast(y), z);
         }
     }
 }
@@ -782,7 +846,7 @@ fn matchBlock(comptime e: BmError, p: *const Params, mp: []const PlaneIn, x: u32
     const center = mp[p.radius];
     const rb = RefBlock.init(e, center.at(x, y), center.stride);
     var m: Match = .{ .z = @splat(r) };
-    searchWindow(e, &m, &rb, center, p.width, p.height, @intCast(x), @intCast(y), p.bm_range, r);
+    searchWindow(e, &m, 8, &rb, center, p.width, p.height, @intCast(x), @intCast(y), p.bm_range, r);
 
     if (p.radius > 0) {
         const cm = m;
@@ -795,13 +859,18 @@ fn matchBlock(comptime e: BmError, p: *const Params, mp: []const PlaneIn, x: u32
                 var f: Match = .{};
                 const lx: [8]i32 = last.x;
                 const ly: [8]i32 = last.y;
-                for (0..p.ps_num) |i| {
-                    searchWindow(e, &f, &rb, mp[@intCast(z)], p.width, p.height, lx[i], ly[i], p.ps_range, z);
-                }
+                // only f's first ps_num matches are used: keep that many
+                // (rounded up to a comptime 1, 2, 4 or 8; more is still exact)
+                for (0..p.ps_num) |i| switch (p.ps_num) {
+                    1 => searchWindow(e, &f, 1, &rb, mp[@intCast(z)], p.width, p.height, lx[i], ly[i], p.ps_range, z),
+                    2 => searchWindow(e, &f, 2, &rb, mp[@intCast(z)], p.width, p.height, lx[i], ly[i], p.ps_range, z),
+                    3, 4 => searchWindow(e, &f, 4, &rb, mp[@intCast(z)], p.width, p.height, lx[i], ly[i], p.ps_range, z),
+                    else => searchWindow(e, &f, 8, &rb, mp[@intCast(z)], p.width, p.height, lx[i], ly[i], p.ps_range, z),
+                };
                 const fe: [8]f32 = f.err;
                 const fx: [8]i32 = f.x;
                 const fy: [8]i32 = f.y;
-                for (0..p.ps_num) |i| m.insert(fe[i], fx[i], fy[i], z);
+                for (0..p.ps_num) |i| m.insert(8, fe[i], fx[i], fy[i], z);
                 last = f;
             }
         }
@@ -833,7 +902,7 @@ fn loadGroup(g: *Group, planes: []const PlaneIn, m: *const Match) void {
 const lane0: @Vector(8, bool) = .{ true, false, false, false, false, false, false, false };
 
 /// Hard thresholding; returns the aggregation weight 1/k.
-fn hardThreshold(g: *Group, sigma: f32, tab: [*]const u8) f32 {
+fn hardThreshold(g: *Group, sigma: f32) f32 {
     const thr: V8 = @splat(sigma);
     // the DC coefficient (index 0, lane 0) is always kept
     const thr0 = @select(f32, lane0, @as(V8, @splat(0)), thr);
@@ -845,23 +914,23 @@ fn hardThreshold(g: *Group, sigma: f32, tab: [*]const u8) f32 {
         g[i] = @select(f32, keep, v * @as(V8, @splat(1.0 / 4096.0)), @as(V8, @splat(0)));
     }
     const k = reduce8((ks[0] + ks[1]) + (ks[2] + ks[3]));
-    return bc.rcpScalar(tab, k);
+    return 1.0 / k;
 }
 
 /// Wiener shrinkage against the transformed basic estimate `rg`.
-fn wiener(g: *Group, rg: *const Group, sigma: f32, tab: [*]const u8) f32 {
+fn wiener(g: *Group, rg: *const Group, sigma: f32) f32 {
     const s2: V8 = @splat(sigma * sigma);
     var ks: [4]V8 = @splat(@splat(0));
     for (0..64) |i| {
         const r = rg[i];
         const num = r * r;
-        var coeff = num * bc.rcp(8, tab, num + s2);
+        var coeff = num / (num + s2);
         if (i == 0) coeff = @select(f32, lane0, @as(V8, @splat(1)), coeff);
         ks[i % 4] = fma(coeff, coeff, ks[i % 4]);
         g[i] = (g[i] * coeff) * @as(V8, @splat(1.0 / 4096.0));
     }
     const k = reduce8((ks[0] + ks[1]) + (ks[2] + ks[3]));
-    return bc.rcpScalar(tab, k);
+    return 1.0 / k;
 }
 
 fn accumulate(ring: *Ring, plane: u32, g: *const Group, m: *const Match, w: f32, extractor: f32, comptime temporal: bool) void {
@@ -904,11 +973,10 @@ pub fn stage(
     srcs: []const PlaneIn,
     refs: []const PlaneIn,
     ring: *Ring,
-    tab: [*]const u8,
     sink: anytype,
 ) void {
     switch (p.bm_error) {
-        inline else => |e| stageImpl(final, e, p, srcs, refs, ring, tab, sink),
+        inline else => |e| stageImpl(final, e, p, srcs, refs, ring, sink),
     }
 }
 
@@ -919,7 +987,6 @@ fn stageImpl(
     srcs: []const PlaneIn,
     refs: []const PlaneIn,
     ring: *Ring,
-    tab: [*]const u8,
     sink: anytype,
 ) void {
     const tw = p.slots();
@@ -946,8 +1013,8 @@ fn stageImpl(
                 const w = if (final) blk: {
                     loadGroup(&rg, refs[pl * tw ..][0..tw], &m);
                     transform3d(true, p.t2d, p.t1d, &rg);
-                    break :blk wiener(&g, &rg, p.sigma[pl], tab);
-                } else hardThreshold(&g, p.sigma[pl], tab);
+                    break :blk wiener(&g, &rg, p.sigma[pl]);
+                } else hardThreshold(&g, p.sigma[pl]);
                 transform3d(false, p.t2d, p.t1d, &g);
                 if (p.radius > 0) {
                     accumulate(ring, @intCast(pl), &g, &m, w, p.extractor, true);

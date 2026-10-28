@@ -11,8 +11,7 @@
 - [AdaptiveGrainMask](https://github.com/dnjulek/vapoursynth-zip/wiki/AdaptiveGrainMask): Luma-adaptive grain mask, port of kageru's [adaptivegrain](https://github.com/Irrational-Encoding-Wizardry/adaptivegrain).
 - [Bilateral](https://github.com/dnjulek/vapoursynth-zip/wiki/Bilateral): A faster version of [VapourSynth-Bilateral](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-Bilateral).
 - [BilateralDither](https://github.com/dnjulek/vapoursynth-zip/wiki/BilateralDither): Port of `Dither_bilateral16` from [AviSynth's Dither tools](http://avisynth.nl/index.php/Dither_tools#Dither_bilateral16).
-- [BM3D](https://github.com/dnjulek/vapoursynth-zip/wiki/BM3D): CPU port of [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA) (`BM3D`, `BM3Dv2`, `VAggregate`; same arguments and results), with the temporal mode aggregated internally.
-- [BM3DBasic](https://github.com/dnjulek/vapoursynth-zip/wiki/BM3DBasic): Faster, dependency-free port of [VapourSynth-BM3D](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-BM3D) (`BM3DBasic`, `BM3DFinal`, `BM3DVBasic`, `BM3DVFinal`, `BM3DVAggregate`, `RGB2OPP`, `OPP2RGB`; same arguments and results).
+- [BM3D](https://github.com/dnjulek/vapoursynth-zip/wiki/BM3D): CPU port of [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA).
 - [BoxBlur](https://github.com/dnjulek/vapoursynth-zip/wiki/BoxBlur): A faster version of [std.BoxBlur](https://www.vapoursynth.com/doc/functions/video/boxblur.html).
 - [Checkmate](https://github.com/dnjulek/vapoursynth-zip/wiki/Checkmate): Spatial and temporal dot crawl reducer [from AviSynth](https://github.com/tp7/checkmate).
 - [CLAHE](https://github.com/dnjulek/vapoursynth-zip/wiki/CLAHE): Contrast Limited Adaptive Histogram Equalization [from OpenCV](https://docs.opencv.org/5.x/d5/daf/tutorial_py_histogram_equalization.html).
