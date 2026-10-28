@@ -1,7 +1,8 @@
 //! Color science behind Tonemap: a scalar port of libplacebo's colorspace.c
 //! (metadata inference, nominal luminance, primaries), tone_mapping.c (the
 //! 1D tone curves) and gamut_mapping.c (the IPT gamut mappings), from
-//! libplacebo a7a18af as used by vs-placebo's Tonemap. Everything here runs
+//! libplacebo v7.387.0 (275f7de, API 387) as used by vs-placebo 2.0.4's
+//! Tonemap. Everything here runs
 //! per frame (tone LUT, 256 entries) or once per input gamut (the 3D gamut
 //! LUT); filters/tonemap.zig samples the results per pixel.
 //!

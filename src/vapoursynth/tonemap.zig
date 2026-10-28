@@ -49,8 +49,6 @@ fn paramConstantGiven(map_in: anytype, f: tc.ToneFn) bool {
     };
 }
 
-const max_window = 300;
-
 const Data = struct {
     node: ?*vs.Node = null,
     vi: vs.VideoInfo = .{},
@@ -60,9 +58,15 @@ const Data = struct {
     gamut: filter.GamutCache = .{},
 };
 
+/// A float property value as f32; non-finite values, and finite ones that
+/// would overflow f32 to inf, read as absent (0).
+fn propF32(v: f64) f32 {
+    return if (math.isFinite(v) and @abs(v) <= math.floatMax(f32)) @floatCast(v) else 0;
+}
+
 /// A frame property as f32, stored as float or int (sources differ).
 fn propNum(props: anytype, comptime key: [:0]const u8) f32 {
-    if (props.getFloat(f64, key)) |v| return if (math.isFinite(v)) @floatCast(v) else 0;
+    if (props.getFloat(f64, key)) |v| return propF32(v);
     if (props.getInt(i64, key)) |v| return @floatFromInt(v);
     return 0;
 }
@@ -71,7 +75,7 @@ fn propTriple(props: anytype, comptime key: [:0]const u8) ?[3]f32 {
     const arr = props.getFloatArray(key) orelse return null;
     if (arr.len != 3) return null;
     var r: [3]f32 = undefined;
-    for (&r, arr) |*o, v| o.* = if (math.isFinite(v)) @floatCast(v) else 0;
+    for (&r, arr) |*o, v| o.* = propF32(v);
     return r;
 }
 
@@ -88,7 +92,7 @@ fn readMeta(frame: anytype) filter.FrameMeta {
     if (props.getFloatArray("PLSceneMax")) |arr| {
         if (arr.len == 1 or arr.len == 3) {
             m.scene_max_len = @intCast(arr.len);
-            for (arr, 0..) |v, i| m.scene_max[i] = if (math.isFinite(v)) @floatCast(v) else 0;
+            for (arr, 0..) |v, i| m.scene_max[i] = propF32(v);
         }
     }
     m.prim_x = propTriple(props, "MasteringDisplayPrimariesX");
@@ -145,8 +149,10 @@ fn Tonemap(comptime T: type) type {
             const setup: filter.Setup = .init(&d.cfg, &meta);
 
             var detected: ?tc.PeakState = null;
-            if (setup.peak_active) {
-                var entries: [max_window]filter.PeakCache.Entry = undefined;
+            // Config.peakUsable: no frame is active without the cache
+            std.debug.assert(!setup.peak_active or d.peaks != null);
+            if (d.peaks) |*peaks| if (setup.peak_active) {
+                var entries: [filter.Config.max_window]filter.PeakCache.Entry = undefined;
                 const count: usize = @intCast(n - lo + 1);
                 // own frame first: earlier ones are likely measured already
                 var k = count;
@@ -154,18 +160,22 @@ fn Tonemap(comptime T: type) type {
                     k -= 1;
                     const i: c_int = lo + @as(c_int, @intCast(k));
                     const ui: usize = @intCast(i);
-                    entries[k] = d.peaks.?.acquire(ui) orelse blk: {
+                    const cached = peaks.acquire(ui) catch {
+                        zapi.setFilterError(filter_name ++ ": out of memory");
+                        return null;
+                    };
+                    entries[k] = cached orelse blk: {
                         const e = (if (i == n) measure(d, &setup, src) else measureOther(d, &zapi, i)) catch {
-                            d.peaks.?.release(ui);
+                            peaks.release(ui);
                             zapi.setFilterError(filter_name ++ ": out of memory");
                             return null;
                         };
-                        d.peaks.?.put(ui, e);
+                        peaks.put(ui, e);
                         break :blk e;
                     };
                 }
                 detected = filter.PeakCache.replay(entries[0..count], &d.cfg.peak);
-            }
+            };
 
             const plan = allocator.create(filter.Plan) catch {
                 zapi.setFilterError(filter_name ++ ": out of memory");
@@ -176,6 +186,7 @@ fn Tonemap(comptime T: type) type {
                 zapi.setFilterError(filter_name ++ ": out of memory");
                 return null;
             };
+            defer plan.deinit(&d.gamut);
 
             const dst = src.newVideoFrame3(.{ .format = &d.vi.format });
             const out: filter.PlanesOut(T) = .{
@@ -301,7 +312,8 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         .dst_min = @floatCast(mp.getValue(f64, "dst_min", 0, 0, fmax) catch return zapi.freeNode(d.node)),
         .peak_detect = (mp.getValue(i64, "dynamic_peak_detection", 1, 0, 1) catch return zapi.freeNode(d.node)) != 0,
         .peak = .{
-            .smoothing_period = @floatCast(mp.getValue(f64, "smoothing_period", 20, 0, 1000) catch return zapi.freeNode(d.node)),
+            // capped so that five periods fit Config.max_window
+            .smoothing_period = @floatCast(mp.getValue(f64, "smoothing_period", 20, 0, filter.Config.max_smoothing_period) catch return zapi.freeNode(d.node)),
             .scene_threshold_low = @floatCast(mp.getValue(f64, "scene_threshold_low", 1, 0, 100) catch return zapi.freeNode(d.node)),
             .scene_threshold_high = @floatCast(mp.getValue(f64, "scene_threshold_high", 3, 0, 100) catch return zapi.freeNode(d.node)),
             .percentile = @floatCast(mp.getValue(f64, "percentile", 100, 0, 100) catch return zapi.freeNode(d.node)),
@@ -349,7 +361,8 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         .ssw = @intCast(fmt.subSamplingW),
         .ssh = @intCast(fmt.subSamplingH),
     };
-    d.window = @min(d.cfg.peakWindow(), max_window);
+    // 0 when detection can't run on any frame: no window, no cache
+    d.window = d.cfg.peakWindow();
 
     d.vi = vi.*;
     _ = zapi.getVideoFormatByID(&d.vi.format, switch (fmt.colorFamily) {
@@ -357,7 +370,7 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         else => if (f32in) .YUV444PS else .YUV444P16,
     });
 
-    if (d.cfg.peak_detect) {
+    if (d.window > 0) {
         d.peaks = filter.PeakCache.init(@intCast(vi.numFrames)) catch return fail(map_out, &zapi, d.node, filter_name ++ ": out of memory");
     }
 

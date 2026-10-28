@@ -90,12 +90,29 @@ pub const Config = struct {
     ssw: u1 = 0,
     ssh: u1 = 0,
 
+    /// Largest smoothing_period whose window fits `max_window`.
+    pub const max_smoothing_period = 60;
+    pub const max_window = 5 * max_smoothing_period;
+
     /// Frames n - window + 1 .. n feed frame n's smoothed peak: five IIR
-    /// time constants, after which the start state weighs < 0.7%.
+    /// time constants, after which the start state weighs < 0.7%. 0 when no
+    /// frame can run detection.
     pub fn peakWindow(c: *const Config) u32 {
-        if (!c.peak_detect) return 0;
+        if (!c.peakUsable()) return 0;
+        std.debug.assert(c.peak.smoothing_period <= max_smoothing_period);
         const w = @ceil(5 * c.peak.smoothing_period);
-        return @intFromFloat(math.clamp(w, 1, 300));
+        return @intFromFloat(math.clamp(w, 1, max_window));
+    }
+
+    /// Whether any frame can have Setup.peak_active. The target and a PQ
+    /// source's peak (10000 nits) don't depend on frame metadata, so a
+    /// target at 10000 nits rules detection out up front. An HLG source's
+    /// peak is the target's when the target is HDR (inferMap), else it comes
+    /// from per-frame metadata.
+    pub fn peakUsable(c: *const Config) bool {
+        if (!c.peak_detect or !(c.metadata == .any or c.metadata == .cie_y)) return false;
+        const s: Setup = .init(c, &.{});
+        return if (c.src_csp == .hlg) !s.dst.isHdr() else s.peak_active;
     }
 };
 
@@ -807,20 +824,58 @@ const Tone = struct {
 pub const Lut3d = struct {
     params: tc.GamutParams,
     data: []f32,
+    /// plans holding it (under GamutCache.lock)
+    refs: u32 = 0,
 };
 
-/// Gamut LUTs by parameters (the input gamut comes from per-frame
-/// mastering metadata, so a clip normally needs one), built on first use.
+/// Gamut LUTs by parameters, built on first use. The input gamut comes from
+/// per-frame mastering metadata, so a clip normally needs one, but spliced
+/// or edited sources can change it on any frame: at most `max_kept` LUTs
+/// (6 MB each by default) stay cached, more only while plans pin them, and
+/// unused ones go least recently used first. A plan's LUT is pinned until
+/// `release`.
 pub const GamutCache = struct {
     lock: std.Io.Mutex = .init,
+    /// least recently used first
     list: std.ArrayList(*Lut3d) = .empty,
+
+    pub const max_kept = 4;
 
     pub fn deinit(g: *GamutCache) void {
         for (g.list.items) |l| {
-            allocator.free(l.data);
-            allocator.destroy(l);
+            std.debug.assert(l.refs == 0);
+            destroy(l);
         }
         g.list.deinit(allocator);
+    }
+
+    fn destroy(l: *Lut3d) void {
+        allocator.free(l.data);
+        allocator.destroy(l);
+    }
+
+    /// Frees unused LUTs, oldest first, until at most `keep` remain (fewer
+    /// can't be reached while plans pin more).
+    fn trim(g: *GamutCache, keep: usize) void {
+        var i: usize = 0;
+        while (g.list.items.len > keep and i < g.list.items.len) {
+            const l = g.list.items[i];
+            if (l.refs == 0) {
+                _ = g.list.orderedRemove(i);
+                destroy(l);
+            } else i += 1;
+        }
+    }
+
+    pub fn release(g: *GamutCache, l: *const Lut3d) void {
+        g.lock.lockUncancelable(io);
+        defer g.lock.unlock(io);
+        const m: *Lut3d = @constCast(l);
+        std.debug.assert(m.refs > 0);
+        m.refs -= 1;
+        // back to the bound once a burst of pinned LUTs drains (may free
+        // `l`: the caller must not use it after this)
+        if (m.refs == 0) g.trim(max_kept);
     }
 
     fn sameParams(a: *const tc.GamutParams, b: *const tc.GamutParams) bool {
@@ -830,19 +885,26 @@ pub const GamutCache = struct {
             a.size_I == b.size_I and a.size_C == b.size_C and a.size_h == b.size_h;
     }
 
+    /// The LUT for `p`, pinned: the caller must `release` it.
     fn get(g: *GamutCache, p: *const tc.GamutParams) !*const Lut3d {
         g.lock.lockUncancelable(io);
         defer g.lock.unlock(io);
-        for (g.list.items) |l| {
-            if (sameParams(&l.params, p)) return l;
+        for (g.list.items, 0..) |l, i| {
+            if (sameParams(&l.params, p)) {
+                l.refs += 1;
+                // most recently used last
+                _ = g.list.orderedRemove(i);
+                g.list.appendAssumeCapacity(l);
+                return l;
+            }
         }
+        g.trim(max_kept - 1);
+        try g.list.ensureUnusedCapacity(allocator, 1);
         const l = try allocator.create(Lut3d);
         errdefer allocator.destroy(l);
-        l.params = p.*;
-        l.data = try allocator.alloc(f32, p.lutLen());
-        errdefer allocator.free(l.data);
+        l.* = .{ .params = p.*, .data = try allocator.alloc(f32, p.lutLen()), .refs = 1 };
         p.generate(l.data, std.Thread.getCpuCount() catch 1);
-        try g.list.append(allocator, l);
+        g.list.appendAssumeCapacity(l);
         return l;
     }
 };
@@ -1109,6 +1171,12 @@ pub const Plan = struct {
             plan.g_scale = 1.0 / range;
             plan.g_off = -gamut.min_luma / range;
         }
+    }
+
+    /// Unpins the plan's gamut LUT (after a successful `init`).
+    pub fn deinit(plan: *Plan, cache: *GamutCache) void {
+        if (plan.gamut) |g| cache.release(g);
+        plan.gamut = null;
     }
 };
 
@@ -1905,54 +1973,83 @@ fn percentilePeak(hist: *const [hist_bins]u64, frame_max: f32, percentile: f32) 
 /// Per-frame peak measurements, shared by every request. Each frame index
 /// is measured once: the first request that needs it claims it, later ones
 /// wait for its result instead of measuring it again (at 16 threads the
-/// window frames are mostly in flight at the same time).
+/// window frames are mostly in flight at the same time). Entries live in
+/// pages of `page_len` frames, allocated when a frame in them is first
+/// claimed: a clip's advertised length can be huge (std.Loop: 2^31 frames,
+/// 50 GB as one flat array) while only the requested frames' pages exist.
+/// Pages are never evicted, so an entry stays valid once published.
 pub const PeakCache = struct {
-    state: []std.atomic.Value(u8),
-    vals: []Entry,
+    pages: []std.atomic.Value(?*Page),
 
     pub const Entry = struct { m: tc.Measure, active: bool };
+
+    pub const page_len = 4096;
+    const Page = struct {
+        state: [page_len]std.atomic.Value(u8),
+        vals: [page_len]Entry,
+    };
 
     const empty = 0;
     const busy = 1;
     const done = 2;
 
+    /// `n` frames; costs one pointer per page up front.
     pub fn init(n: usize) !PeakCache {
-        const st = try allocator.alloc(std.atomic.Value(u8), n);
-        errdefer allocator.free(st);
-        for (st) |*s| s.* = .init(empty);
-        return .{ .state = st, .vals = try allocator.alloc(Entry, n) };
+        const pages = try allocator.alloc(std.atomic.Value(?*Page), math.divCeil(usize, n, page_len) catch unreachable);
+        for (pages) |*p| p.* = .init(null);
+        return .{ .pages = pages };
     }
 
     pub fn deinit(c: *PeakCache) void {
-        allocator.free(c.state);
-        allocator.free(c.vals);
+        for (c.pages) |*slot| if (slot.raw) |p| allocator.destroy(p);
+        allocator.free(c.pages);
     }
 
     pub fn ready(c: *const PeakCache, i: usize) bool {
-        return c.state[i].load(.acquire) == done;
+        const p = c.pages[i / page_len].load(.acquire) orelse return false;
+        return p.state[i % page_len].load(.acquire) == done;
+    }
+
+    /// The page holding frame i, allocated on first use (concurrent first
+    /// users race to publish theirs; the losers free their copy).
+    fn page(c: *PeakCache, i: usize) !*Page {
+        const slot = &c.pages[i / page_len];
+        if (slot.load(.acquire)) |p| return p;
+        const p = try allocator.create(Page);
+        for (&p.state) |*s| s.* = .init(empty);
+        if (slot.cmpxchgStrong(null, p, .acq_rel, .acquire)) |winner| {
+            allocator.destroy(p);
+            return winner.?;
+        }
+        return p;
     }
 
     /// The entry, or null once the caller has claimed it; a claimer must
     /// `put` the measurement or `release` the claim. Waits while another
     /// request measures it (that request already holds its frame, so it
-    /// cannot be waiting on us).
-    pub fn acquire(c: *PeakCache, i: usize) ?Entry {
+    /// cannot be waiting on us). Fails only allocating the frame's page.
+    pub fn acquire(c: *PeakCache, i: usize) !?Entry {
+        const p = try c.page(i);
+        const st = &p.state[i % page_len];
         while (true) {
-            switch (c.state[i].load(.acquire)) {
-                done => return c.vals[i],
-                empty => if (c.state[i].cmpxchgWeak(empty, busy, .acquire, .monotonic) == null) return null,
+            switch (st.load(.acquire)) {
+                done => return p.vals[i % page_len],
+                empty => if (st.cmpxchgWeak(empty, busy, .acquire, .monotonic) == null) return null,
                 else => std.Thread.yield() catch {},
             }
         }
     }
 
+    /// Publishes a claimed entry (its page exists: `acquire` made it).
     pub fn put(c: *PeakCache, i: usize, e: Entry) void {
-        c.vals[i] = e;
-        c.state[i].store(done, .release);
+        const p = c.pages[i / page_len].load(.acquire).?;
+        p.vals[i % page_len] = e;
+        p.state[i % page_len].store(done, .release);
     }
 
     pub fn release(c: *PeakCache, i: usize) void {
-        c.state[i].store(empty, .release);
+        const p = c.pages[i / page_len].load(.acquire).?;
+        p.state[i % page_len].store(empty, .release);
     }
 
     /// The smoothed state after the window's frames in order (a frame
@@ -2059,6 +2156,259 @@ test "Tone.g matches the exact curve composition" {
     const xs: [VL]f32 = @splat(0.5);
     const got: [VL]f32 = c.mapG(xs);
     try std.testing.expectApproxEqRel(tc.hdrRescale(.pq, .nits, 0.7) / 10000, got[0], 1e-5);
+}
+
+test "detection usability and window come from the config" {
+    const base: Config = .{ .width = 64, .height = 64, .rgb = true, .float = false };
+    var c = base;
+    try std.testing.expect(c.peakUsable());
+    try std.testing.expectEqual(@as(u32, 100), c.peakWindow());
+    c.peak.smoothing_period = Config.max_smoothing_period;
+    try std.testing.expectEqual(@as(u32, Config.max_window), c.peakWindow());
+    c.peak.smoothing_period = 0;
+    try std.testing.expectEqual(@as(u32, 1), c.peakWindow());
+
+    const Case = struct { cfg: Config, usable: bool };
+    var cases = [_]Case{
+        .{ .cfg = base, .usable = false },
+        .{ .cfg = base, .usable = false },
+        .{ .cfg = base, .usable = true },
+        .{ .cfg = base, .usable = false },
+        .{ .cfg = base, .usable = true },
+        .{ .cfg = base, .usable = true },
+        .{ .cfg = base, .usable = false },
+        .{ .cfg = base, .usable = false },
+    };
+    cases[0].cfg.peak_detect = false;
+    // the metadata modes that never use the measurement
+    cases[1].cfg.metadata = .hdr10;
+    cases[2].cfg.metadata = .cie_y;
+    // a PQ target at 10000 nits: max_peak is never above it
+    cases[3].cfg.dst_csp = .hdr10;
+    cases[4].cfg.dst_csp = .hdr10;
+    cases[4].cfg.dst_max = 1000;
+    // HLG to SDR: the peak comes from per-frame metadata
+    cases[5].cfg.src_csp = .hlg;
+    // HLG to HDR: the source peak is the target's
+    cases[6].cfg.src_csp = .hlg;
+    cases[6].cfg.dst_csp = .hdr10;
+    cases[6].cfg.dst_max = 1000;
+    cases[7].cfg.metadata = .none;
+    for (cases, 0..) |cs, i| {
+        std.testing.expectEqual(cs.usable, cs.cfg.peakUsable()) catch |e| {
+            std.debug.print("case {d}\n", .{i});
+            return e;
+        };
+        if (!cs.usable) try std.testing.expectEqual(@as(u32, 0), cs.cfg.peakWindow());
+        // never active on a frame when ruled out up front
+        const metas = [_]FrameMeta{ .{}, .{ .mastering_max = 1000 }, .{ .mastering_max = 4000, .max_cll = 3000 } };
+        for (&metas) |*m| {
+            if (Setup.init(&cs.cfg, m).peak_active) try std.testing.expect(cs.cfg.peakUsable());
+        }
+    }
+}
+
+test "PeakCache allocates pages on demand" {
+    var fa = std.testing.FailingAllocator.init(std.heap.c_allocator, .{});
+    common.test_hooks.backing = fa.allocator();
+    defer common.test_hooks.backing = std.heap.c_allocator;
+    // std.Loop's length: a pointer per page up front, not an entry a frame
+    const n: usize = math.maxInt(i32);
+    var c = try PeakCache.init(n);
+    const dir = fa.allocated_bytes;
+    try std.testing.expect(dir <= @sizeOf(usize) * (n / PeakCache.page_len + 1));
+    const frames = [_]usize{ 0, PeakCache.page_len - 1, PeakCache.page_len, n - 1 };
+    for (frames) |i| {
+        try std.testing.expect(!c.ready(i));
+        try std.testing.expectEqual(@as(?PeakCache.Entry, null), try c.acquire(i));
+        c.release(i);
+        try std.testing.expectEqual(@as(?PeakCache.Entry, null), try c.acquire(i));
+        const v: f32 = @floatFromInt(i);
+        c.put(i, .{ .m = .{ .avg_pq = v, .max_pq = 0, .bias = 0, .scene_avg_pq = 0, .max_y_pq = 0 }, .active = true });
+        try std.testing.expect(c.ready(i));
+        try std.testing.expectEqual(v, (try c.acquire(i)).?.m.avg_pq);
+    }
+    try std.testing.expect(!c.ready(1));
+    // frames 0, page_len - 1 share a page
+    try std.testing.expectEqual(dir + 3 * @sizeOf(PeakCache.Page), fa.allocated_bytes);
+    c.deinit();
+    try std.testing.expectEqual(fa.allocated_bytes, fa.freed_bytes);
+}
+
+/// GamutCache test helpers. Entries are identified by their parameters,
+/// never by address: a freed LUT's address can come back for the next one.
+const GamutCacheTest = struct {
+    fn params(k: usize) tc.GamutParams {
+        var in = tc.rawPrimaries(.bt2020);
+        in.red.x -= 0.001 * @as(f32, @floatFromInt(k));
+        return .{ .function = .perceptual, .input_gamut = in, .output_gamut = tc.rawPrimaries(.bt709), .min_luma = 0, .max_luma = 0.58, .size_I = 4, .size_C = 4, .size_h = 8 };
+    }
+
+    fn cached(cache: *const GamutCache, k: usize) bool {
+        const p = params(k);
+        for (cache.list.items) |l| {
+            if (GamutCache.sameParams(&l.params, &p)) return true;
+        }
+        return false;
+    }
+
+    /// Hands a freed block of the same size and alignment straight back
+    /// (newest first), as a valid allocator may.
+    const Recycler = struct {
+        held: std.ArrayList(Block) = .empty,
+        reused: usize = 0,
+
+        const Block = struct { mem: []u8, a: std.mem.Alignment };
+        const backing = std.heap.c_allocator;
+
+        fn allocator(r: *Recycler) std.mem.Allocator {
+            return .{ .ptr = r, .vtable = &.{
+                .alloc = alloc,
+                .resize = std.mem.Allocator.noResize,
+                .remap = std.mem.Allocator.noRemap,
+                .free = free,
+            } };
+        }
+
+        fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const r: *Recycler = @ptrCast(@alignCast(ctx));
+            var i = r.held.items.len;
+            while (i > 0) {
+                i -= 1;
+                const b = r.held.items[i];
+                if (b.mem.len == len and b.a == a) {
+                    _ = r.held.orderedRemove(i);
+                    r.reused += 1;
+                    return b.mem.ptr;
+                }
+            }
+            return backing.rawAlloc(len, a, ra);
+        }
+
+        fn free(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, ra: usize) void {
+            const r: *Recycler = @ptrCast(@alignCast(ctx));
+            r.held.append(backing, .{ .mem = m, .a = a }) catch backing.rawFree(m, a, ra);
+        }
+
+        fn deinit(r: *Recycler) void {
+            for (r.held.items) |b| backing.rawFree(b.mem, b.a, @returnAddress());
+            r.held.deinit(backing);
+        }
+    };
+
+    /// Runs `body` on the default allocator, then on a Recycler (and checks
+    /// that it reused a block, when the body frees and allocates again).
+    fn run(comptime expect_reuse: bool, comptime body: fn () anyerror!void) !void {
+        try body();
+        var r: Recycler = .{};
+        defer r.deinit();
+        common.test_hooks.backing = r.allocator();
+        defer common.test_hooks.backing = std.heap.c_allocator;
+        try body();
+        if (expect_reuse) try std.testing.expect(r.reused > 0);
+    }
+};
+
+test "GamutCache bounds unused LUTs and keeps pinned ones" {
+    // evicted LUTs' addresses come back for later ones under the Recycler
+    try GamutCacheTest.run(true, struct {
+        fn body() anyerror!void {
+            const T = GamutCacheTest;
+            var cache: GamutCache = .{};
+            defer cache.deinit();
+            const pinned = try cache.get(&T.params(0));
+            var pins: usize = 1;
+            // released even when an expectation fails first
+            defer for (0..pins) |_| cache.release(pinned);
+
+            cache.release(try cache.get(&T.params(1)));
+            for (2..10) |k| cache.release(try cache.get(&T.params(k)));
+            try std.testing.expectEqual(@as(usize, GamutCache.max_kept), cache.list.items.len);
+            try std.testing.expect(T.cached(&cache, 0));
+            try std.testing.expect(!T.cached(&cache, 1));
+            // a hit pins and returns the cached LUT (still pinned, so its
+            // address is its identity)
+            const hit = try cache.get(&T.params(0));
+            cache.release(hit);
+            try std.testing.expectEqual(pinned, hit);
+            pins = 0;
+            cache.release(pinned);
+            // the most recently used survives the next insertions
+            cache.release(try cache.get(&T.params(9)));
+            for (10..13) |k| cache.release(try cache.get(&T.params(k)));
+            try std.testing.expectEqual(@as(usize, GamutCache.max_kept), cache.list.items.len);
+            try std.testing.expect(T.cached(&cache, 9));
+            try std.testing.expect(!T.cached(&cache, 0));
+        }
+    }.body);
+}
+
+test "GamutCache returns to its bound when a burst drains" {
+    try GamutCacheTest.run(false, struct {
+        fn body() anyerror!void {
+            const T = GamutCacheTest;
+            var cache: GamutCache = .{};
+            defer cache.deinit();
+            // 12 frames in flight with distinct gamuts: all pinned at once
+            var held: [12]?*const Lut3d = @splat(null);
+            defer for (held) |h| if (h) |l| cache.release(l);
+            for (&held, 0..) |*h, k| h.* = try cache.get(&T.params(k));
+            try std.testing.expectEqual(@as(usize, held.len), cache.list.items.len);
+
+            // finishing in mixed order, with no new gamut, trims back to the
+            // bound; 4 and 7 stay pinned
+            for ([_]usize{ 5, 0, 11, 3, 8, 1, 10, 6, 2, 9 }, 1..) |k, done| {
+                cache.release(held[k].?);
+                held[k] = null;
+                // the pinned ones, or the bound
+                try std.testing.expectEqual(@max(GamutCache.max_kept, held.len - done), cache.list.items.len);
+            }
+            try std.testing.expectEqual(@as(usize, GamutCache.max_kept), cache.list.items.len);
+            try std.testing.expect(T.cached(&cache, 4) and T.cached(&cache, 7));
+            // hits keep it there
+            for ([_]usize{ 2, 9, 4 }) |k| cache.release(try cache.get(&T.params(k)));
+            try std.testing.expectEqual(@as(usize, GamutCache.max_kept), cache.list.items.len);
+        }
+    }.body);
+}
+
+test "fused color map matches the split passes" {
+    // show_clipping's fused loop with nothing clipped must compute what the
+    // split passes do, for both gamut lookups
+    var cache: GamutCache = .{};
+    defer cache.deinit();
+    inline for (.{ false, true }) |cubic| {
+        const cfg: Config = .{ .width = 512, .height = 1, .rgb = true, .float = true, .lut3d_size = .{ 17, 9, 32 }, .lut3d_tricubic = cubic };
+        const s: Setup = .init(&cfg, &.{ .mastering_max = 1000 });
+        var plan: Plan = undefined;
+        try plan.init(&cfg, &s, null, &cache);
+        defer plan.deinit(&cache);
+        try std.testing.expect(plan.map == .full and plan.gamut != null and plan.need_tone);
+
+        var a = try Rows.init(cfg.width);
+        defer a.deinit();
+        var b = try Rows.init(cfg.width);
+        defer b.deinit();
+        // linear BT.2020 light (1 = SDR white) up to ~5 (1000 nits), mostly
+        // inside the gamut LUT's range
+        var rng = std.Random.DefaultPrng.init(7);
+        const r = rng.random();
+        for (0..cfg.width) |x| {
+            const base = 0.01 + 5 * r.float(f32) * r.float(f32);
+            a.a[x] = base * (0.3 + 0.7 * r.float(f32));
+            a.b[x] = base * (0.3 + 0.7 * r.float(f32));
+            a.c[x] = base * (0.3 + 0.7 * r.float(f32));
+        }
+        @memcpy(b.buf, a.buf);
+        colorMapSplit(&plan, &a, null, cfg.width);
+        const inf = math.inf(f32);
+        plan.clip = .{ .hi_rgb = inf, .lo_rgb = -inf, .hi_i = inf, .lo_i = -inf };
+        colorMapFused(&plan, &b, null, cfg.width);
+        plan.clip = null;
+        try std.testing.expectEqualSlices(f32, a.a[0..cfg.width], b.a[0..cfg.width]);
+        try std.testing.expectEqualSlices(f32, a.b[0..cfg.width], b.b[0..cfg.width]);
+        try std.testing.expectEqualSlices(f32, a.c[0..cfg.width], b.c[0..cfg.width]);
+    }
 }
 
 test "pq LUTs match the formulas" {

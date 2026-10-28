@@ -21,7 +21,8 @@ Observable contract (src/vapoursynth/tonemap.zig, src/filters/tonemap.zig):
 - src_csp 1 (HDR10) / 2 (HLG), dst_csp 0 (SDR) / 1 (HDR10) / 2 (HLG);
   Dolby Vision (3, use_dovi) is rejected.
 - peak detection: frame n is computed from frames n - window + 1 .. n
-  (window = 5 smoothing periods), whatever order frames are requested in.
+  (window = 5 smoothing periods, smoothing_period <= 60), whatever order
+  frames are requested in; no window when the settings rule detection out.
 
 Oracles: an independent numpy model of the clip/clip pipeline (no tone curve,
 no gamut LUT), pointwise metamorphic properties (cropping commutes with the
@@ -30,6 +31,7 @@ and, when vs-placebo is installed, parity with it.
 """
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -183,6 +185,17 @@ def test_output_props(make_hdr, fmt, kw, want):
     assert "_ChromaLocation" not in p
     # HDR metadata props pass through untouched
     assert p["MasteringDisplayMaxLuminance"] == META["MasteringDisplayMaxLuminance"]
+
+
+@pytest.mark.parametrize("value", [1e300, -1e300, float("inf")], ids=str)
+def test_out_of_range_metadata_reads_as_absent(make_hdr, value):
+    """Props that don't fit f32 (non-finite, or finite beyond its range)
+    count as absent instead of overflowing to inf."""
+    src = make_hdr(vs.YUV420P16)
+    plain = src.std.RemoveFrameProps(["MasteringDisplayMaxLuminance", "ContentLightLevelMax"])
+    bad = src.std.SetFrameProps(MasteringDisplayMaxLuminance=value, ContentLightLevelMax=value)
+    for kw in (dict(dynamic_peak_detection=0), {}):
+        assert_same_clip(plain.vszip.Tonemap(**kw), bad.vszip.Tonemap(**kw))
 
 
 def test_full_range_yuv_stays_full(make_hdr):
@@ -391,6 +404,42 @@ def test_peak_detection_changes_output_and_follows_scenes(scene_clip):
     assert max_abs_diff_all_planes(static, dyn, n=11) > 1000
 
 
+@pytest.mark.parametrize(
+    ("kw", "frames"),
+    [
+        ({}, 100),
+        (dict(smoothing_period=60.0), 111),  # window 300, cut at frame 0
+        (dict(smoothing_period=0.0), 1),
+        (dict(dynamic_peak_detection=0), 1),
+        (dict(metadata=1), 1),  # none
+        (dict(metadata=2), 1),  # hdr10
+        (dict(metadata=3), 1),  # hdr10plus
+        (dict(metadata=4), 100),  # cie_y
+        (dict(dst_csp=1), 1),  # 10000-nit target: never above it
+        (dict(dst_csp=1, dst_max=1000.0), 100),
+        (dict(src_csp=2), 100),  # HLG to SDR: peak from per-frame metadata
+        (dict(src_csp=2, dst_csp=1, dst_max=1000.0), 1),  # HLG peak = target's
+    ],
+    ids=str,
+)
+def test_peak_window_requests(core, kw, frames):
+    """Frame n fetches source frames n - window + 1 .. n (window = 5
+    smoothing periods), and only its own when no frame can use detection."""
+    seen, lock = set(), threading.Lock()
+
+    def count(n, f):
+        with lock:
+            seen.add(n)
+        return f
+
+    base = core.std.BlankClip(width=64, height=64, format=vs.RGB48, length=120, color=[30000, 40000, 20000])
+    base = base.std.SetFrameProps(_Range=1, MasteringDisplayMaxLuminance=1000.0)
+    src = base.std.ModifyFrame(clips=base, selector=count)
+    src.vszip.Tonemap(gamut_mapping=0, **kw).get_frame(110)
+    assert len(seen) == frames
+    assert max(seen) == 110 and min(seen) == 111 - frames
+
+
 def test_unsmoothed_detection_is_per_frame(scene_clip):
     kw = dict(smoothing_period=0.0, scene_threshold_low=0.0)
     whole = scene_clip.vszip.Tonemap(**kw)
@@ -560,7 +609,10 @@ def test_lut3d_tricubic_stays_close(make_hdr):
 
 def test_lut3d_tricubic_fused_matches_split(make_hdr):
     """show_clipping runs the fused loop; away from clipped pixels it must
-    compute what the split passes do."""
+    compute what the split passes do. The exact check is the kernel test
+    "fused color map matches the split passes" (nothing clipped, both
+    lookups); here, end to end, only highlighted pixels may differ, a
+    minority on this saturated image."""
     src = make_hdr(vs.YUV444PS)
     kw = dict(dynamic_peak_detection=0, lut3d_tricubic=1)
     with src.vszip.Tonemap(**kw).get_frame(0) as fa, src.vszip.Tonemap(**kw, show_clipping=1).get_frame(0) as fb:
@@ -640,6 +692,7 @@ def test_matches_vs_placebo(core, src_rgb, kw):
         (vs.YUV420P16, dict(tone_mapping_function_s="nope"), "tone_mapping_function_s"),
         (vs.YUV420P16, dict(metadata=5), "metadata"),
         (vs.YUV420P16, dict(percentile=101.0), "percentile"),
+        (vs.YUV420P16, dict(smoothing_period=61.0), "smoothing_period"),
         (vs.YUV420P16, dict(src_max=-1.0), "src_max"),
         (vs.YUV420P16, dict(dst_max=20000.0), "dst_max"),
         (vs.YUV420P16, dict(contrast_smoothness=0.5), "contrast_smoothness"),
