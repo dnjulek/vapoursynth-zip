@@ -36,6 +36,10 @@ CASES = [
     ("LimitFilter", "YUV420P16", "src=src, dark_thr=[2.0]"),
     ("XPSNR", "YV12", "distorted=src.avszip_BoxBlur(), verbose=false"),
     ("SSIMULACRA2", "RGBPS", "distorted=src.avszip_BoxBlur()"),
+    ("BM3D", "YUV420PS", "radius=1"),
+    ("BM3D", "YUV444PS", "radius=2, ref=src, chroma=true"),
+    ("Tonemap", "YUV420P16", "smoothing_period=2.0"),
+    ("Tonemap", "RGBPS", "smoothing_period=1.0, contrast_recovery=0.5"),
 ]
 
 

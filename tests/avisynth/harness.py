@@ -7,6 +7,8 @@ by their AviSynth pixel_type; FORMATS maps them to VapourSynth formats.
 
 import os
 import pathlib
+import subprocess
+import sys
 
 import numpy as np
 import vapoursynth as vs
@@ -207,7 +209,11 @@ def avs_call(name, args):
         elif isinstance(v, bool):
             parts.append(f"{k}={'true' if v else 'false'}")
         elif isinstance(v, (list, tuple)):
-            parts.append(f"{k}=[{', '.join(repr(float(x)) if isinstance(x, float) else str(int(x)) for x in v)}]")
+            def elem(x):
+                if isinstance(x, float):
+                    return repr(x)
+                return f'"{x}"' if isinstance(x, str) else str(int(x))
+            parts.append(f"{k}=[{', '.join(elem(x) for x in v)}]")
         elif isinstance(v, str):
             parts.append(f'{k}="{v}"')
         elif isinstance(v, float):
@@ -242,3 +248,32 @@ def assert_same(env, pair, name, avs_args=None, vs_args=None, tol=0.0, props=(),
         compare_planes(x, y, tol, what=f"{name}{avs_args} {pair.name} frame {i}")
         compare_props(x, y, props, prop_tol, what=f"{name}{avs_args} {pair.name} frame {i}")
     return fa, fb
+
+
+LONG = 2**31 - 1
+_LONG_SCRIPT = """
+import sys
+sys.path.insert(0, {here!r})
+import harness as H
+from avsrt import Env
+env = Env(plugins=[H.AVSZIP])
+call = {call!r}
+env.eval('long = BlankClip(pixel_type="Y32", width=64, height=64, length={long}).Expr("0.25")\\n'
+         'short = BlankClip(pixel_type="Y32", width=64, height=64, length=5).Expr("0.25")', want_clip=False)
+a, b = env.eval(call.format(c="long")), env.eval(call.format(c="short"))
+assert a.num_frames == {long}
+for x, y in ((0, 0), ({long} - 2, 3), ({long} - 1, 4)):
+    H.compare_planes(a.frame(x), b.frame(y), what=f"frame {{x}}")
+print("ok")
+"""
+
+
+def assert_long_clip_edges(call):
+    """`call` (an AviSynth expression over a Y32 clip `{c}` of constant 0.25)
+    on a clip of 2^31 - 1 frames: frames 0 and the last two equal the same
+    frames of a 5-frame clip. Temporal filters must form neighbor indices
+    without i32 overflow there. Runs in a child process, since a debug build
+    panics on the overflow."""
+    script = _LONG_SCRIPT.format(here=str(HERE), call=call, long=LONG)
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stdout + r.stderr

@@ -2,7 +2,7 @@ import pytest
 import vapoursynth as vs
 
 from golden import Case, grid, sweep
-from helpers import assert_same_clip, avg, diff, plane_stats, repack
+from helpers import assert_long_clip_edges, assert_same_clip, avg, diff, plane_stats, repack
 
 # Checkmate accepts any 8-bit integer format; the Create callback only checks
 # sampleType==Integer and bitsPerSample==8. (RGB24 is also accepted by the
@@ -207,3 +207,9 @@ def test_min_height_accepted(core, h):
     out = src.vszip.Checkmate(thr=12, tmax=12, tthr2=8)
     assert (out.width, out.height) == (32, h)
     out.get_frame(1)
+
+
+def test_last_frames_of_the_longest_clip():
+    """Frames n + 1 and n + 2 near frame 2^31 - 1 are formed without i32
+    overflow."""
+    assert_long_clip_edges("{c}.resize.Point(format=vs.GRAY8).vszip.Checkmate(tthr2=8)")

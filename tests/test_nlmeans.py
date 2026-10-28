@@ -36,7 +36,7 @@ import vapoursynth as vs
 
 from conftest import _geometry
 from golden import Case, grid, sweep
-from helpers import assert_same_clip, props, repack
+from helpers import assert_long_clip_edges, assert_same_clip, props, repack
 
 HAS_CU = hasattr(vs.core, "vszipcu")
 
@@ -531,3 +531,10 @@ def test_matches_cuda_port(temporal, fmt, kw, tol):
             for p in range(src.format.num_planes):
                 d = np.abs(np.asarray(fa[p]).astype(np.float64) - np.asarray(fb[p]).astype(np.float64)).max()
                 assert d <= tol, f"frame {n} plane {p}: max |diff| {d}"
+
+
+@pytest.mark.parametrize("d", [1, 3])
+def test_last_frames_of_the_longest_clip(d):
+    """KNLMeansCL's window near frame 2^31 - 1 is formed without i32
+    overflow."""
+    assert_long_clip_edges(f"{{c}}.vszip.NLMeans(d={d}, a=1)")

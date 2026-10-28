@@ -31,7 +31,7 @@ import pytest
 import vapoursynth as vs
 
 from golden import Case
-from helpers import assert_same_clip, repack
+from helpers import assert_long_clip_edges, assert_same_clip, repack
 
 HAS_CU = hasattr(vs.core, "vszipcu")
 
@@ -287,3 +287,15 @@ def test_matches_cuda_plugin(clip, fmt, kw):
         assert d.mean() < 1e-5, f"frame {n}: mean diff {d.mean():.3g}"
         assert d.max() < 1e-2, f"frame {n}: max diff {d.max():.3g}"
         assert np.mean(d > 1e-5) <= 1e-3, f"frame {n}: {np.mean(d > 1e-5):.3g} of the pixels differ"
+
+
+@pytest.mark.parametrize("call", [
+    "{c}.vszip.BM3D(radius=1)",
+    "{c}.vszip.BM3D(radius=2)",
+    "{c}.vszip.BM3Dv2(radius=1, ref={c})",
+    "core.std.StackVertical([{c}] * 10).vszip.VAggregate({c}, planes=[0])",
+])
+def test_last_frames_of_the_longest_clip(call):
+    """Frame windows near frame 2^31 - 1 (radius 1 and 2, the final
+    estimate, VAggregate) are formed without i32 overflow."""
+    assert_long_clip_edges(call)

@@ -131,3 +131,10 @@ def test_errors(env, call, msg):
     with pytest.raises(AvsError, match=msg) as e:
         env.eval(call)
     assert str(e.value).startswith("avszip_NLMeans:")
+
+
+@pytest.mark.parametrize("d", [1, 3])
+def test_last_frames_of_the_longest_clip(d):
+    """KNLMeansCL's window near frame 2^31 - 1 is formed without i32
+    overflow."""
+    H.assert_long_clip_edges(f"{{c}}.avszip_NLMeans(d={d}, a=1)")

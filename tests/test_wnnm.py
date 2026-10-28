@@ -12,7 +12,7 @@ import pytest
 import vapoursynth as vs
 
 from golden import Case, grid, sweep
-from helpers import assert_same_clip, diff, repack
+from helpers import assert_long_clip_edges, assert_same_clip, diff, repack
 from wnnm_ref import wnnm_ref
 
 # C++ oracle plugin (namespace `wnnm`), autoloaded from site-packages if the
@@ -307,3 +307,9 @@ def test_sigma_bounded_to_f32(core):
     src.vszip.WNNM(sigma=3.4e38, block_size=4).get_frame(0)
     with pytest.raises(vs.Error, match=r"sigma has too many elements \(got 4, max 3\)"):
         src.vszip.WNNM(sigma=[3, 3, 3, float("nan")])
+
+
+def test_last_frames_of_the_longest_clip():
+    """The temporal window near frame 2^31 - 1 is formed without i32
+    overflow."""
+    assert_long_clip_edges("{c}.vszip.WNNM(radius=1, block_size=4)")

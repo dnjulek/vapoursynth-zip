@@ -92,6 +92,11 @@ def lib():
             "avs_prop_get_data": (C.c_void_p, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
             "avs_prop_get_data_size": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
             "avs_prop_get_frame": (C.c_void_p, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_int)]),
+            "avs_get_frame_props_rw": (C.c_void_p, [C.c_void_p, C.c_void_p]),
+            "avs_prop_set_int": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_int64, C.c_int]),
+            "avs_prop_set_float": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_double, C.c_int]),
+            "avs_prop_set_data": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.c_char_p, C.c_int, C.c_int]),
+            "avs_prop_set_float_array": (C.c_int, [C.c_void_p, C.c_void_p, C.c_char_p, C.POINTER(C.c_double), C.c_int]),
         }
         for name, (res, args) in sig.items():
             f = getattr(L, name)
@@ -335,8 +340,10 @@ class Env:
             for v in owned:
                 L.avs_release_value(v)
 
-    def source(self, frames, pixel_type, fps=(24, 1), name=None):
-        """Clip of `frames` (list of per-plane 2D arrays, logical order)."""
+    def source(self, frames, pixel_type, fps=(24, 1), name=None, props=None):
+        """Clip of `frames` (list of per-plane 2D arrays, logical order).
+        `props`: one dict for every frame or a list of one per frame; values
+        are int, float, a list of floats, or bytes (binary data)."""
         L = lib()
         h, w = frames[0][0].shape
         blank = self.eval(f'BlankClip(length={len(frames)}, width={w}, height={h}, pixel_type="{pixel_type}", '
@@ -362,11 +369,25 @@ class Env:
                 assert b.shape[1] == row, (b.shape, row)
                 for y in range(b.shape[0]):
                     C.memmove(dst + y * pitch, b[y].ctypes.data, row)
+            fp = props[n] if isinstance(props, (list, tuple)) else props
+            if fp:
+                m = L.avs_get_frame_props_rw(info.env, out)
+                for k, v in fp.items():
+                    key = k.encode()
+                    if isinstance(v, (bytes, bytearray)):
+                        L.avs_prop_set_data(info.env, m, key, bytes(v), len(v), 0)
+                    elif isinstance(v, (list, tuple)):
+                        arr = (C.c_double * len(v))(*v)
+                        L.avs_prop_set_float_array(info.env, m, key, arr, len(v))
+                    elif isinstance(v, float):
+                        L.avs_prop_set_float(info.env, m, key, v, 0)
+                    else:
+                        L.avs_prop_set_int(info.env, m, key, int(v), 0)
             return out
 
         cb = GET_FRAME(get_frame)
         fi.contents.get_frame = cb
-        self._keep += [cb, data, blank]
+        self._keep += [cb, data, blank, props]
         clip = Clip(self, clip_ptr)
         if name:
             self.set_clip(name, clip)

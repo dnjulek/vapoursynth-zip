@@ -2,11 +2,45 @@
 comparison, and minimal PNG/BMP encoders for ImageRead tests."""
 
 import struct
+import subprocess
+import sys
 import zlib
 from binascii import crc32
 from pathlib import Path
 
 import vapoursynth as vs
+
+# --- longest clips ------------------------------------------------------------
+
+LONG = 2**31 - 1
+_LONG_SCRIPT = """
+import sys
+sys.path.insert(0, {tests!r})
+import numpy as np
+from conftest import _load_vszip
+core = _load_vszip()
+import vapoursynth as vs
+long = core.std.BlankClip(None, 64, 64, vs.GRAYS, length={long}, color=0.25)
+short = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=5, color=0.25)
+call = {call!r}
+a, b = eval(call.format(c="long")), eval(call.format(c="short"))
+assert a.num_frames == {long}
+for x, y in ((0, 0), ({long} - 2, 3), ({long} - 1, 4)):
+    fa, fb = a.get_frame(x), b.get_frame(y)
+    assert np.array_equal(np.asarray(fa[0]), np.asarray(fb[0])), (x, y)
+print("ok")
+"""
+
+
+def assert_long_clip_edges(call: str) -> None:
+    """`call` (a Python expression over a GRAYS clip `{c}` of constant 0.25)
+    on a clip of 2^31 - 1 frames: frames 0 and the last two equal the same
+    frames of a 5-frame clip. Temporal filters must form neighbor indices
+    without i32 overflow there. Runs in a child process, since a debug build
+    panics on the overflow."""
+    script = _LONG_SCRIPT.format(tests=str(Path(__file__).resolve().parent), call=call, long=LONG)
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stdout + r.stderr
 
 
 # --- frame access -----------------------------------------------------------

@@ -38,6 +38,10 @@ const modules = .{
     @import("avisynth/wnnm.zig").Main,
     @import("avisynth/wnnm.zig").Raw,
     @import("avisynth/image_read.zig"),
+    @import("avisynth/bm3d.zig").BM3D,
+    @import("avisynth/bm3d.zig").BM3Dv2,
+    @import("avisynth/bm3d.zig").VAggregate,
+    @import("avisynth/tonemap.zig"),
 };
 
 /// Interface floor: V11 (AviSynth+ 3.7.4+): 64-bit aware values through

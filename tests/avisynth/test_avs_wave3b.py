@@ -108,3 +108,9 @@ def test_wave3b_errors(env):
         env.eval("avszip_XPSNR(y16, y16)")
     with pytest.raises(AvsError, match="same length"):
         env.eval("avszip_SSIMULACRA2(yv12, yv12.Trim(0, 1))")
+
+
+def test_checkmate_last_frames_of_the_longest_clip():
+    """Frames n + 1 and n + 2 near frame 2^31 - 1 are formed without i32
+    overflow."""
+    H.assert_long_clip_edges("{c}.ConvertBits(8).avszip_Checkmate(tthr2=8)")
