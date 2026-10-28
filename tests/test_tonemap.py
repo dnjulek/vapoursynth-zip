@@ -44,21 +44,81 @@ from helpers import assert_same_clip, max_abs_diff_all_planes, props, repack
 META = dict(MasteringDisplayMaxLuminance=1000.0, ContentLightLevelMax=1200.0, ContentLightLevelAverage=300.0)
 
 
+def _rgb2xyz(prim, white=(0.3127, 0.3290)):
+    m = np.array([[x / y, 1.0, (1 - x - y) / y] for x, y in prim]).T
+    w = np.array([white[0] / white[1], 1.0, (1 - white[0] - white[1]) / white[1]])
+    return m * np.linalg.solve(m, w)
+
+
+_BT709_TO_BT2020 = np.linalg.solve(_rgb2xyz(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046))),
+                                   _rgb2xyz(((0.64, 0.33), (0.30, 0.60), (0.15, 0.06))))
+
+
+def _hlg_oetf(e):
+    a = 0.17883277
+    b, c = 1 - 4 * a, 0.5 - a * np.log(4 * a)
+    return np.where(e <= 1 / 12, np.sqrt(3 * e), a * np.log(np.maximum(12 * e - b, 1e-12)) + c)
+
+
+def _subsample(c, f):
+    """Chroma to the format's subsampling: rows averaged in pairs (centered),
+    columns [1 2 1] / 4 around the even ones (left siting, _ChromaLocation 0)."""
+    if f.subsampling_h:
+        c = 0.5 * (c[0::2] + c[1::2])
+    if f.subsampling_w:
+        p = np.pad(c, ((0, 0), (1, 1)), mode="edge")
+        c = 0.25 * p[:, 0:-2:2] + 0.5 * p[:, 1:-1:2] + 0.25 * p[:, 2::2]
+    return c
+
+
 def _hdr(src_rgb, fmt, trc="st2084", gain=12.0, meta=True):
     """The test image as HDR: linear BT.2020 light expanded to ~1200 nits
-    (x^2 * 12, 1.0 = 100 nits), encoded with `trc`. The image's blue is
-    nearly constant (252..255), so blue takes the mirrored green instead."""
-    lin = src_rgb.resize.Bicubic(format=vs.RGBS, transfer_in_s="709", transfer_s="linear",
-                                 primaries_in_s="709", primaries_s="2020")
-    lin = vs.core.std.ShufflePlanes([lin, lin.std.FlipHorizontal()], planes=[0, 1, 1], colorfamily=vs.RGB)
-    scale = gain if trc == "st2084" else gain / 10.0  # HLG: scene light 0..1.2
-    lin = lin.std.Expr(f"x 0 max 2 pow {scale} *")
+    (x^2 * 12, 1.0 = 100 nits), encoded with `trc` (PQ, or HLG of the scene
+    light gain / 10, clipped at 1). The image's blue is nearly constant
+    (252..255), so blue takes the mirrored green instead.
+
+    Computed in numpy float64, not with resize's transfer conversions: zimg
+    picks its SIMD path by CPU, and its AVX-512 path rounds differently from
+    AVX2 (CI runners have AVX-512), which moved every golden average."""
     f = vs.core.get_video_format(fmt)
-    kw = dict(format=fmt, transfer_in_s="linear", transfer_s=trc, primaries_in_s="2020", primaries_s="2020",
-              nominal_luminance=100)
-    if f.color_family == vs.YUV:
-        kw["matrix_s"] = "2020ncl"
-    out = lin.resize.Bicubic(**kw)
+    with src_rgb.get_frame(0) as fr:
+        rgb = np.stack([np.asarray(fr[p], dtype=np.float64) for p in range(3)]) / 255
+    # BT.709 inverse OETF, then BT.2020 primaries
+    lin = np.where(rgb < 0.081, rgb / 4.5, ((rgb + 0.099) / 1.099) ** (1 / 0.45))
+    lin = np.einsum("ij,jhw->ihw", _BT709_TO_BT2020, lin)
+    lin = np.stack([lin[0], lin[1], lin[1][:, ::-1]])
+    lin = np.maximum(lin, 0) ** 2 * gain
+    e = _pq_oetf(lin * 100 / 10000) if trc == "st2084" else _hlg_oetf(np.minimum(lin / 10, 1))
+
+    peak = (1 << f.bits_per_sample) - 1
+    integer = f.sample_type == vs.INTEGER
+    if f.color_family == vs.RGB:
+        planes = [np.clip(np.rint(v * peak), 0, peak) if integer else v for v in e]
+        props = dict(_Matrix=0, _Range=1)
+    else:
+        y = 0.2627 * e[0] + 0.6780 * e[1] + 0.0593 * e[2]
+        cb, cr = _subsample((e[2] - y) / 1.8814, f), _subsample((e[0] - y) / 1.4746, f)
+        if integer:
+            s = 1 << (f.bits_per_sample - 8)
+            planes = [np.clip(np.rint(16 * s + 219 * s * y), 0, peak)]
+            planes += [np.clip(np.rint(128 * s + 224 * s * c), 0, peak) for c in (cb, cr)]
+        else:
+            planes = [y, cb, cr]
+        props = dict(_Matrix=9, _Range=0)
+        if f.subsampling_w or f.subsampling_h:
+            props["_ChromaLocation"] = 0
+    dtype = np.uint16 if integer else np.float32
+    planes = [p.astype(dtype) for p in planes]
+
+    blank = vs.core.std.BlankClip(width=src_rgb.width, height=src_rgb.height, format=fmt, length=1)
+
+    def fill(n, f):
+        out = f.copy()
+        for p in range(3):
+            np.asarray(out[p])[:] = planes[p]
+        return out
+
+    out = blank.std.ModifyFrame(blank, fill).std.SetFrameProps(_Primaries=9, _Transfer=16 if trc == "st2084" else 18, **props)
     return out.std.SetFrameProps(**META) if meta else out
 
 
@@ -1361,9 +1421,10 @@ DV_CLIPS = {
 @pytest.mark.parametrize("clip", list(DV_CLIPS))
 @pytest.mark.parametrize("fmt", [vs.YUV444P16, vs.YUV420P16])
 def test_dovi_sample_matches_vs_placebo(core, fmt, clip):
-    """Real Dolby Vision clips on this machine, when present. ffms2, not
-    BestSource: BestSource R18 drops DolbyVisionRPU on every 48th frame of
-    the Sol Levante MP4s, which ffms2 5.1 keeps."""
+    """Real Dolby Vision clips on this machine, when present, through ffms2.
+    On the Sol Levante MP4s ffms2 5.2.1 gives 1 frame in 48 the previous
+    frame's RPU (BestSource R22 is exact, R18 dropped the prop there); both
+    plugins get the same props, so the parity is unaffected."""
     pl = _placebo(core)
     path, frames = DV_CLIPS[clip]
     if not os.path.exists(path) or not hasattr(core, "ffms2"):
