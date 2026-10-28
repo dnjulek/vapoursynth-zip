@@ -141,17 +141,22 @@ def _jsonable(value):
     raise TypeError(f"not golden-storable: {value!r} ({type(value).__name__})")
 
 
-def _assert_close(expected, actual, rel: float, abs_: float, path: str) -> None:
+def _assert_close(expected, actual, rel: float, abs_: float, path: str, key_abs: dict | None = None) -> None:
+    """key_abs: an absolute tolerance per leaf key (e.g. {"min": 8}), used
+    instead of `abs_` for values stored under that key."""
     if isinstance(expected, dict):
         assert isinstance(actual, dict), f"{path}: expected dict, got {type(actual).__name__}"
         assert set(expected) == set(actual), f"{path}: keys {sorted(actual)} != {sorted(expected)}"
         for k in expected:
-            _assert_close(expected[k], actual[k], rel, abs_, f"{path}.{k}")
+            if key_abs and k in key_abs and not isinstance(expected[k], (dict, list)):
+                _assert_close(expected[k], actual[k], rel, key_abs[k], f"{path}.{k}")
+            else:
+                _assert_close(expected[k], actual[k], rel, abs_, f"{path}.{k}", key_abs)
     elif isinstance(expected, list):
         assert isinstance(actual, (list, tuple)), f"{path}: expected list, got {type(actual).__name__}"
         assert len(expected) == len(actual), f"{path}: length {len(actual)} != {len(expected)}"
         for i, (e, a) in enumerate(zip(expected, actual)):
-            _assert_close(e, a, rel, abs_, f"{path}[{i}]")
+            _assert_close(e, a, rel, abs_, f"{path}[{i}]", key_abs)
     elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
         assert actual == pytest.approx(expected, rel=rel, abs=abs_), (
             f"{path}: {actual!r} != golden {expected!r} (rel={rel}, abs={abs_})"
@@ -176,9 +181,10 @@ class GoldenStore:
             self._data[name] = json.loads(f.read_text()) if f.is_file() else {}
         return self._data[name]
 
-    def check_value(self, filter_name: str, key, value, rel: float = 1e-6, abs_: float = 1e-9) -> None:
+    def check_value(self, filter_name: str, key, value, rel: float = 1e-6, abs_: float = 1e-9, key_abs: dict | None = None) -> None:
         """Compare (or record, with --update-goldens) an arbitrary
-        JSON-serializable value: number, list, or dict of numbers."""
+        JSON-serializable value: number, list, or dict of numbers.
+        `key_abs`: absolute tolerances for leaves under those keys."""
         key = str(key)
         self._seen.setdefault(filter_name, set()).add(key)
         value = _jsonable(value)
@@ -189,13 +195,20 @@ class GoldenStore:
             return
         if key not in data:
             pytest.fail(f"no golden for {filter_name}[{key}]; run `pytest --update-goldens`")
-        _assert_close(data[key], value, rel, abs_, f"{filter_name}[{key}]")
+        _assert_close(data[key], value, rel, abs_, f"{filter_name}[{key}]", key_abs)
 
-    def check(self, filter_name: str, case: Case, clip: vs.VideoNode, n: int = 0, rel: float | None = None) -> None:
-        """Compare per-plane output stats against the stored golden."""
+    def check(self, filter_name: str, case: Case, clip: vs.VideoNode, n: int = 0, rel: float | None = None,
+              extrema_abs: float | None = None, avg_abs: float = 1e-9) -> None:
+        """Compare per-plane output stats against the stored golden.
+        `extrema_abs`: an absolute tolerance for the per-plane min/max (the
+        averages keep `rel`), for filters whose single extreme pixels move by
+        a code between FMA and no-FMA builds. `avg_abs`: the averages'
+        absolute floor (they are normalized to 0-1; `rel` alone is too tight
+        for an average near 0, such as centered chroma)."""
         if rel is None:
             rel = 1e-6
-        self.check_value(filter_name, case, golden_stats(clip, n), rel=rel)
+        key_abs = {"min": extrema_abs, "max": extrema_abs} if extrema_abs is not None else None
+        self.check_value(filter_name, case, golden_stats(clip, n), rel=rel, abs_=avg_abs, key_abs=key_abs)
 
     def stale(self, skipped_modules: set[str]) -> dict[str, list[str] | None]:
         """Golden data a full run did not use: {file name: stale keys}, or

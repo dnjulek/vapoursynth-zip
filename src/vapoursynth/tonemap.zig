@@ -12,28 +12,27 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 pub const filter_name = "Tonemap";
-/// vs-placebo's Tonemap signature, minus `visualize_lut` (`dovi_el`, the FEL
-/// enhancement layer, is declared but rejected when used); plus every other
+/// vs-placebo's Tonemap signature, minus `visualize_lut` and `log_level`
+/// (libplacebo's debug overlay and logging); plus every other
 /// pl_color_map_params / pl_peak_detect_params field that changes the
 /// output (libplacebo's names and defaults): `black_cutoff`,
 /// `contrast_smoothness`, `lut_size`, `mastering_clip`, `film_strength`, the
 /// tone and gamut constants, `lut3d_size`, `lut3d_tricubic`,
-/// `gamut_expansion` and `inverse_tone_mapping`. `log_level` is accepted
-/// and ignored.
+/// `gamut_expansion` and `inverse_tone_mapping`. vszip's own, last:
+/// `cache_frame` (speed/memory only, the output is the same).
 pub const params = "clip:vnode;src_csp:int:opt;dst_csp:int:opt;dst_prim:int:opt;" ++
     "src_max:float:opt;src_min:float:opt;dst_max:float:opt;dst_min:float:opt;" ++
     "dynamic_peak_detection:int:opt;smoothing_period:float:opt;" ++
     "scene_threshold_low:float:opt;scene_threshold_high:float:opt;percentile:float:opt;black_cutoff:float:opt;" ++
     "gamut_mapping:int:opt;tone_mapping_function:int:opt;tone_mapping_function_s:data:opt;tone_mapping_param:float:opt;" ++
     "metadata:int:opt;use_dovi:int:opt;dovi_el:vnode:opt;show_clipping:int:opt;contrast_recovery:float:opt;contrast_smoothness:float:opt;" ++
-    "log_level:int:opt;" ++
     "lut_size:int:opt;mastering_clip:float:opt;film_strength:float:opt;inverse_tone_mapping:int:opt;" ++
     "knee_adaptation:float:opt;knee_minimum:float:opt;knee_maximum:float:opt;knee_default:float:opt;knee_offset:float:opt;" ++
     "slope_tuning:float:opt;slope_offset:float:opt;spline_contrast:float:opt;reinhard_contrast:float:opt;" ++
     "linear_knee:float:opt;exposure:float:opt;" ++
     "gamut_expansion:int:opt;lut3d_size:int[]:opt;lut3d_tricubic:int:opt;" ++
     "perceptual_deadzone:float:opt;perceptual_strength:float:opt;colorimetric_gamma:float:opt;" ++
-    "softclip_knee:float:opt;softclip_desat:float:opt;";
+    "softclip_knee:float:opt;softclip_desat:float:opt;cache_frame:int:opt;";
 
 /// Whether the tone constant that `tone_mapping_param` sets for `f`
 /// (pl_tone_map_params_infer) was passed explicitly.
@@ -51,11 +50,17 @@ fn paramConstantGiven(map_in: anytype, f: tc.ToneFn) bool {
 
 const Data = struct {
     node: ?*vs.Node = null,
+    /// Dolby Vision FEL clip (dovi_el with use_dovi): composed with
+    /// src_csp=3, and the RPU source, as in vs-placebo
+    el_node: ?*vs.Node = null,
     vi: vs.VideoInfo = .{},
     cfg: filter.Config = undefined,
     window: u32 = 0,
     peaks: ?filter.PeakCache = null,
     gamut: filter.GamutCache = .{},
+    /// cache_frame: linear frames kept from detection (or contrast
+    /// recovery's feature pass) for the output pass
+    lin: ?filter.LinearPool = null,
 };
 
 /// A float property value as f32; non-finite values, and finite ones that
@@ -130,23 +135,32 @@ const Load = union(enum) {
 /// that every call updates in request order, so an RPU that signals only
 /// part of it continues the previous frame's. Here frame i folds the RPUs
 /// from the last complete one at or before it, in frame order, which is
-/// what vs-placebo computes on sequential requests.
+/// what vs-placebo computes on sequential requests. With an EL clip the
+/// RPUs are read from it (vs-placebo reads them from the EL's props).
 fn loadMeta(d: *const Data, zapi: *const ZAPI, frame: anytype, i: c_int, m: *filter.FrameMeta, dv: *dovi.Meta) Load {
     const dovi_src = d.cfg.src_csp == .dovi;
+    const el_present = d.el_node != null;
     m.* = readMeta(frame);
-    const rpu = (readRpu(frame) catch return if (dovi_src) .{ .err = invalid_rpu } else .ok) orelse
+    const rpu_read = if (d.el_node) |el| blk: {
+        // requested together with the BL frame
+        const f: Frame = .init(zapi, zapi.getFrameFilter(i, el) orelse return .{ .need = i });
+        defer f.deinit();
+        break :blk readRpu(f);
+    } else readRpu(frame);
+    const rpu = (rpu_read catch return if (dovi_src) .{ .err = invalid_rpu } else .ok) orelse
         return if (dovi_src) .{ .err = missing_rpu } else .ok;
     m.dovi_dm = rpu.dm;
     m.dovi_profile = rpu.profile();
     if (!dovi_src) return .ok;
 
+    const rpu_node = rpuNode(d);
     var base = i;
     if (!rpu.complete()) {
         while (base > 0) {
             if (i - base >= max_rpu_chain) return .{ .err = filter_name ++ ": no complete DolbyVisionRPU within 300 frames." };
             base -= 1;
             // null when not requested yet: request it and come back
-            const f: Frame = .init(zapi, zapi.getFrameFilter(base, d.node) orelse return .{ .need = base });
+            const f: Frame = .init(zapi, zapi.getFrameFilter(base, rpu_node) orelse return .{ .need = base });
             defer f.deinit();
             const r = (readRpu(f) catch return .{ .err = invalid_rpu }) orelse return .{ .err = missing_rpu };
             if (r.complete()) break;
@@ -156,20 +170,36 @@ fn loadMeta(d: *const Data, zapi: *const ZAPI, frame: anytype, i: c_int, m: *fil
     var j = base;
     while (j < i) : (j += 1) {
         // fetched and parsed by the walk above
-        const f: Frame = .init(zapi, zapi.getFrameFilter(j, d.node).?);
+        const f: Frame = .init(zapi, zapi.getFrameFilter(j, rpu_node).?);
         defer f.deinit();
         const r = (readRpu(f) catch unreachable).?;
-        dv.update(&r, false);
+        dv.update(&r, el_present);
     }
-    dv.update(&rpu, false);
+    dv.update(&rpu, el_present);
     m.dovi_meta = dv;
     return .ok;
 }
 
-fn planesIn(comptime T: type, f: anytype) filter.Planes(T) {
+/// The clip the DolbyVisionRPU props are read from.
+fn rpuNode(d: *const Data) ?*vs.Node {
+    return d.el_node orelse d.node;
+}
+
+/// The FEL frame i's planes (requested with the BL frame); the caller frees
+/// the frame after processing.
+fn elFrame(d: *const Data, zapi: *const ZAPI, i: c_int) ?Frame {
+    const el = d.el_node orelse return null;
+    return .init(zapi, zapi.getFrameFilter(i, el).?);
+}
+
+fn planesIn(comptime T: type, f: anytype, el: ?Frame) filter.Planes(T) {
     return .{
         .ptr = .{ f.getReadSlice2(T, 0).ptr, f.getReadSlice2(T, 1).ptr, f.getReadSlice2(T, 2).ptr },
         .stride = .{ f.getStride2(T, 0), f.getStride2(T, 1), f.getStride2(T, 2) },
+        .el = if (el) |e| .{
+            .ptr = .{ e.getReadSlice2(u16, 0).ptr, e.getReadSlice2(u16, 1).ptr, e.getReadSlice2(u16, 2).ptr },
+            .stride = .{ e.getStride2(u16, 0), e.getStride2(u16, 1), e.getStride2(u16, 2) },
+        } else null,
     };
 }
 
@@ -201,9 +231,13 @@ fn Tonemap(comptime T: type) type {
                 // frame not ready now was not ready then, so it was requested.
                 var i = lo;
                 while (i < n) : (i += 1) {
-                    if (!d.peaks.?.ready(@intCast(i))) zapi.requestFrameFilter(i, d.node);
+                    if (!d.peaks.?.ready(@intCast(i))) {
+                        zapi.requestFrameFilter(i, d.node);
+                        if (d.el_node) |el| zapi.requestFrameFilter(i, el);
+                    }
                 }
                 zapi.requestFrameFilter(n, d.node);
+                if (d.el_node) |el| zapi.requestFrameFilter(n, el);
                 return null;
             }
             if (activation_reason != .AllFramesReady) return null;
@@ -231,7 +265,7 @@ fn Tonemap(comptime T: type) type {
             }.f;
             switch (loadMeta(d, &zapi, src, n, &meta, &dv)) {
                 .ok => {},
-                .need => |k| need(&zapi, d.node, &requested, &nreq, k),
+                .need => |k| need(&zapi, rpuNode(d), &requested, &nreq, k),
                 .err => |msg| {
                     zapi.setFilterError(msg);
                     return null;
@@ -249,7 +283,7 @@ fn Tonemap(comptime T: type) type {
                     var dv2: dovi.Meta = undefined;
                     switch (loadMeta(d, &zapi, f, i, &m2, &dv2)) {
                         .ok => {},
-                        .need => |k| need(&zapi, d.node, &requested, &nreq, k),
+                        .need => |k| need(&zapi, rpuNode(d), &requested, &nreq, k),
                         .err => |msg| {
                             zapi.setFilterError(msg);
                             return null;
@@ -259,6 +293,11 @@ fn Tonemap(comptime T: type) type {
             };
             if (nreq > 0) return null;
             const setup: filter.Setup = .init(&d.cfg, &meta);
+
+            // the frame's linear RGB, when this request decodes it before
+            // the output pass (measuring its own frame, contrast recovery)
+            var lin: ?*filter.LinearFrame = null;
+            defer if (lin) |l| d.lin.?.give(l);
 
             var detected: ?tc.PeakState = null;
             // Config.peakUsable: no frame is active without the cache
@@ -277,7 +316,10 @@ fn Tonemap(comptime T: type) type {
                         return null;
                     };
                     entries[k] = cached orelse blk: {
-                        const e = (if (i == n) measure(d, &setup, src) else measureOther(d, &zapi, i)) catch |err| {
+                        if (i == n) if (d.lin) |*pool| {
+                            lin = pool.take();
+                        };
+                        const e = (if (i == n) measure(d, &zapi, &setup, src, n, lin) else measureOther(d, &zapi, i)) catch |err| {
                             peaks.release(ui);
                             zapi.setFilterError(if (err == error.InvalidRpu) invalid_rpu else filter_name ++ ": out of memory");
                             return null;
@@ -305,7 +347,12 @@ fn Tonemap(comptime T: type) type {
                 .ptr = .{ dst.getWriteSlice2(T, 0).ptr, dst.getWriteSlice2(T, 1).ptr, dst.getWriteSlice2(T, 2).ptr },
                 .stride = .{ dst.getStride2(T, 0), dst.getStride2(T, 1), dst.getStride2(T, 2) },
             };
-            filter.process(T, T, &d.cfg, plan, planesIn(T, src), out) catch return hz.frameOom(&zapi, filter_name, dst);
+            const el = elFrame(d, &zapi, n);
+            defer if (el) |e| e.deinit();
+            if (lin == null and plan.recovery > 0) if (d.lin) |*pool| {
+                lin = pool.take();
+            };
+            filter.process(T, T, &d.cfg, plan, planesIn(T, src, el), out, lin) catch return hz.frameOom(&zapi, filter_name, dst);
 
             const props = dst.getPropertiesRW();
             const dst_trc = setup.dst.trc;
@@ -321,8 +368,10 @@ fn Tonemap(comptime T: type) type {
             return dst.frame;
         }
 
-        fn measure(d: *Data, s: *const filter.Setup, f: anytype) !filter.PeakCache.Entry {
-            const m = try filter.measure(T, &d.cfg, s, planesIn(T, f));
+        fn measure(d: *Data, zapi: *const ZAPI, s: *const filter.Setup, f: anytype, i: c_int, keep: ?*filter.LinearFrame) !filter.PeakCache.Entry {
+            const el = elFrame(d, zapi, i);
+            defer if (el) |e| e.deinit();
+            const m = try filter.measure(T, &d.cfg, s, planesIn(T, f, el), keep);
             return .{ .m = m, .active = s.peak_active };
         }
 
@@ -334,7 +383,7 @@ fn Tonemap(comptime T: type) type {
             // resolved before the claim (getFrame), so this cannot need more
             if (loadMeta(d, zapi, f, i, &meta, &dv) != .ok) return error.InvalidRpu;
             const s: filter.Setup = .init(&d.cfg, &meta);
-            return measure(d, &s, f);
+            return measure(d, zapi, &s, f, i, null);
         }
     };
 }
@@ -343,8 +392,10 @@ fn tonemapFree(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.AP
     const d: *Data = @ptrCast(@alignCast(instance_data));
     const zapi = ZAPI.init(vsapi, core, null);
     if (d.peaks) |*p| p.deinit();
+    if (d.lin) |*p| p.deinit();
     d.gamut.deinit();
     zapi.freeNode(d.node);
+    zapi.freeNode(d.el_node);
     allocator.destroy(d);
 }
 
@@ -363,11 +414,12 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     const fmt = vi.format;
 
     if (!vapoursynth.vshelper.isConstantVideoFormat(vi)) return fail(map_out, &zapi, d.node, filter_name ++ ": only constant format input supported.");
-    const int16 = fmt.sampleType == .Integer and fmt.bitsPerSample == 16;
+    // 9- to 16-bit integers share the u16 carrier
+    const int_in = fmt.sampleType == .Integer and fmt.bitsPerSample >= 9 and fmt.bitsPerSample <= 16;
     const f32in = fmt.sampleType == .Float and fmt.bitsPerSample == 32;
     const family_ok = fmt.colorFamily == .RGB or (fmt.colorFamily == .YUV and fmt.subSamplingW <= 1 and fmt.subSamplingH <= 1);
-    if (!(int16 or f32in) or !family_ok) {
-        return fail(map_out, &zapi, d.node, filter_name ++ ": input must be 16-bit integer or 32-bit float RGB or YUV (4:4:4, 4:2:2, 4:2:0, 4:4:0).");
+    if (!(int_in or f32in) or !family_ok) {
+        return fail(map_out, &zapi, d.node, filter_name ++ ": input must be 9- to 16-bit integer or 32-bit float RGB or YUV (4:4:4, 4:2:2, 4:2:0, 4:4:0).");
     }
     if (vi.width < filter.min_size or vi.height < filter.min_size) {
         return fail(map_out, &zapi, d.node, filter_name ++ ": input must be at least 64x64.");
@@ -380,13 +432,10 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     if (dst_csp == 3) return fail(map_out, &zapi, d.node, filter_name ++ ": Dolby Vision output (dst_csp=3) is not supported.");
     // use_dovi only selects the enhancement layer, as in vs-placebo (the
     // RPU metadata applies whenever the prop is present)
+    // dovi_el is taken last, after every other argument (see below)
     const use_dovi = (map_in.getValue(i64, "use_dovi") orelse @intFromBool(src_csp == 3)) != 0;
-    if (map_in.getNode("dovi_el")) |el| {
-        zapi.freeNode(el);
-        if (use_dovi) return fail(map_out, &zapi, d.node, filter_name ++ ": dovi_el (the Dolby Vision FEL enhancement layer) is not supported yet.");
-    }
-    if (src_csp == 3 and !(fmt.colorFamily == .YUV and int16)) {
-        return fail(map_out, &zapi, d.node, filter_name ++ ": Dolby Vision input must be a 16-bit integer YUV clip.");
+    if (src_csp == 3 and !(fmt.colorFamily == .YUV and int_in)) {
+        return fail(map_out, &zapi, d.node, filter_name ++ ": Dolby Vision input must be an integer YUV clip.");
     }
 
     const tone_index = mp.getValue(i64, "tone_mapping_function", @intFromEnum(tc.ToneFn.spline), 0, tc.ToneFn.names.len - 1) catch return zapi.freeNode(d.node);
@@ -481,11 +530,17 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         .height = @intCast(vi.height),
         .rgb = fmt.colorFamily == .RGB,
         .float = f32in,
+        .bits = if (f32in) 16 else @intCast(fmt.bitsPerSample),
         .ssw = @intCast(fmt.subSamplingW),
         .ssh = @intCast(fmt.subSamplingH),
     };
     // 0 when detection can't run on any frame: no window, no cache
     d.window = d.cfg.peakWindow();
+    // cache_frame (vszip's own): keep the frame's linear RGB from the
+    // detection or contrast-recovery pass for the output pass (12 bytes a
+    // pixel per frame in flight) instead of decoding it twice
+    const cache_frame = (mp.getValue(i64, "cache_frame", 1, 0, 1) catch return zapi.freeNode(d.node)) != 0;
+    if (cache_frame and (d.window > 0 or d.cfg.contrast_recovery > 0)) d.lin = .init(&d.cfg);
 
     d.vi = vi.*;
     _ = zapi.getVideoFormatByID(&d.vi.format, switch (fmt.colorFamily) {
@@ -493,17 +548,50 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         else => if (f32in) .YUV444PS else .YUV444P16,
     });
 
+    // Dolby Vision FEL, taken last so no earlier error has to free it.
+    // vs-placebo ignores it without use_dovi.
+    if (map_in.getNodeVi("dovi_el")) |el_arg| {
+        const el, const evi = el_arg;
+        if (!use_dovi) {
+            zapi.freeNode(el);
+        } else {
+            const ef = evi.format;
+            const el_ok = vapoursynth.vshelper.isConstantVideoFormat(evi) and ef.colorFamily == .YUV and
+                ef.sampleType == .Integer and ef.bitsPerSample >= 9 and ef.bitsPerSample <= 16 and
+                ef.subSamplingW <= 1 and ef.subSamplingH <= 1;
+            d.cfg.el = if (el_ok) filter.ElGeometry.init(
+                @intCast(vi.width),
+                @intCast(vi.height),
+                @intCast(evi.width),
+                @intCast(evi.height),
+                @intCast(ef.subSamplingW),
+                @intCast(ef.subSamplingH),
+                @intCast(ef.bitsPerSample),
+            ) else null;
+            if (d.cfg.el == null) {
+                zapi.freeNode(el);
+                return fail(map_out, &zapi, d.node, filter_name ++ ": dovi_el must be a 9- to 16-bit integer YUV clip (4:2:0, 4:2:2, 4:4:0 or 4:4:4) of the BL's size or half of it.");
+            }
+            d.el_node = el;
+        }
+    }
+
     if (d.window > 0) {
-        d.peaks = filter.PeakCache.init(@intCast(vi.numFrames)) catch return fail(map_out, &zapi, d.node, filter_name ++ ": out of memory");
+        d.peaks = filter.PeakCache.init(@intCast(vi.numFrames)) catch {
+            zapi.freeNode(d.el_node);
+            return fail(map_out, &zapi, d.node, filter_name ++ ": out of memory");
+        };
     }
 
     const data: *Data = allocator.create(Data) catch unreachable;
     data.* = d;
 
+    // Dolby Vision RPU chains can reach earlier frames too
+    const pattern: vs.RequestPattern = if (d.window > 1 or d.cfg.src_csp == .dovi) .General else .StrictSpatial;
     const deps = [_]vs.FilterDependency{
-        // Dolby Vision RPU chains can reach earlier frames too
-        .{ .source = d.node, .requestPattern = if (d.window > 1 or d.cfg.src_csp == .dovi) .General else .StrictSpatial },
+        .{ .source = d.node, .requestPattern = pattern },
+        .{ .source = d.el_node, .requestPattern = pattern },
     };
     const gf: vs.FilterGetFrame = if (f32in) &Tonemap(f32).getFrame else &Tonemap(u16).getFrame;
-    zapi.createVideoFilter(out, filter_name, &d.vi, gf, tonemapFree, .Parallel, &deps, data);
+    zapi.createVideoFilter(out, filter_name, &d.vi, gf, tonemapFree, .Parallel, deps[0..if (d.el_node != null) 2 else 1], data);
 }

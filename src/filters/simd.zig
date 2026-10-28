@@ -175,6 +175,30 @@ inline fn gatherPd4(base: [*]const [2]f32, idx: @Vector(4, u32)) @Vector(4, f64)
         : .{ .memory = true });
 }
 
+/// out[l] = table[idx[l]], idx < 8 (unchecked): one vpermps per 8 lanes
+/// (AVX2; one zmm vpermps for 16 lanes under AVX-512F) instead of a select
+/// chain over the 8 entries. Portable twin: per-lane indexing.
+pub inline fn permute8F32(comptime n: comptime_int, table: @Vector(8, f32), idx: @Vector(n, u32)) @Vector(n, f32) {
+    if (comptime n == 16 and use_avx512f) {
+        const t16 = std.simd.join(table, table);
+        return zop2("vpermps", @Vector(16, f32), idx, t16);
+    }
+    if (comptime n % 8 == 0 and use_avx2) {
+        var out: [n]f32 = undefined;
+        const ia: [n]u32 = idx;
+        inline for (0..n / 8) |q| {
+            const iq: @Vector(8, u32) = ia[q * 8 ..][0..8].*;
+            out[q * 8 ..][0..8].* = xop2("vpermps", @Vector(8, f32), iq, table);
+        }
+        return out;
+    }
+    const t: [8]f32 = table;
+    const ia: [n]u32 = idx;
+    var out: [n]f32 = undefined;
+    inline for (0..n) |l| out[l] = t[ia[l]];
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Opacity barriers (zero-instruction launders)
 // ---------------------------------------------------------------------------

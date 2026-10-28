@@ -88,6 +88,10 @@ pub const Config = struct {
     height: u32,
     rgb: bool,
     float: bool,
+    /// integer input: bits per sample (9 to 16, in a u16); output stays 16 bit
+    bits: u5 = 16,
+    /// Dolby Vision FEL clip (dovi_el); its frames come in Planes.el
+    el: ?ElGeometry = null,
     ssw: u1 = 0,
     ssh: u1 = 0,
 
@@ -515,9 +519,18 @@ const Transfer = struct {
 };
 
 /// pl_color_repr_decode: raw samples -> nonlinear RGB, `rgb = m * v + c`.
-/// YCbCr is always BT.2020 NCL, as vs-placebo tags it. Integer samples are
-/// 16 bit; float YUV is full range with chroma centered on 0.
-fn decodeTransform(rgb: bool, float: bool, full: bool, sys: enum { bt709, bt2020 }) struct { m: tc.Mat3, c: [3]f32 } {
+/// YCbCr is always BT.2020 NCL, as vs-placebo tags it. Float YUV is full
+/// range with chroma centered on 0. Integer samples are `bits`-bit codes
+/// (9 to 16, in a u16), taken to 16 bit as zimg's resize.Point does (what
+/// vs-placebo, 16-bit only, gets) and folded into the 16-bit decode:
+/// - limited range: shifted by 16 - bits. The power of two is exact, so the
+///   output is bit-identical to the shifted 16-bit input.
+/// - full range: BT.2100's scaling, luma by 65535 / (2^bits - 1), chroma by
+///   the same factor around 2^(bits - 1) -> 32768, unrounded (zimg rounds).
+///   libplacebo's own lower-depth full range (chroma / (2^bits - 2) around
+///   2^(bits - 1)) would stretch chroma by 0.1% for 10 bit.
+fn decodeTransform(rgb: bool, float: bool, full: bool, sys: enum { bt709, bt2020 }, bits: u5) struct { m: tc.Mat3, c: [3]f32 } {
+    std.debug.assert(bits >= 9 and bits <= 16);
     var m: tc.Mat3 = tc.identity;
     if (!rgb) {
         const lr: f32, const lg: f32, const lb: f32 = switch (sys) {
@@ -532,6 +545,17 @@ fn decodeTransform(rgb: bool, float: bool, full: bool, sys: enum { bt709, bt2020
     }
     var mul: [3]f64 = .{ 1, 1, 1 };
     var black: [3]f64 = .{ 0, 0, 0 };
+    // input codes -> 16-bit codes: v16 = in_scale * v + in_off
+    var in_scale: f64 = @floatFromInt(@as(u32, 1) << (16 - bits));
+    var in_off: [3]f64 = .{ 0, 0, 0 };
+    if (!float and full and bits < 16) {
+        in_scale = 65535.0 / @as(f64, @floatFromInt((@as(u32, 1) << bits) - 1));
+        if (!rgb) {
+            const mid: f64 = @floatFromInt(@as(u32, 1) << (bits - 1));
+            in_off[1] = 32768.0 - mid * in_scale;
+            in_off[2] = in_off[1];
+        }
+    }
     if (!float) {
         const s: f64 = 65536.0 / 65535.0;
         var ymax: f64 = 1;
@@ -556,14 +580,15 @@ fn decodeTransform(rgb: bool, float: bool, full: bool, sys: enum { bt709, bt2020
         // samples arrive as raw 16-bit codes
         for (&mul) |*v| v.* /= 65535.0;
         for (&black) |*v| v.* *= 65535.0;
-    }
+    } else in_scale = 1;
     var c: [3]f32 = .{ 0, 0, 0 };
     for (0..3) |i| {
         var ci: f64 = 0;
         for (0..3) |j| {
             const e: f64 = @as(f64, m[i][j]) * mul[j];
-            m[i][j] = @floatCast(e);
-            ci -= e * black[j];
+            // a power-of-two in_scale leaves the rounding of e as is
+            m[i][j] = @floatCast(e * in_scale);
+            ci -= e * (black[j] - in_off[j]);
         }
         c[i] = @floatCast(ci);
     }
@@ -606,6 +631,103 @@ const Phases = struct {
     }
 };
 
+/// Lanczos (radius 3) phases of an integer upsample by `f` (1, 2 or 4) along
+/// one axis, the way libplacebo samples a plane onto a finer grid: output
+/// i = f k + p sits at source position x0 + (i + 0.5) / f (texel units, so
+/// x0 is the sampled rect's start) and reads source k + off[p] + t,
+/// t = 0..5. For the 2x chroma case this is `Phases`' formula.
+///
+/// Factor 1 is the GPU's bilinear texture lookup at that position, not a
+/// lanczos tap and not nearest: an unscaled axis is never filtered by
+/// libplacebo itself. A plane scaled on one axis only goes through
+/// pl_shader_sample_ortho2, whose texture reads are LINEAR (with a
+/// top-left chroma shift, a 4:2:2 EL's vertical axis starts half a texel
+/// in, so each output row averages two EL rows), and an unscaled plane
+/// through pl_shader_sample_direct, also linear, at an integer offset.
+pub const ElPhases = struct {
+    f: u32,
+    w: [4][6]f32,
+    off: [4]i32,
+
+    fn init(f: u32, x0: f64) ElPhases {
+        std.debug.assert(f == 1 or f == 2 or f == 4);
+        var r: ElPhases = .{ .f = f, .w = @splat(@splat(0)), .off = @splat(0) };
+        if (f == 1) {
+            const base = @floor(x0);
+            const frac: f32 = @floatCast(x0 - base);
+            r.off[0] = @as(i32, @intFromFloat(base)) - 2;
+            r.w[0][2] = 1 - frac;
+            r.w[0][3] = frac;
+            return r;
+        }
+        const ff: f64 = @floatFromInt(f);
+        for (0..f) |p| {
+            const v = x0 + (@as(f64, @floatFromInt(p)) + 0.5) / ff - 0.5;
+            const base = @floor(v);
+            const frac = v - base;
+            var sum: f64 = 0;
+            var w: [6]f64 = undefined;
+            for (0..6) |t| {
+                w[t] = if (frac == 0) (if (t == 2) 1 else 0) else Phases.lanczos3(frac + 2 - @as(f64, @floatFromInt(t)));
+                sum += w[t];
+            }
+            for (0..6) |t| r.w[p][t] = @floatCast(w[t] / sum);
+            r.off[p] = @as(i32, @intFromFloat(base)) - 2;
+        }
+        return r;
+    }
+};
+
+/// A Dolby Vision FEL clip's planes on the BL grid (libplacebo's
+/// sample_el): the EL luma grid is co-sited horizontally and centered
+/// vertically on the BL ("left" layer siting) and its chroma is top-left
+/// (vs-placebo sets PL_CHROMA_TOP_LEFT), each plane upsampled to the BL
+/// output with the plane upscaler (lanczos) on its scaled axes and bilinear
+/// texture reads on an unscaled one (ElPhases).
+pub const ElGeometry = struct {
+    /// EL plane sizes
+    w: [3]u32,
+    h: [3]u32,
+    hx: [3]ElPhases,
+    hy: [3]ElPhases,
+    /// the EL clip's bits per sample (9 to 16)
+    bits: u5,
+
+    /// null unless the EL is the BL size or half of it on both axes, with
+    /// planes upsampled by 1, 2 or 4.
+    pub fn init(bl_w: u32, bl_h: u32, el_w: u32, el_h: u32, ssw: u1, ssh: u1, bits: u5) ?ElGeometry {
+        const lx = layerFactor(bl_w, el_w) orelse return null;
+        const ly = layerFactor(bl_h, el_h) orelse return null;
+        var g: ElGeometry = .{ .w = undefined, .h = undefined, .hx = undefined, .hy = undefined, .bits = bits };
+        // pl_chroma_location_offset(PL_CHROMA_LEFT) for a smaller EL
+        const layer_x: f64 = if (lx > 1) -0.5 else 0;
+        const layer_y: f64 = 0;
+        for (0..3) |p| {
+            const sub = p > 0 and (ssw == 1 or ssh == 1);
+            g.w[p] = if (p > 0) el_w >> ssw else el_w;
+            g.h[p] = if (p > 0) el_h >> ssh else el_h;
+            const fx = lx * (if (p > 0 and ssw == 1) @as(u32, 2) else 1);
+            const fy = ly * (if (p > 0 and ssh == 1) @as(u32, 2) else 1);
+            if (fx > 4 or fy > 4) return null;
+            // pl_frame_set_chroma_location(TOP_LEFT): both shifts, on any
+            // subsampled plane, in EL luma pixels
+            const shift: f64 = if (sub) -0.5 else 0;
+            // rect start = (bl_crop.x0 - (layer + shift / rl)) * rr
+            const sx = layer_x + shift * @as(f64, @floatFromInt(lx));
+            const sy = layer_y + shift * @as(f64, @floatFromInt(ly));
+            g.hx[p] = .init(fx, -sx / @as(f64, @floatFromInt(fx)));
+            g.hy[p] = .init(fy, -sy / @as(f64, @floatFromInt(fy)));
+        }
+        return g;
+    }
+
+    fn layerFactor(bl: u32, el: u32) ?u32 {
+        if (el == bl) return 1;
+        if (el * 2 == bl) return 2;
+        return null;
+    }
+};
+
 fn chromaShift(loc: i64) [2]f64 {
     // VapourSynth _ChromaLocation: 0 left, 1 center, 2 top-left, 3 top,
     // 4 bottom-left, 5 bottom
@@ -631,7 +753,7 @@ const Decode = struct {
     dovi: ?DoviDecode = null,
 
     fn init(cfg: *const Config, s: *const Setup) Decode {
-        const d = decodeTransform(cfg.rgb, cfg.float, s.full, .bt2020);
+        const d = decodeTransform(cfg.rgb, cfg.float, s.full, .bt2020, cfg.bits);
         const sh = chromaShift(s.chroma_loc);
         return .{
             .m = d.m,
@@ -639,7 +761,7 @@ const Decode = struct {
             .hx = .init(sh[0]),
             .hy = .init(sh[1]),
             .lin = .init(&s.src, false),
-            .dovi = if (s.dovi) |m| .init(m) else null,
+            .dovi = if (s.dovi) |m| .init(m, cfg.bits, if (cfg.el) |g| g.bits else null) else null,
         };
     }
 };
@@ -647,15 +769,31 @@ const Decode = struct {
 /// pl_shader_decode_color's Dolby Vision path for one frame: the RPU's
 /// per-component reshaping of the base-layer codes (polynomial or MMR
 /// pieces between pivots), its YCbCr -> nonlinear RGB matrix, then PQ LMS
-/// -> linear BT.2020 RGB. Integer input only (16-bit codes of the 10-bit
-/// BL, as vs-placebo requires).
+/// -> linear BT.2020 RGB. Integer input only.
 const DoviDecode = struct {
+    /// the reshaping reads code / 2^bits (pl_color_repr_code_scale: 16-bit
+    /// samples of the 10-bit BL carry it shifted by 6, so this is exact for
+    /// either)
+    code_scale: f32,
     comp: [3]Comp,
+    /// FEL composition (an EL clip and an RPU with nlq_active)
+    nlq: ?Nlq = null,
     /// reshaped -> nonlinear (PQ) LMS: m * v + c
     m: tc.Mat3,
     c: [3]f32,
     /// linear LMS -> linear BT.2020 RGB
     lms2rgb: tc.Mat3,
+
+    /// sh_dovi_compose_nlq's parameters (API >= 387: the offset in EL codes)
+    const Nlq = struct {
+        /// EL samples -> EL codes (pl_color_repr_code_scale with the
+        /// header's EL depth): 2^(el_bit_depth - bits)
+        scale: f32,
+        offset: [3]f32,
+        slope: [3]f32,
+        threshold: [3]f32,
+        max: [3]f32,
+    };
 
     /// constant, then 7 coefficients per MMR order
     const ncoef = 1 + 3 * dovi.mmr_coeffs;
@@ -665,13 +803,15 @@ const DoviDecode = struct {
         /// pivot range, which also clamps the inputs MMR reads
         lo: f32 = 0,
         hi: f32 = 1,
-        /// piece p > 0 starts at bounds[p - 1]
-        bounds: [dovi.max_pieces - 1]f32 = @splat(0),
+        /// piece p > 0 starts at bounds[p - 1]; unused ones are +inf, so a
+        /// lane's piece is the count of bounds <= s
+        bounds: [dovi.max_pieces - 1]f32 = @splat(math.inf(f32)),
         mmr: bool = false,
         /// the highest MMR order (lower-order pieces have zero coefficients)
         order: u32 = 0,
-        /// polynomial: x0 + x1 s + x2 s^2
-        coef: [dovi.max_pieces][ncoef]f32 = @splat(@splat(0)),
+        /// coefficient j of piece p at table[j][p] (polynomial: x0 + x1 s +
+        /// x2 s^2), one vpermps table per coefficient
+        table: [ncoef][dovi.max_pieces]f32 = @splat(@splat(0)),
     };
 
     /// Dolby Vision's BT.2020 HPE LMS -> RGB (pl_shader_decode_color_ex)
@@ -681,8 +821,15 @@ const DoviDecode = struct {
         .{ 0.01736321, -0.04725154, 1.03004253 },
     };
 
-    fn init(meta: *const dovi.Meta) DoviDecode {
-        var d: DoviDecode = .{ .comp = @splat(.{}), .m = meta.nonlinear, .c = undefined, .lms2rgb = undefined };
+    /// el_bits: the EL clip's bits per sample, when there is one.
+    fn init(meta: *const dovi.Meta, bits: u5, el_bits: ?u5) DoviDecode {
+        var d: DoviDecode = .{
+            .code_scale = 1.0 / @as(f32, @floatFromInt(@as(u32, 1) << bits)),
+            .comp = @splat(.{}),
+            .m = meta.nonlinear,
+            .c = undefined,
+            .lms2rgb = undefined,
+        };
         for (&d.comp, &meta.comp) |*o, *r| {
             if (r.num_pivots == 0) continue;
             o.pieces = r.num_pivots - 1;
@@ -692,11 +839,13 @@ const DoviDecode = struct {
             o.mmr = r.mmr;
             for (0..o.pieces) |i| {
                 if (!r.mmr) {
-                    o.coef[i][0..3].* = r.poly_coeffs[i];
+                    for (0..3) |j| o.table[j][i] = r.poly_coeffs[i][j];
                 } else {
                     o.order = @max(o.order, r.mmr_order[i]);
-                    o.coef[i][0] = r.mmr_constant[i];
-                    for (0..3) |j| o.coef[i][1 + j * dovi.mmr_coeffs ..][0..dovi.mmr_coeffs].* = r.mmr_coeffs[i][j];
+                    o.table[0][i] = r.mmr_constant[i];
+                    for (0..3) |j| for (0..dovi.mmr_coeffs) |k| {
+                        o.table[1 + j * dovi.mmr_coeffs + k][i] = r.mmr_coeffs[i][j][k];
+                    };
                 }
             }
         }
@@ -708,32 +857,68 @@ const DoviDecode = struct {
             d.c[i] = @floatCast(c);
         }
         d.lms2rgb = tc.mul(lms2rgb_bt2020, meta.linear);
+        if (meta.nlq_active) if (el_bits) |eb| {
+            const shift = @as(i32, meta.el_bit_depth) - eb;
+            var q: Nlq = .{ .scale = math.ldexp(@as(f32, 1), shift), .offset = undefined, .slope = undefined, .threshold = undefined, .max = undefined };
+            for (meta.nlq, 0..) |n, c| {
+                q.offset[c] = n.offset;
+                q.slope[c] = n.slope;
+                q.threshold[c] = n.threshold;
+                q.max[c] = n.hdr_in_max;
+            }
+            d.nlq = q;
+        };
         return d;
     }
 
-    /// The reshaped component `s` (clamped to its pivots in `sig`).
-    inline fn reshape(o: *const Comp, sig: [3]V, s: V) V {
-        const used = if (o.mmr) 1 + o.order * dovi.mmr_coeffs else 3;
-        // each lane's piece: the coefficients of the last pivot <= s
-        var k: [ncoef]V = undefined;
-        for (0..used) |j| k[j] = sp(o.coef[0][j]);
-        for (1..o.pieces) |p| {
-            const in = s >= sp(o.bounds[p - 1]);
-            for (0..used) |j| k[j] = @select(f32, in, sp(o.coef[p][j]), k[j]);
+    /// Component `comp` of the row reshaped in place, clamped to [0, 1]:
+    /// polynomial (`order` 0) or MMR of `order`, over one piece or several
+    /// (`multi`). sig: the three components clamped to their pivot ranges.
+    /// The shape is comptime and the coefficients are loaded once per row,
+    /// not per vector (they were most of the decode as broadcasts). `own`
+    /// is this component's row of `sig`, which selects the piece and is the
+    /// polynomial's argument.
+    fn reshapeRow(comptime order: u32, comptime multi: bool, o: *const Comp, sig: [3][]const f32, own: []const f32, out: []f32, n: usize) void {
+        const nc = if (order == 0) 3 else 1 + order * dovi.mmr_coeffs;
+        // single piece: its coefficients splatted; several: vpermps tables
+        var single: [nc]V = undefined;
+        var tab: [nc]@Vector(dovi.max_pieces, f32) = undefined;
+        for (0..nc) |j| {
+            if (multi) tab[j] = o.table[j] else single[j] = sp(o.table[j][0]);
         }
-        if (!o.mmr) return madd(madd(k[2], s, k[1]), s, k[0]);
-        // MMR: the components and their cross products, up to the cube
-        const x = [7]V{ sig[0], sig[1], sig[2], sig[0] * sig[1], sig[0] * sig[2], sig[1] * sig[2], sig[0] * sig[1] * sig[2] };
-        var r = k[0];
-        var t = x;
-        for (0..o.order) |j| {
-            if (j > 0) {
-                for (&t, x) |*v, b| v.* *= b;
-            }
-            const kj = k[1 + j * dovi.mmr_coeffs ..];
-            for (0..dovi.mmr_coeffs) |i| r = madd(kj[i], t[i], r);
+        var bound: [dovi.max_pieces - 1]V = undefined;
+        if (multi) {
+            for (&bound, o.bounds) |*b, v| b.* = sp(v);
         }
-        return r;
+        var x: usize = 0;
+        while (x < n) : (x += VL) {
+            const s: V = own[x..][0..VL].*;
+            var k: [nc]V = undefined;
+            if (multi) {
+                // each lane's piece: the count of piece starts <= s (the
+                // last pivot <= s, as libplacebo's mix tree selects)
+                var idx: @Vector(VL, u32) = @splat(0);
+                inline for (bound) |b| idx += @intFromBool(s >= b);
+                inline for (0..nc) |j| k[j] = simd.permute8F32(VL, tab[j], idx);
+            } else k = single;
+            const r = if (order == 0) madd(madd(k[2], s, k[1]), s, k[0]) else blk: {
+                // MMR: the components and their cross products, up to the cube
+                const s0: V = sig[0][x..][0..VL].*;
+                const s1: V = sig[1][x..][0..VL].*;
+                const s2: V = sig[2][x..][0..VL].*;
+                const xs = [7]V{ s0, s1, s2, s0 * s1, s0 * s2, s1 * s2, s0 * s1 * s2 };
+                var acc = k[0];
+                var t = xs;
+                inline for (0..order) |j| {
+                    if (j > 0) {
+                        inline for (&t, xs) |*v, b| v.* *= b;
+                    }
+                    inline for (0..dovi.mmr_coeffs) |i| acc = madd(k[1 + j * dovi.mmr_coeffs + i], t[i], acc);
+                }
+                break :blk acc;
+            };
+            out[x..][0..VL].* = simd.clampV(VL, r, sp(0), sp(1));
+        }
     }
 };
 
@@ -742,8 +927,17 @@ pub fn Planes(comptime T: type) type {
         ptr: [3][*]const T,
         /// in elements
         stride: [3]usize,
+        /// the frame's Dolby Vision FEL planes, when Config.el is set
+        el: ?ElPlanes = null,
     };
 }
+
+/// A Dolby Vision FEL frame (integer, Config.el's geometry).
+pub const ElPlanes = struct {
+    ptr: [3][*]const u16,
+    /// in elements
+    stride: [3]usize,
+};
 
 pub fn PlanesOut(comptime T: type) type {
     return struct {
@@ -765,10 +959,14 @@ const Rows = struct {
     feat: []f32,
     /// color map scratch (the tone stage's maxRGB)
     aux: []f32,
+    /// Dolby Vision FEL: its three planes on the BL grid (raw codes), and
+    /// the vertical pass of the plane being upsampled, edge-padded
+    el: [3][]f32,
+    el_pad: []f32,
 
     fn init(w: u32) !Rows {
         const n = std.mem.alignForward(usize, w, 2 * VL) + 4 * VL;
-        const buf = try allocator.alloc(f32, 8 * n);
+        const buf = try allocator.alloc(f32, 12 * n);
         @memset(buf, 0);
         return .{
             .buf = buf,
@@ -780,6 +978,8 @@ const Rows = struct {
             .pad = buf[5 * n ..][0..n],
             .feat = buf[6 * n ..][0..n],
             .aux = buf[7 * n ..][0..n],
+            .el = .{ buf[8 * n ..][0..n], buf[9 * n ..][0..n], buf[10 * n ..][0..n] },
+            .el_pad = buf[11 * n ..][0..n],
         };
     }
 
@@ -842,6 +1042,7 @@ fn horizontal2x(src: []f32, pad: []f32, ph: *const Phases, dst: []f32, cn: usize
 fn decodeRow(comptime T: type, cfg: *const Config, dec: *const Decode, src: Planes(T), y: usize, rows: *Rows) void {
     const w = cfg.width;
     convertRow(T, src.ptr[0] + y * src.stride[0], rows.a, w);
+    if (dec.dovi) |*dv| if (dv.nlq != null) elRow(cfg, src.el.?, y, rows);
     if (cfg.rgb or (cfg.ssw == 0 and cfg.ssh == 0)) {
         convertRow(T, src.ptr[1] + y * src.stride[1], rows.b, w);
         convertRow(T, src.ptr[2] + y * src.stride[2], rows.c, w);
@@ -871,6 +1072,96 @@ fn decodeRow(comptime T: type, cfg: *const Config, dec: *const Decode, src: Plan
     }
 }
 
+/// sh_dovi_compose_nlq on component c of a row: the EL codes, rounded after
+/// the resampling, dequantized with the linear deadzone and added to the
+/// reshaped BL. rr = round(el - offset); rr = 0 adds nothing, otherwise
+/// sign(rr) * ((|rr| - 0.5) * slope + threshold), bounded by hdr_in_max;
+/// the sum is clamped to [0, 1].
+fn composeNlqRow(q: *const DoviDecode.Nlq, c: usize, row: []f32, el: []const f32, n: usize) void {
+    var x: usize = 0;
+    while (x < n) : (x += VL) {
+        const rr = @round(el[x..][0..VL].* * sp(q.scale) - sp(q.offset[c]));
+        const mag = madd(@abs(rr) - sp(0.5), sp(q.slope[c]), sp(q.threshold[c]));
+        const res = @select(f32, rr > sp(0), mag, @select(f32, rr < sp(0), -mag, sp(0)));
+        const s: V = row[x..][0..VL].*;
+        row[x..][0..VL].* = simd.clampV(VL, s + simd.clampV(VL, res, sp(-q.max[c]), sp(q.max[c])), sp(0), sp(1));
+    }
+}
+
+/// The Dolby Vision FEL planes of output row y on the BL grid, as raw codes
+/// in rows.el (sample_el: vertical then horizontal lanczos, edge-clamped,
+/// in f32; the GPU stores the vertical pass in half float).
+fn elRow(cfg: *const Config, el: ElPlanes, y: usize, rows: *Rows) void {
+    const g = &cfg.el.?;
+    for (0..3) |p| {
+        const ph = &g.hy[p];
+        const k: i64 = @intCast(y / ph.f);
+        const phase = y % ph.f;
+        var rp: [6][*]const u16 = undefined;
+        for (0..6) |t| {
+            const r = math.clamp(k + ph.off[phase] + @as(i64, @intCast(t)), 0, @as(i64, g.h[p]) - 1);
+            rp[t] = el.ptr[p] + @as(usize, @intCast(r)) * el.stride[p];
+        }
+        // the vertical pass lands in the edge-padded row the horizontal reads
+        verticalRow(u16, rp, ph.w[phase], rows.el_pad[3..], g.w[p]);
+        switch (g.hx[p].f) {
+            inline 1, 2, 4 => |f| upsampleRow(f, rows.el_pad, &g.hx[p], rows.el[p], g.w[p], cfg.width),
+            else => unreachable,
+        }
+    }
+}
+
+/// Horizontal upsample by `f` (ElPhases) of the row at pad[3..][0..cn]
+/// onto dst[0..n]. The f phases of each source vector are interleaved into
+/// whole-vector stores (strided scalar stores were half the FEL decode), so
+/// dst is written up to f * ceil(ceil(n / f) / VL) * VL (Rows has room).
+fn upsampleRow(comptime f: u32, pad: []f32, ph: *const ElPhases, dst: []f32, cn: usize, n: usize) void {
+    // Edges: 3 samples on the left (offsets reach -3). On the right, the
+    // last vector's taps reach index count + VL + 5 at most (off <= -1,
+    // count <= cn + 1), so 2 VL samples cover them; filling the whole row
+    // instead was a 3000-sample memset per plane and row.
+    const count = (n + f - 1) / f;
+    std.debug.assert(count <= cn + 1 and 3 + cn + 2 * VL <= pad.len);
+    std.debug.assert(f * std.mem.alignForward(usize, count, VL) <= dst.len);
+    @memset(pad[0..3], pad[3]);
+    @memset(pad[3 + cn ..][0 .. 2 * VL], pad[3 + cn - 1]);
+    var o: [f]usize = undefined;
+    inline for (&o, 0..) |*v, p| {
+        std.debug.assert(ph.off[p] <= -1);
+        v.* = @intCast(ph.off[p] + 3);
+    }
+    var k: usize = 0;
+    while (k < count) : (k += VL) {
+        // phase p is output f * (k + l) + p of lane l
+        var acc: [f]V = undefined;
+        inline for (&acc, o, 0..) |*a, op, p| {
+            a.* = sp(0);
+            inline for (0..6) |t| a.* = madd(sp(ph.w[p][t]), pad[k + op + t ..][0..VL].*, a.*);
+        }
+        const d = dst[f * k ..];
+        switch (f) {
+            1 => d[0..VL].* = acc[0],
+            2 => {
+                const i = simd.interleaveF32(VL, acc[0], acc[1]);
+                d[0..VL].* = i[0];
+                d[VL..][0..VL].* = i[1];
+            },
+            4 => {
+                // (a c), (b d) pairs, then those: a b c d per lane
+                const ac = simd.interleaveF32(VL, acc[0], acc[2]);
+                const bd = simd.interleaveF32(VL, acc[1], acc[3]);
+                const lo = simd.interleaveF32(VL, ac[0], bd[0]);
+                const hi = simd.interleaveF32(VL, ac[1], bd[1]);
+                d[0..VL].* = lo[0];
+                d[VL..][0..VL].* = lo[1];
+                d[2 * VL ..][0..VL].* = hi[0];
+                d[3 * VL ..][0..VL].* = hi[1];
+            },
+            else => comptime unreachable,
+        }
+    }
+}
+
 /// Decode matrix and transfer: rows a/b/c become linear RGB (SDR-white
 /// relative, source primaries).
 fn linearizeRow(dec: *const Decode, rows: *Rows, n: usize) void {
@@ -894,20 +1185,41 @@ fn linearizeRow(dec: *const Decode, rows: *Rows, n: usize) void {
 /// Dolby Vision decode: raw 16-bit codes in rows a/b/c become linear
 /// BT.2020 RGB (SDR-white relative).
 fn doviRow(d: *const DoviDecode, rows: *Rows, n: usize) void {
+    // Short passes (see colorMapSplit): codes -> signal in a/b/c and its
+    // pivot-clamped copy in cu/cv/pad (free here); each reshaped component
+    // in place with its comptime shape; then matrix, EOTF and LMS -> RGB.
+    const sig = [3][]f32{ rows.cu, rows.cv, rows.pad };
     var x: usize = 0;
     while (x < n) : (x += VL) {
         const raw = loadRow3(rows, x);
-        // the reshaping reads code / 2^bl_depth: 16-bit samples of the
-        // 10-bit BL carry it shifted by 6 (pl_color_repr_code_scale)
         var s: [3]V = undefined;
-        var sig: [3]V = undefined;
         inline for (0..3) |c| {
-            s[c] = raw[c] * sp(1.0 / 65536.0);
-            sig[c] = simd.clampV(VL, s[c], sp(d.comp[c].lo), sp(d.comp[c].hi));
+            s[c] = raw[c] * sp(d.code_scale);
+            sig[c][x..][0..VL].* = simd.clampV(VL, s[c], sp(d.comp[c].lo), sp(d.comp[c].hi));
         }
-        inline for (0..3) |c| {
-            if (d.comp[c].pieces > 0) s[c] = simd.clampV(VL, DoviDecode.reshape(&d.comp[c], sig, sig[c]), sp(0), sp(1));
+        storeRow3(rows, x, s);
+    }
+    const out = [3][]f32{ rows.a, rows.b, rows.c };
+    const sig_ro = [3][]const f32{ sig[0], sig[1], sig[2] };
+    for (&d.comp, out, sig_ro) |*o, row, own| {
+        if (o.pieces == 0) continue;
+        const multi = o.pieces > 1;
+        switch (if (o.mmr) o.order else 0) {
+            inline 0...3 => |order| if (multi)
+                DoviDecode.reshapeRow(order, true, o, sig_ro, own, row, n)
+            else
+                DoviDecode.reshapeRow(order, false, o, sig_ro, own, row, n),
+            else => unreachable,
         }
+    }
+    if (d.nlq) |*q| {
+        for (out, rows.el, 0..) |row, el, c| composeNlqRow(q, c, row, el, n);
+    }
+    // (one loop per cone, to overlap the EOTF lookups, measured no faster:
+    // the loop is bound by gather throughput, which llvm-mca underrates)
+    x = 0;
+    while (x < n) : (x += VL) {
+        const s = loadRow3(rows, x);
         var lms = mat3(d.m, s[0], s[1], s[2]);
         // PQ LMS -> linear; pqEotf clamps the signal to [0, 1] as upstream
         inline for (&lms, d.c) |*v, c| v.* = pqEotf(v.* + sp(c));
@@ -1162,7 +1474,8 @@ pub const Plan = struct {
         // encode: the inverse of the target representation's decode (RGB
         // out is full range; YUV keeps the source's range, as vs-placebo)
         const out_full = cfg.rgb or s.full;
-        const e = decodeTransform(cfg.rgb, cfg.float, out_full, if (dst.trc == .bt1886) .bt709 else .bt2020);
+        // the output is 16 bit whatever the input depth
+        const e = decodeTransform(cfg.rgb, cfg.float, out_full, if (dst.trc == .bt1886) .bt709 else .bt2020, 16);
         plan.enc = tc.invert(e.m);
         const ec = tc.apply(plan.enc, e.c);
         plan.enc_c = .{ -ec[0], -ec[1], -ec[2] };
@@ -1875,7 +2188,7 @@ fn intensityRow(p: *const Plan, rows: *Rows, dst: []f32, n: usize) void {
     }
 }
 
-fn buildFeatures(comptime T: type, cfg: *const Config, p: *const Plan, src: Planes(T), rows: *Rows) !Features {
+fn buildFeatures(comptime T: type, cfg: *const Config, p: *const Plan, src: Planes(T), rows: *Rows, lin: ?*LinearFrame) !Features {
     const w = cfg.width;
     const h = cfg.height;
     const cw: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(w)) / cfg.contrast_smoothness));
@@ -1898,9 +2211,13 @@ fn buildFeatures(comptime T: type, cfg: *const Config, p: *const Plan, src: Plan
 
     const hbuf = try allocator.alloc(f32, @as(usize, h) * cw);
     defer allocator.free(hbuf);
+    const cached = if (lin) |l| l.filled else false;
     for (0..h) |y| {
-        decodeRow(T, cfg, &p.dec, src, y, rows);
-        linearizeRow(&p.dec, rows, w);
+        if (cached) lin.?.get(rows, y) else {
+            decodeRow(T, cfg, &p.dec, src, y, rows);
+            linearizeRow(&p.dec, rows, w);
+            if (lin) |l| l.put(rows, y);
+        }
         intensityRow(p, rows, rows.feat, w);
         const hr = hbuf[y * cw ..][0..cw];
         for (0..cw) |j| {
@@ -1909,8 +2226,9 @@ fn buildFeatures(comptime T: type, cfg: *const Config, p: *const Plan, src: Plan
             hr[j] = acc;
         }
     }
+    if (lin) |l| l.filled = true;
 
-    var f: Features = .{ .w = cw, .h = ch, .low = &.{}, .xt = &.{}, .yt = &.{}, .vrow = &.{} };
+    var f: Features =.{ .w = cw, .h = ch, .low = &.{}, .xt = &.{}, .yt = &.{}, .vrow = &.{} };
     errdefer f.deinit();
     f.low = try allocator.alloc(f32, @as(usize, cw) * ch);
     @memset(f.low, 0);
@@ -1945,18 +2263,104 @@ fn featureRow(f: *const Features, y: usize, dst: []f32, n: usize) void {
 
 // ------------------------------------------------------------ frame passes
 
+/// One frame's linear RGB, linearizeRow's rows a/b/c, 12 bytes per pixel.
+/// Kept by the detection pass (`measure`) or contrast recovery's feature
+/// pass, the output pass reads it instead of decoding and linearizing the
+/// frame again (with detection on, that second decode was a quarter of the
+/// 4K Dolby Vision time). Same rows, so the output is identical.
+pub const LinearFrame = struct {
+    /// plane c, row y at (c * h + y) * stride
+    data: []f32,
+    /// the width rounded up to whole vectors
+    stride: usize,
+    h: usize,
+    /// the rows hold the current frame
+    filled: bool = false,
+
+    fn row(f: *const LinearFrame, c: usize, y: usize) []f32 {
+        return f.data[(c * f.h + y) * f.stride ..][0..f.stride];
+    }
+
+    fn put(f: *LinearFrame, rows: *const Rows, y: usize) void {
+        @memcpy(f.row(0, y), rows.a[0..f.stride]);
+        @memcpy(f.row(1, y), rows.b[0..f.stride]);
+        @memcpy(f.row(2, y), rows.c[0..f.stride]);
+    }
+
+    fn get(f: *const LinearFrame, rows: *Rows, y: usize) void {
+        @memcpy(rows.a[0..f.stride], f.row(0, y));
+        @memcpy(rows.b[0..f.stride], f.row(1, y));
+        @memcpy(rows.c[0..f.stride], f.row(2, y));
+    }
+};
+
+/// LinearFrames reused across frames: a fresh 100 MB (4K) allocation would
+/// fault its pages in on every frame. It keeps as many as were in use at
+/// once (one per concurrent request) until `deinit`.
+pub const LinearPool = struct {
+    lock: std.Io.Mutex = .init,
+    free: std.ArrayList(*LinearFrame) = .empty,
+    stride: usize,
+    h: usize,
+
+    pub fn init(cfg: *const Config) LinearPool {
+        return .{ .stride = std.mem.alignForward(usize, cfg.width, VL), .h = cfg.height };
+    }
+
+    pub fn deinit(p: *LinearPool) void {
+        for (p.free.items) |f| destroy(f);
+        p.free.deinit(allocator);
+    }
+
+    fn destroy(f: *LinearFrame) void {
+        allocator.free(f.data);
+        allocator.destroy(f);
+    }
+
+    /// An unfilled frame, or null without the memory for one (the caller
+    /// decodes twice instead).
+    pub fn take(p: *LinearPool) ?*LinearFrame {
+        {
+            p.lock.lockUncancelable(io);
+            defer p.lock.unlock(io);
+            if (p.free.pop()) |f| return f;
+        }
+        const f = allocator.create(LinearFrame) catch return null;
+        const data = allocator.alloc(f32, 3 * p.h * p.stride) catch {
+            allocator.destroy(f);
+            return null;
+        };
+        f.* = .{ .data = data, .stride = p.stride, .h = p.h };
+        return f;
+    }
+
+    pub fn give(p: *LinearPool, f: *LinearFrame) void {
+        f.filled = false;
+        p.lock.lockUncancelable(io);
+        defer p.lock.unlock(io);
+        p.free.append(allocator, f) catch destroy(f);
+    }
+};
+
 /// Tone/gamut map one frame (input sample type T, output O: u16 or f32).
-pub fn process(comptime T: type, comptime O: type, cfg: *const Config, p: *const Plan, src: Planes(T), dst: PlanesOut(O)) !void {
+/// `lin`: this frame's linear RGB when `measure` kept it (`filled`), read
+/// instead of decoding again; unfilled, contrast recovery's feature pass
+/// fills it for the main pass.
+pub fn process(comptime T: type, comptime O: type, cfg: *const Config, p: *const Plan, src: Planes(T), dst: PlanesOut(O), lin: ?*LinearFrame) !void {
     var rows = try Rows.init(cfg.width);
     defer rows.deinit();
     const w = cfg.width;
 
     var feat: ?Features = null;
-    if (p.recovery > 0) feat = try buildFeatures(T, cfg, p, src, &rows);
+    if (p.recovery > 0) feat = try buildFeatures(T, cfg, p, src, &rows, lin);
     defer if (feat) |*f| f.deinit();
+    // a passthrough plan reads the decoded (nonlinear) rows
+    const cached: ?*LinearFrame = if (lin) |l| (if (l.filled and !p.passthrough) l else null) else null;
 
     for (0..cfg.height) |y| {
-        decodeRow(T, cfg, &p.dec, src, y, &rows);
+        if (cached) |l| {
+            l.get(&rows, y);
+        } else decodeRow(T, cfg, &p.dec, src, y, &rows);
         if (p.passthrough) {
             var x: usize = 0;
             while (x < w) : (x += VL) {
@@ -1969,7 +2373,7 @@ pub fn process(comptime T: type, comptime O: type, cfg: *const Config, p: *const
             encodeRow(O, p, &rows, dst, y, w);
             continue;
         }
-        linearizeRow(&p.dec, &rows, w);
+        if (cached == null) linearizeRow(&p.dec, &rows, w);
         if (feat) |*f| featureRow(f, y, rows.feat, w);
         switch (p.map) {
             inline else => |k| colorMapRow(k, p, &rows, if (feat != null) rows.feat else null, w),
@@ -1990,8 +2394,10 @@ const lin_max = 65535;
 /// pl_shader_detect_peak + update_peak_buf's per-frame reduction over 16x16
 /// work groups (black-cutoff pixels excluded from each group's averages):
 /// PQ luma (average, peak) and linear maxRGB (average, peak or percentile),
-/// in the mastering display's RGB when tone mapping uses it.
-pub fn measure(comptime T: type, cfg: *const Config, s: *const Setup, src: Planes(T)) !tc.Measure {
+/// in the mastering display's RGB when tone mapping uses it. `keep`: the
+/// linear rows go there too, for `process` of the same frame (with the same
+/// Setup, so the same decode).
+pub fn measure(comptime T: type, cfg: *const Config, s: *const Setup, src: Planes(T), keep: ?*LinearFrame) !tc.Measure {
     const w = cfg.width;
     const h = cfg.height;
     var rows = try Rows.init(w);
@@ -2028,6 +2434,7 @@ pub fn measure(comptime T: type, cfg: *const Config, s: *const Setup, src: Plane
         for (0..band) |dy| {
             decodeRow(T, cfg, &dec, src, y + dy, &rows);
             linearizeRow(&dec, &rows, w);
+            if (keep) |k| k.put(&rows, y + dy);
             var x: usize = 0;
             while (x < w) : (x += VL) {
                 var rgb = loadRow3(&rows, x);
@@ -2072,6 +2479,7 @@ pub fn measure(comptime T: type, cfg: *const Config, s: *const Setup, src: Plane
         }
         y += band;
     }
+    if (keep) |k| k.filled = true;
 
     const black = tc.hdr_black;
     if (wg_active == 0) return .{ .avg_pq = black, .max_pq = black, .bias = 0, .scene_avg_pq = black, .max_y_pq = black };
@@ -2580,6 +2988,335 @@ test "fused color map matches the split passes" {
         try std.testing.expectEqualSlices(f32, a.a[0..cfg.width], b.a[0..cfg.width]);
         try std.testing.expectEqualSlices(f32, a.b[0..cfg.width], b.b[0..cfg.width]);
         try std.testing.expectEqualSlices(f32, a.c[0..cfg.width], b.c[0..cfg.width]);
+    }
+}
+
+test "Dolby Vision reshaping matches a scalar model of pl_shader_dovi_reshape" {
+    // independent of libplacebo's GPU: f64 piece selection (the last pivot
+    // <= s), polynomial and MMR (per-piece orders), clamps, against the
+    // comptime-specialized row kernels and their vpermps piece selection
+    var meta: dovi.Meta = .{};
+    // luma: 4 polynomial pieces
+    const p0 = [_]f32{ 0.0625, 0.25, 0.5, 0.75, 0.9375 };
+    meta.comp[0].num_pivots = p0.len;
+    @memcpy(meta.comp[0].pivots[0..p0.len], &p0);
+    for (0..p0.len - 1) |i| {
+        const fi: f32 = @floatFromInt(i);
+        meta.comp[0].poly_coeffs[i] = .{ 0.01 * fi - 0.02, 1.1 - 0.15 * fi, 0.3 * fi - 0.2 };
+    }
+    // Cb: 3 MMR pieces of order 3; Cr: 2 pieces of orders 1 and 2
+    const orders = [2][3]u8{ .{ 3, 3, 3 }, .{ 1, 2, 0 } };
+    const npieces = [2]u32{ 3, 2 };
+    for (1..3) |c| {
+        const r = &meta.comp[c];
+        r.mmr = true;
+        r.num_pivots = npieces[c - 1] + 1;
+        for (0..r.num_pivots) |p| r.pivots[p] = 0.0625 + 0.875 * @as(f32, @floatFromInt(p)) / @as(f32, @floatFromInt(r.num_pivots - 1));
+        for (0..npieces[c - 1]) |i| {
+            r.mmr_order[i] = orders[c - 1][i];
+            r.mmr_constant[i] = 0.5 - 0.05 * @as(f32, @floatFromInt(i + c));
+            for (0..3) |j| for (0..dovi.mmr_coeffs) |k| {
+                const v = 0.07 * @as(f32, @floatFromInt((i * 31 + j * 7 + k * 3 + c) % 11)) - 0.35;
+                r.mmr_coeffs[i][j][k] = if (j < r.mmr_order[i]) v else 0;
+            };
+        }
+    }
+    const d: DoviDecode = .init(&meta, 16, null);
+
+    // samples: every pivot exactly, one code either side, extremes, a sweep
+    var codes: [3][]f32 = undefined;
+    var rows = try Rows.init(512);
+    defer rows.deinit();
+    const n = 512;
+    for (0..3) |c| {
+        const row = ([3][]f32{ rows.a, rows.b, rows.c })[c];
+        codes[c] = row;
+        var k: usize = 0;
+        for (meta.comp[c].pivots[0..meta.comp[c].num_pivots]) |pv| for ([_]f32{ -1, 0, 1 }) |off| {
+            row[k] = pv * 65536 + off;
+            k += 1;
+        };
+        row[k] = 0;
+        row[k + 1] = 65535;
+        k += 2;
+        while (k < n) : (k += 1) row[k] = @floatFromInt((k * 2654435761 + c * 40503) % 65536);
+    }
+    var inputs: [3][n]f32 = undefined;
+    for (0..3) |c| @memcpy(&inputs[c], codes[c][0..n]);
+
+    // the decode's first two passes (doviRow without the matrix and EOTF)
+    const sig = [3][]f32{ rows.cu, rows.cv, rows.pad };
+    for (0..n) |x| for (0..3) |c| {
+        const s = inputs[c][x] * d.code_scale;
+        codes[c][x] = s;
+        sig[c][x] = math.clamp(s, d.comp[c].lo, d.comp[c].hi);
+    };
+    const sig_ro = [3][]const f32{ sig[0], sig[1], sig[2] };
+    for (&d.comp, codes, sig_ro) |*o, row, own| {
+        switch (if (o.mmr) o.order else 0) {
+            inline 0...3 => |order| if (o.pieces > 1)
+                DoviDecode.reshapeRow(order, true, o, sig_ro, own, row, n)
+            else
+                DoviDecode.reshapeRow(order, false, o, sig_ro, own, row, n),
+            else => unreachable,
+        }
+    }
+
+    var max_err: f64 = 0;
+    for (0..n) |x| {
+        var sg: [3]f64 = undefined;
+        for (0..3) |c| {
+            const r = &meta.comp[c];
+            const s: f64 = @as(f32, inputs[c][x] * d.code_scale);
+            sg[c] = math.clamp(s, r.pivots[0], r.pivots[r.num_pivots - 1]);
+        }
+        for (0..3) |c| {
+            const r = &meta.comp[c];
+            var piece: usize = 0;
+            for (1..r.num_pivots - 1) |p| {
+                if (sg[c] >= r.pivots[p]) piece = p;
+            }
+            var v: f64 = undefined;
+            if (!r.mmr) {
+                const k = r.poly_coeffs[piece];
+                v = k[0] + sg[c] * (k[1] + sg[c] * k[2]);
+            } else {
+                const t1 = [7]f64{ sg[0], sg[1], sg[2], sg[0] * sg[1], sg[0] * sg[2], sg[1] * sg[2], sg[0] * sg[1] * sg[2] };
+                v = r.mmr_constant[piece];
+                for (0..r.mmr_order[piece]) |j| for (0..dovi.mmr_coeffs) |k| {
+                    v += r.mmr_coeffs[piece][j][k] * math.pow(f64, t1[k], @floatFromInt(j + 1));
+                };
+            }
+            const want = math.clamp(v, 0, 1);
+            max_err = @max(max_err, @abs(want - codes[c][x]));
+        }
+    }
+    // f32 evaluation (FMA or not) of terms below 1: a few ulp
+    try std.testing.expect(max_err < 2e-6);
+}
+
+test "FEL geometry follows sample_el" {
+    // 4K BL, 1080p 4:2:0 EL: the rects libplacebo traces are luma
+    // {0.25, 0} and chroma {0.375, 0.25} in EL texels, upsampled 2x and 4x
+    const g = ElGeometry.init(3840, 2160, 1920, 1080, 1, 1, 10).?;
+    try std.testing.expectEqual([3]u32{ 1920, 960, 960 }, g.w);
+    try std.testing.expectEqual([3]u32{ 1080, 540, 540 }, g.h);
+    try std.testing.expectEqual(@as(u32, 2), g.hx[0].f);
+    try std.testing.expectEqual(@as(u32, 4), g.hx[1].f);
+    // output i sits at x0 + (i + 0.5) / f; phase p's taps start at
+    // floor(that - 0.5) - 2
+    const Want = struct { f: u32, x0: f64 };
+    const cases = [_]struct { ph: ElPhases, want: Want }{
+        .{ .ph = g.hx[0], .want = .{ .f = 2, .x0 = 0.25 } },
+        .{ .ph = g.hy[0], .want = .{ .f = 2, .x0 = 0 } },
+        .{ .ph = g.hx[1], .want = .{ .f = 4, .x0 = 0.375 } },
+        .{ .ph = g.hy[2], .want = .{ .f = 4, .x0 = 0.25 } },
+    };
+    for (cases) |cs| {
+        for (0..cs.want.f) |p| {
+            const v = cs.want.x0 + (@as(f64, @floatFromInt(p)) + 0.5) / @as(f64, @floatFromInt(cs.want.f)) - 0.5;
+            try std.testing.expectEqual(@as(i32, @intFromFloat(@floor(v))) - 2, cs.ph.off[p]);
+            var sum: f32 = 0;
+            for (cs.ph.w[p]) |w| sum += w;
+            try std.testing.expectApproxEqAbs(@as(f32, 1), sum, 1e-6);
+        }
+    }
+    // co-sited luma: phase 0 is the texel itself
+    try std.testing.expectEqual([6]f32{ 0, 0, 1, 0, 0, 0 }, g.hx[0].w[0]);
+    // same size: the luma texel itself; not an integer subdivision: refused
+    const same = ElGeometry.init(1920, 1080, 1920, 1080, 1, 1, 16).?;
+    try std.testing.expectEqual(@as(u32, 1), same.hx[0].f);
+    try std.testing.expectEqual(@as(i32, -2), same.hx[0].off[0]);
+    try std.testing.expectEqual([6]f32{ 0, 0, 1, 0, 0, 0 }, same.hx[0].w[0]);
+    try std.testing.expect(ElGeometry.init(3840, 2160, 1280, 720, 1, 1, 10) == null);
+
+    // An unscaled axis of a plane subsampled on the other one: the
+    // top-left shift puts its rect half a texel in, which the GPU's linear
+    // lookup averages (output i = source i, i + 1). Unscaled axes without a
+    // shift stay the texel itself.
+    const half = [6]f32{ 0, 0, 0.5, 0.5, 0, 0 };
+    const unit = [6]f32{ 0, 0, 1, 0, 0, 0 };
+    const Axis = struct { g: ?ElGeometry, p: usize, vertical: bool, w: [6]f32 };
+    const axes = [_]Axis{
+        // same-size 4:2:2: chroma vertical; 4:4:0: chroma horizontal
+        .{ .g = ElGeometry.init(256, 128, 256, 128, 1, 0, 16), .p = 1, .vertical = true, .w = half },
+        .{ .g = ElGeometry.init(256, 128, 256, 128, 0, 1, 16), .p = 2, .vertical = false, .w = half },
+        // half width only, 4:2:2: luma vertical is unshifted, chroma's is not
+        .{ .g = ElGeometry.init(256, 128, 128, 128, 1, 0, 16), .p = 0, .vertical = true, .w = unit },
+        .{ .g = ElGeometry.init(256, 128, 128, 128, 1, 0, 16), .p = 1, .vertical = true, .w = half },
+        // half height only, 4:4:0: the layer shift is horizontal-only (0)
+        .{ .g = ElGeometry.init(256, 128, 256, 64, 0, 1, 16), .p = 0, .vertical = false, .w = unit },
+        .{ .g = ElGeometry.init(256, 128, 256, 64, 0, 1, 16), .p = 1, .vertical = false, .w = half },
+    };
+    for (axes) |a| {
+        const ph = if (a.vertical) a.g.?.hy[a.p] else a.g.?.hx[a.p];
+        try std.testing.expectEqual(@as(u32, 1), ph.f);
+        try std.testing.expectEqual(@as(i32, -2), ph.off[0]);
+        try std.testing.expectEqual(a.w, ph.w[0]);
+    }
+}
+
+/// f64 model of one EL plane sampled onto the BL grid, written from
+/// libplacebo's sample_el / dispatch_sampler directly (not ElPhases): the
+/// plane's rect, then per axis lanczos (radius 3) where the axis is
+/// enlarged and the texture's bilinear lookup where it is not, both
+/// edge-clamped, at texel coordinate rect.x0 + (i + 0.5) * rect_w / new_w.
+fn elOracle(src: []const u16, pw: usize, ph: usize, el_w: usize, el_h: usize, bl_w: usize, bl_h: usize, sub: bool, x: usize, y: usize) f64 {
+    const Axis = struct {
+        idx: [6]usize = undefined,
+        w: [6]f64 = @splat(0),
+
+        fn init(plane: usize, el: usize, bl: usize, subsampled: bool, horizontal: bool, i: usize) @This() {
+            const f = @as(f64, @floatFromInt(el)) / @as(f64, @floatFromInt(bl));
+            const rl = if (f >= 1) @round(f) else 1 / @round(1 / f);
+            const r = @as(f64, @floatFromInt(plane)) / @as(f64, @floatFromInt(el));
+            const rr = rl * (if (r >= 1) @round(r) else 1 / @round(1 / r));
+            // PL_CHROMA_LEFT layer siting (x -0.5, y 0, for a smaller EL)
+            // and the EL's PL_CHROMA_TOP_LEFT shift (both axes of a
+            // subsampled plane)
+            const layer: f64 = if (horizontal and el < bl) -0.5 else 0;
+            const s = layer + (if (subsampled) @as(f64, -0.5) else 0) / rl;
+            const x0 = (0 - s) * rr;
+            const x1 = (@as(f64, @floatFromInt(bl)) - s) * rr;
+            const t = x0 + (@as(f64, @floatFromInt(i)) + 0.5) * (x1 - x0) / @as(f64, @floatFromInt(bl)) - 0.5;
+            const base = @floor(t);
+            const frac = t - base;
+            var a: @This() = .{};
+            const last: i64 = @intCast(plane - 1);
+            for (0..6) |k| {
+                const j: i64 = @as(i64, @intFromFloat(base)) - 2 + @as(i64, @intCast(k));
+                a.idx[k] = @intCast(math.clamp(j, 0, last));
+            }
+            if (@as(f64, @floatFromInt(bl)) / (x1 - x0) > 1 + 1e-6) {
+                var sum: f64 = 0;
+                for (0..6) |k| {
+                    const d = frac + 2 - @as(f64, @floatFromInt(k));
+                    const px = math.pi * d;
+                    a.w[k] = if (d == 0) 1 else if (@abs(d) >= 3) 0 else 3 * @sin(px) * @sin(px / 3) / (px * px);
+                    sum += a.w[k];
+                }
+                for (&a.w) |*v| v.* /= sum;
+            } else {
+                a.w[2] = 1 - frac;
+                a.w[3] = frac;
+            }
+            return a;
+        }
+    };
+    const ax = Axis.init(pw, el_w, bl_w, sub, true, x);
+    const ay = Axis.init(ph, el_h, bl_h, sub, false, y);
+    var acc: f64 = 0;
+    for (0..6) |v| for (0..6) |h| {
+        acc += ay.w[v] * ax.w[h] * @as(f64, @floatFromInt(src[ay.idx[v] * pw + ax.idx[h]]));
+    };
+    return acc;
+}
+
+test "FEL sampling matches a model of libplacebo's sampler" {
+    // every accepted layer size and subsampling, at widths that leave
+    // vector tails and planes of a few texels
+    var prng = std.Random.DefaultPrng.init(7);
+    const rnd = prng.random();
+    const sizes = [_][2]u32{ .{ 76, 36 }, .{ 68, 20 } };
+    for (sizes) |bl| for (0..2) |half_w| for (0..2) |half_h| for (0..2) |ssw| for (0..2) |ssh| {
+        const el_w = bl[0] >> @intCast(half_w);
+        const el_h = bl[1] >> @intCast(half_h);
+        const g = ElGeometry.init(bl[0], bl[1], el_w, el_h, @intCast(ssw), @intCast(ssh), 16).?;
+        var planes: [3][]u16 = undefined;
+        for (&planes, 0..) |*pl, p| {
+            pl.* = try std.testing.allocator.alloc(u16, g.w[p] * g.h[p]);
+            // random codes plus an impulse, so every tap counts
+            for (pl.*) |*v| v.* = rnd.int(u16);
+            pl.*[(g.h[p] / 2) * g.w[p] + g.w[p] / 2] = 65535;
+        }
+        defer for (planes) |pl| std.testing.allocator.free(pl);
+        const cfg: Config = .{ .width = bl[0], .height = bl[1], .rgb = false, .float = false, .el = g };
+        var rows = try Rows.init(bl[0]);
+        defer rows.deinit();
+        const el: ElPlanes = .{
+            .ptr = .{ planes[0].ptr, planes[1].ptr, planes[2].ptr },
+            .stride = .{ g.w[0], g.w[1], g.w[2] },
+        };
+        for (0..bl[1]) |y| {
+            elRow(&cfg, el, y, &rows);
+            for (0..3) |p| {
+                const sub = p > 0 and (ssw == 1 or ssh == 1);
+                for (0..bl[0]) |x| {
+                    const want = elOracle(planes[p], g.w[p], g.h[p], el_w, el_h, bl[0], bl[1], sub, x, y);
+                    // f32 accumulation of 16-bit codes
+                    try std.testing.expectApproxEqAbs(want, rows.el[p][x], 0.05);
+                }
+            }
+        }
+    };
+}
+
+test "FEL composition matches sh_dovi_compose_nlq" {
+    const q: DoviDecode.Nlq = .{
+        .scale = 1.0 / 64.0, // 10-bit codes in 16-bit samples
+        .offset = .{ 512, 500, 520 },
+        .slope = .{ 0.002, 0.0015, 0.003 },
+        .threshold = .{ 0.0005, 0.001, 0 },
+        .max = .{ 0.05, 0.04, 0.5 },
+    };
+    const n = 64;
+    var row: [n + VL]f32 = undefined;
+    var el: [n + VL]f32 = undefined;
+    for (0..3) |c| {
+        for (0..n + VL) |x| {
+            row[x] = @as(f32, @floatFromInt(x)) / n;
+            // EL codes around the offset, the deadzone edges and far out
+            const code = q.offset[c] + (@as(f32, @floatFromInt(x)) - n / 2) * 1.3;
+            el[x] = code * 64;
+        }
+        const before = row;
+        composeNlqRow(&q, c, &row, &el, n);
+        for (0..n) |x| {
+            const e: f64 = @as(f64, el[x]) * q.scale;
+            const rr = @round(e - q.offset[c]);
+            var res: f64 = if (rr == 0) 0 else math.sign(rr) * ((@abs(rr) - 0.5) * q.slope[c] + q.threshold[c]);
+            res = math.clamp(res, -q.max[c], q.max[c]);
+            const want = math.clamp(before[x] + res, 0, 1);
+            try std.testing.expectApproxEqAbs(want, row[x], 1e-6);
+        }
+    }
+
+    // Exact half-code ties (a bilinear EL axis averages two codes): rounded
+    // away from zero, so +-0.5 leave the deadzone. GLSL leaves round()'s tie
+    // direction to the implementation; the GPU's float noise decides it.
+    {
+        const t: DoviDecode.Nlq = .{ .scale = 1, .offset = @splat(512), .slope = @splat(0.01), .threshold = @splat(0), .max = @splat(1) };
+        const codes = [_]f32{ 512, 512.5, 511.5, 513.5, 510.5, 512.4999 };
+        const steps = [_]f32{ 0, 1, -1, 2, -2, 0 };
+        var r: [VL * 2]f32 = @splat(0.5);
+        var e: [VL * 2]f32 = @splat(512);
+        @memcpy(e[0..codes.len], &codes);
+        composeNlqRow(&t, 0, &r, &e, codes.len);
+        for (steps, 0..) |k, x| {
+            const want: f32 = if (k == 0) 0.5 else 0.5 + math.sign(k) * (@abs(k) - 0.5) * 0.01;
+            try std.testing.expectApproxEqAbs(want, r[x], 1e-7);
+        }
+    }
+
+    // Malformed NLQ fields (ue() integer parts up to 2^64 - 2, stored as
+    // int64 by the C code, so possibly negative): finite and in [0, 1].
+    {
+        const big: f32 = @floatFromInt(@as(i64, math.maxInt(i64)));
+        const cases = [_]DoviDecode.Nlq{
+            .{ .scale = 1, .offset = @splat(0), .slope = @splat(big), .threshold = @splat(big), .max = @splat(big) },
+            .{ .scale = 1, .offset = @splat(1023), .slope = @splat(-big), .threshold = @splat(-2), .max = @splat(-2) },
+            .{ .scale = 1, .offset = @splat(0), .slope = @splat(big), .threshold = @splat(-big), .max = @splat(-big) },
+        };
+        for (cases) |t| {
+            var r: [VL * 4]f32 = undefined;
+            var e: [VL * 4]f32 = undefined;
+            for (&r, &e, 0..) |*rv, *ev, x| {
+                rv.* = @as(f32, @floatFromInt(x)) / (VL * 4);
+                ev.* = @as(f32, @floatFromInt(x * 37 % 1024));
+            }
+            composeNlqRow(&t, 1, &r, &e, VL * 4);
+            for (r) |v| try std.testing.expect(v >= 0 and v <= 1);
+        }
     }
 }
 

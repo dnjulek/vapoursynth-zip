@@ -208,9 +208,10 @@ pub const Mapping = struct {
         const bl_bits: u32 = @intCast(h.bl_bit_depth_minus8 + 8);
         const frac_bits = h.coefficient_log2_denom_length;
         for (&m.curves) |*c| {
-            const n = try r.ue() + 2;
-            if (n > max_pivots) return error.InvalidRpu;
-            c.num_pivots = @intCast(n);
+            // bound the raw field first: ue() reaches 2^64 - 2
+            const n_minus2 = try r.ue();
+            if (n_minus2 > max_pivots - 2) return error.InvalidRpu;
+            c.num_pivots = @intCast(n_minus2 + 2);
             for (c.pivots[0..c.num_pivots]) |*p| p.* = @intCast(try r.bits(bl_bits));
         }
         var nlq_present = false;
@@ -475,6 +476,8 @@ pub const Meta = struct {
     linear: [3][3]f32 = @splat(@splat(0)),
     nlq_active: bool = false,
     nlq: [3]NlqData = @splat(.{}),
+    /// the EL's coded depth (libdovi validates 10), for its code scale
+    el_bit_depth: u8 = 10,
 
     /// vs-placebo's create_dovi_meta: applies `rpu` over the previous
     /// state, which keeps whatever the RPU does not signal (the mapping
@@ -483,6 +486,7 @@ pub const Meta = struct {
     pub fn update(m: *Meta, rpu: *const Rpu, el_present: bool) void {
         const h = &rpu.header;
         if (h.use_prev_vdr_rpu_flag) return;
+        m.el_bit_depth = @intCast(h.el_bit_depth_minus8 + 8);
         if (rpu.mapping) |*map| {
             const bl_bits: u5 = @intCast(h.bl_bit_depth_minus8 + 8);
             // f32 arithmetic throughout, as in the C code
@@ -617,6 +621,157 @@ test "partial RPUs keep the previous state" {
     m.update(&prev, false);
     try std.testing.expectEqual(before.comp[0].pivots, m.comp[0].pivots);
     try std.testing.expect(!prev.complete());
+}
+
+test "FEL RPUs drive the NLQ state" {
+    var rpu = try parse(&test_fel);
+    var m: Meta = .{};
+    // no EL clip: no composition
+    m.update(&rpu, false);
+    try std.testing.expect(!m.nlq_active);
+    m.update(&rpu, true);
+    try std.testing.expect(m.nlq_active);
+    try std.testing.expectEqual(@as(u8, 10), m.el_bit_depth);
+    // a MEL (or residual-disabled) mapping switches it off, use_prev keeps it
+    const mel = try parse(&test_mel);
+    m.update(&mel, true);
+    try std.testing.expect(!m.nlq_active);
+    m.update(&rpu, true);
+    var prev = mel;
+    prev.header.use_prev_vdr_rpu_flag = true;
+    prev.mapping = null;
+    m.update(&prev, true);
+    try std.testing.expect(m.nlq_active);
+    // malformed integer parts (ue() reaches 2^64 - 2; the C code stores
+    // them as int64): finite, possibly negative coefficients
+    const q = &rpu.mapping.?.nlq.?;
+    for (0..3) |c| {
+        q.vdr_in_max_int[c] = math.maxInt(u64) - 1;
+        q.slope_int[c] = math.maxInt(u64) >> 1;
+        q.threshold_int[c] = math.maxInt(u64) - 1;
+    }
+    try std.testing.expect(rpu.mapping.?.fel());
+    m.update(&rpu, true);
+    for (m.nlq) |d| {
+        try std.testing.expect(math.isFinite(d.hdr_in_max) and math.isFinite(d.slope) and math.isFinite(d.threshold));
+        try std.testing.expect(d.hdr_in_max < 0 and d.slope > 1e18);
+    }
+}
+
+/// Builds CRC-correct RPUs for the field-boundary tests.
+const TestRpu = struct {
+    bits: [4096]u1 = undefined,
+    n: usize = 0,
+
+    fn put(w: *TestRpu, v: u64, comptime width: u7) void {
+        var i: u7 = width;
+        while (i > 0) {
+            i -= 1;
+            w.bits[w.n] = @intCast((v >> @intCast(i)) & 1);
+            w.n += 1;
+        }
+    }
+
+    fn ue(w: *TestRpu, v: u64) void {
+        // v + 1 written in its bit length, after (length - 1) zeros
+        const x = v + 1;
+        const len: u7 = 64 - @clz(x);
+        for (0..len - 1) |_| w.put(0, 1);
+        var i: u7 = len;
+        while (i > 0) {
+            i -= 1;
+            w.put((x >> @intCast(i)) & 1, 1);
+        }
+    }
+
+    fn se(w: *TestRpu, v: i64) void {
+        w.ue(if (v > 0) @as(u64, @intCast(v)) * 2 - 1 else @as(u64, @intCast(-v)) * 2);
+    }
+
+    /// Profile 8.1 header, no DM data, identity polynomial curves; component
+    /// `bad` gets num_pivots_minus2 = `count` (the others 0). An oversized
+    /// count is followed by two pivots so the packet keeps its length.
+    fn build(out: []u8, bad: usize, count: u64) []const u8 {
+        var w: TestRpu = .{};
+        w.put(25, 8); // prefix
+        w.put(2, 6); // rpu_type
+        w.put(18, 11); // rpu_format
+        w.put(1, 4); // vdr_rpu_profile
+        w.put(0, 4); // vdr_rpu_level
+        w.put(1, 1); // vdr_seq_info_present_flag
+        w.put(0, 1); // chroma_resampling_explicit_filter_flag
+        w.put(0, 2); // coefficient_data_type
+        w.ue(23); // coefficient_log2_denom
+        w.put(1, 2); // vdr_rpu_normalized_idc
+        w.put(0, 1); // bl_video_full_range_flag
+        w.ue(2); // bl_bit_depth_minus8
+        w.ue(2); // el_bit_depth_minus8
+        w.ue(4); // vdr_bit_depth_minus8
+        w.put(0, 1); // spatial_resampling_filter_flag
+        w.put(0, 3); // reserved_zero_3bits
+        w.put(0, 1); // el_spatial_resampling_filter_flag
+        w.put(1, 1); // disable_residual_flag
+        w.put(0, 1); // vdr_dm_metadata_present_flag
+        w.put(0, 1); // use_prev_vdr_rpu_flag
+        w.ue(0); // vdr_rpu_id
+        w.ue(0); // mapping_color_space
+        w.ue(0); // mapping_chroma_format_idc
+        var pieces: [3]u64 = undefined;
+        for (0..3) |c| {
+            const k: u64 = if (c == bad) count else 0;
+            w.ue(k);
+            const np = if (k <= max_pivots - 2) k + 2 else 2;
+            pieces[c] = np - 1;
+            for (0..np) |p| w.put(if (p == 0) 0 else 100, 10);
+        }
+        w.ue(0); // num_x_partitions_minus1
+        w.ue(0); // num_y_partitions_minus1
+        for (pieces) |np| for (0..np) |_| {
+            w.ue(0); // polynomial
+            w.ue(0); // poly_order_minus1
+            w.put(0, 1); // linear_interp_flag
+            w.se(0); // 0 + 1 * s
+            w.put(0, 23);
+            w.se(1);
+            w.put(0, 23);
+        };
+        while (w.n % 8 != 0) w.put(0, 1);
+        var raw: [512]u8 = undefined;
+        const len = w.n / 8;
+        for (0..len) |i| {
+            var b: u8 = 0;
+            for (0..8) |j| b = (b << 1) | w.bits[i * 8 + j];
+            raw[i] = b;
+        }
+        std.mem.writeInt(u32, raw[len..][0..4], std.hash.crc.@"CRC-32/MPEG-2".hash(raw[1..len]), .big);
+        raw[len + 4] = 0x80;
+        // add_start_code_emulation_prevention_3_byte
+        var o: usize = 0;
+        for (raw[0 .. len + 5], 0..) |b, i| {
+            if (i > 2 and o >= 2 and out[o - 2] == 0 and out[o - 1] == 0 and b <= 3) {
+                out[o] = 3;
+                o += 1;
+            }
+            out[o] = b;
+            o += 1;
+        }
+        return out[0..o];
+    }
+};
+
+test "pivot counts are bounded before any arithmetic" {
+    var buf: [1024]u8 = undefined;
+    for (0..3) |c| {
+        for ([_]u64{ 0, max_pivots - 2 }) |k| {
+            const rpu = try parse(TestRpu.build(&buf, c, k));
+            try std.testing.expectEqual(@as(u32, @intCast(k + 2)), rpu.mapping.?.curves[c].num_pivots);
+        }
+        // one past the limit, and the Exp-Golomb extremes (2^64 - 2 is the
+        // largest ue() returns; + 2 used to overflow before the check)
+        for ([_]u64{ max_pivots - 1, math.maxInt(u64) - 2, math.maxInt(u64) - 1 }) |k| {
+            try std.testing.expectError(error.InvalidRpu, parse(TestRpu.build(&buf, c, k)));
+        }
+    }
 }
 
 test "corrupted RPUs are rejected" {

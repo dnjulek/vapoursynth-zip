@@ -125,6 +125,12 @@ CASES = (
         Case(vs.YUV420P16, args=dict(src_csp=2, dst_csp=0), variant="hlg"),
         Case(vs.YUV420P16, args=dict(src_csp=2, dst_csp=1), variant="hlg"),
         Case(vs.RGBS, args=dict(src_csp=2, dst_csp=0, dynamic_peak_detection=0), variant="hlg"),
+        # DolbyVisionRPU attached (RPU_P8 / RPU_P5 below)
+        Case(vs.YUV420P16, args=dict(src_csp=3, dynamic_peak_detection=0), variant="dovi8"),
+        Case(vs.YUV420P16, args=dict(src_csp=3), variant="dovi8"),
+        Case(vs.YUV444P16, args=dict(src_csp=3, dst_csp=1, dynamic_peak_detection=0), variant="dovi8"),
+        Case(vs.YUV420P16, "odd", dict(src_csp=3, dynamic_peak_detection=0), variant="dovi5"),
+        Case(vs.YUV420P16, args=dict(src_csp=1, dynamic_peak_detection=0), variant="dovi8"),
     ]
 )
 
@@ -132,9 +138,19 @@ CASES = (
 @pytest.mark.parametrize("case", CASES, ids=str)
 def test_golden_cases(golden, make_hdr, case):
     src = make_hdr(case.fmt, case.geometry, "std-b67" if case.variant == "hlg" else "st2084")
+    if case.variant in ("dovi8", "dovi5"):
+        src = _dv(src, RPU_P8 if case.variant == "dovi8" else RPU_P5)
     args = {"src_csp": 1, **case.args}
     out = src.vszip.Tonemap(**args)
-    golden.check("tonemap", case, out)
+    # Builds without FMA (the baseline x86_64 wheel, x86_64_v3-fma) round
+    # differently, as the project allows for non-bit-exact filters: single
+    # extreme pixels then move by up to 5 16-bit codes (measured over every
+    # case here) or ~1.2e-5 in float, and the (0-1 normalized) averages by at
+    # most 7e-8, which near 0 (centered float chroma) exceeds the relative
+    # 1e-6. A material matrix, curve or decode change moves the averages by
+    # far more than the 1e-6 absolute floor (~0.07 of a 16-bit code).
+    is_float = vs.core.get_video_format(case.fmt).sample_type == vs.FLOAT
+    golden.check("tonemap", case, out, extrema_abs=1e-4 if is_float else 8, avg_abs=1e-6)
 
 
 # --- format, size, props -----------------------------------------------------
@@ -196,6 +212,46 @@ def test_out_of_range_metadata_reads_as_absent(make_hdr, value):
     bad = src.std.SetFrameProps(MasteringDisplayMaxLuminance=value, ContentLightLevelMax=value)
     for kw in (dict(dynamic_peak_detection=0), {}):
         assert_same_clip(plain.vszip.Tonemap(**kw), bad.vszip.Tonemap(**kw))
+
+
+@pytest.mark.parametrize("bits", [10, 12])
+@pytest.mark.parametrize(
+    ("fmt16", "kw", "rpu"),
+    [
+        (vs.YUV420P16, dict(), None),
+        (vs.YUV444P16, dict(dst_csp=1, dynamic_peak_detection=0), None),
+        (vs.YUV420P16, dict(src_csp=3), "p8"),
+        (vs.YUV420P16, dict(src_csp=3, dynamic_peak_detection=0), "p5"),
+    ],
+    ids=str,
+)
+def test_low_bit_depth_matches_shifted_16bit(make_hdr, bits, fmt16, kw, rpu):
+    """10/12-bit limited-range input decodes exactly like the same codes
+    shifted to 16 bit (zimg's resize.Point, what vs-placebo needs): the
+    2^(16 - bits) is a power of two folded into the decode matrix, and the
+    Dolby Vision code scale is code / 2^bits either way."""
+    f16 = vs.core.get_video_format(fmt16)
+    low = make_hdr(fmt16).resize.Point(format=f16.replace(bits_per_sample=bits))
+    if rpu:
+        low = _dv(low, RPU_P8 if rpu == "p8" else RPU_P5)
+    shifted = low.resize.Point(format=fmt16)
+    assert_same_clip(low.vszip.Tonemap(**kw), shifted.vszip.Tonemap(**kw))
+
+
+def test_full_range_10bit_matches_16bit(make_hdr):
+    """Full range takes 10-bit codes to 16 bit with BT.2100's scaling (luma by
+    65535/1023, chroma by the same around 512 -> 32768), like zimg's
+    resize.Point but unrounded, so the two paths differ only by zimg's input
+    rounding (half a 16-bit code)."""
+    src = make_hdr(vs.YUV444P16).std.SetFrameProps(_Range=1)
+    low = src.resize.Point(format=vs.YUV444P10, range_in=1, range=1)
+    a = low.vszip.Tonemap(dst_csp=1, dynamic_peak_detection=0)
+    b = low.resize.Point(format=vs.YUV444P16, range_in=1, range=1).vszip.Tonemap(dst_csp=1, dynamic_peak_detection=0)
+    with a.get_frame(0) as fa, b.get_frame(0) as fb:
+        d = np.abs(np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+                   - np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64))
+    assert d.mean() <= 0.6, d.mean()
+    assert d.max() <= 4, d.max()
 
 
 def test_full_range_yuv_stays_full(make_hdr):
@@ -622,6 +678,717 @@ def test_lut3d_tricubic_fused_matches_split(make_hdr):
     assert same.mean() > 0.5
 
 
+# --- Dolby Vision -------------------------------------------------------------
+
+# sample RPUs (HEVC unspec62 NAL units) from dovi_tool's assets/tests
+RPU_P8 = bytes.fromhex(
+    "0000000119080908406136506f003ff801ffc00fffd0000008000006800000400000340000030200000301a2566000035ea2566f9fceb1c25664"
+    "4ca00000100000030080000003008000000301c36224301860a5e308e0514000001a63e5affff000000300000300000300060207dce01518300"
+    "80169b99980c028218008008005b6854100020200000300080500000300000300000300120c1f4000640000030000d2d3f72280")
+RPU_P5 = bytes.fromhex(
+    "00000001190809004061b6506f003ff801ffc00fffd000001000001b00000302000003036000004000006880000c7c1a448003f16c110c80000"
+    "42fa95c0000030000200000030020000003010ae7fa8ffa8ffa8d0ae7fa8ffa8ffa8d0ae7fffc00000300000300000300019081f73805463008"
+    "0169b99980c028218008008005b6854100020200000300080500000300000300000300120c1f40006400000300007b68c48480")
+RPU_FEL = bytes.fromhex(
+    "000000011908090840613650ae20002008020080200802007f801ffc00ffc001fffa0000030100000300d0000008000006800000400000"
+    "340000030200000301a000001000000d0000030080000068000004000003034000002000000a86d9e67b2f863efc189e6029e98c06b8c56"
+    "6a7cd5f8dffcb6d8c39e38a9981b86ca6790f405f434cb7d80e9e04c349fd3bb77ec2cd5de3a147d44c0a2e8062164a029b5d59500ed38f5"
+    "8c46c4ec13a14582cff3023536d57bbb6e411483b92966413698fce6bc31bd620fadd405bbef4643160b1f01bf2eefbf2a5e2f3ccb4abf3c"
+    "c3983779e7568311b004800004004004000004012000010010010000010048000040040040000072566000035ea2566f9fceb1c256644ca0"
+    "000030100000300080000030008000003001c36224301860a5e308e051400000301a63e5affff000003000003000003000060200f80e151"
+    "8030080059ca1200c028218df82580080061400002022a512088050000030002281150120c07d000020d60015eb8f29d8280")
+RPU_MEL = bytes.fromhex(
+    "000000011908090840613650af003ff801ffc00ffc001fffa000001000000d0000030080000068000004000003000040000020000020000"
+    "003000400000302000003020000030000400000200000200000392b300001af512b37cfe758e12b3226500000080000030040000003004000"
+    "000300e1b112180c3052f1847028a000000d31f2d7fff8000003000003000003000301007c070a8c300800410a9e00c028215858004af800"
+    "6cb00002021a8959880500000300000300000300120c07d0000205d2005e258dd4a680")
+DV_SAMPLE = r"D:\dv_sample.mkv"
+LG_DEMOS = (r"D:\dovi\others\LG Demo DolbyVision Trailer.mkv", r"D:\dovi\el\LG Demo DolbyVision Trailer EL.hevc")
+
+
+def _crc32_mpeg2(data):
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) if crc & 0x80000000 else crc << 1
+            crc &= 0xFFFFFFFF
+    return crc
+
+
+class _Bits:
+    def __init__(self, b):
+        self.b, self.p = b, 0
+
+    def u(self, n):
+        v = 0
+        for _ in range(n):
+            v = (v << 1) | ((self.b[self.p >> 3] >> (7 - (self.p & 7))) & 1)
+            self.p += 1
+        return v
+
+    def ue(self):
+        z = 0
+        while self.u(1) == 0:
+            z += 1
+        return (1 << z) - 1 + self.u(z)
+
+
+def _rpu_fields(nalu):
+    """Independent bit-level reader of a profile 8 RPU (dovi_tool's syntax):
+    the unescaped payload, the bit offsets of vdr_dm_metadata_present_flag
+    and of the DM data, and the DM matrices."""
+    esc = nalu[4:]
+    data = bytearray(esc[:2])
+    for i in range(2, len(esc)):
+        if not (esc[i - 2] == 0 and esc[i - 1] == 0 and esc[i] == 3):
+            data.append(esc[i])
+    r = _Bits(data)
+    assert r.u(8) == 25 and r.u(6) == 2
+    fmt = r.u(11)
+    r.u(8)
+    assert r.u(1)  # vdr_seq_info_present_flag
+    r.u(1)
+    assert r.u(2) == 0  # coefficient_data_type
+    denom = r.ue()
+    r.u(3)
+    assert fmt & 0x700 == 0
+    r.ue(), r.ue(), r.ue()
+    r.u(5)
+    disable_residual = r.u(1)
+    dm_pos = r.p
+    assert r.u(1) == 1 and r.u(1) == 0  # DM present, no use_prev
+    r.ue(), r.ue(), r.ue()
+    pivots = []
+    for _ in range(3):
+        n = r.ue() + 2
+        pivots.append(n)
+        r.u(10 * n)
+    assert disable_residual  # no NLQ
+    r.ue(), r.ue()
+    for n in pivots:
+        for _ in range(n - 1):
+            if r.ue() == 0:  # polynomial
+                order = r.ue() + 1
+                if order == 1:
+                    assert r.u(1) == 0
+                for _ in range(order + 1):
+                    r.ue(), r.u(denom)
+            else:
+                order = r.u(2) + 1
+                r.ue(), r.u(denom)
+                for _ in range(order * 7):
+                    r.ue(), r.u(denom)
+    dm_start = r.p
+    r.ue(), r.ue(), r.ue()
+
+    def s16():
+        v = r.u(16)
+        return v - 65536 if v & 0x8000 else v
+
+    ycc = np.array([s16() for _ in range(9)], dtype=np.float64).reshape(3, 3) / 8192
+    off = np.array([r.u(32) for _ in range(3)], dtype=np.float64) / (1 << 28)
+    lms = np.array([s16() for _ in range(9)], dtype=np.float64).reshape(3, 3) / 16384
+    return data, dm_pos, dm_start, ycc, off, lms
+
+
+def _rpu_strip_dm(nalu):
+    """The RPU with vdr_dm_metadata_present_flag cleared and its DM data
+    dropped (CRC recomputed, emulation prevention redone): its frame keeps
+    the previous frame's matrices."""
+    data, dm_pos, dm_start, *_ = _rpu_fields(nalu)
+    bits = [(data[i >> 3] >> (7 - (i & 7))) & 1 for i in range(dm_start)]
+    bits[dm_pos] = 0
+    bits += [0] * (-len(bits) % 8)
+    out = bytearray(int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+    out += _crc32_mpeg2(out[1:]).to_bytes(4, "big") + b"\x80"
+    escaped = bytearray()
+    for b in out:
+        if len(escaped) >= 2 and escaped[-2] == 0 and escaped[-1] == 0 and b <= 3:
+            escaped.append(3)
+        escaped.append(b)
+    return bytes(escaped)
+
+
+def _rpu_pivot_count(comp, count):
+    """A CRC-correct profile 8.1 RPU (no DM data, identity curves) whose
+    component `comp` signals num_pivots_minus2 = `count` (the others 0);
+    an oversized count is followed by two pivots. Mirrors dovi.zig's
+    TestRpu."""
+    return _rpu_build(pivot_comp=comp, pivot_count=count)
+
+
+# BT.2020 limited-range YCbCr -> RGB and an RGB -> LMS, in the RPU's fixed
+# point (/8192, offsets /2^28, /16384); and a second, different set
+_DM_A = ([9575, 0, 13806, 9575, -1541, -5349, 9575, 17617, 0], [16777216, 134217728, 134217728],
+         [7222, 8771, 390, 2654, 12430, 1300, 0, 422, 15962])
+_DM_B = ([9000, 300, 12000, 9800, -1200, -6000, 9300, 16000, 400], [20000000, 134217728, 134217728],
+         [7000, 9000, 384, 2800, 12000, 1584, 100, 500, 15784])
+
+
+def _rpu_build(dm=None, use_prev=False, compressed=False, pivot_comp=-1, pivot_count=0):
+    """A CRC-correct profile 8.1 RPU with identity curves. dm: None (no DM
+    data) or (ycc, offsets, lms) as in _DM_A; use_prev: the mapping is the
+    previous frame's (use_prev_vdr_rpu_flag); compressed: compressed DM data
+    (reserved_zero_3bits = 1, no matrices); pivot_comp/pivot_count: one
+    component's num_pivots_minus2, possibly out of range."""
+    bits = []
+
+    def put(v, n):
+        bits.extend((v >> (n - 1 - i)) & 1 for i in range(n))
+
+    def ue(v):
+        x = v + 1
+        put(0, x.bit_length() - 1)
+        put(x, x.bit_length())
+
+    def se(v):
+        ue(2 * v - 1 if v > 0 else -2 * v)
+
+    has_dm = dm is not None or compressed
+    put(25, 8)
+    put(2, 6), put(18, 11), put(1, 4), put(0, 4), put(1, 1), put(0, 1), put(0, 2)
+    ue(23)
+    put(1, 2), put(0, 1)
+    ue(2), ue(2), ue(4)
+    put(0, 1), put(1 if compressed else 0, 3), put(0, 1), put(1, 1)  # reserved_zero_3bits, disable_residual_flag
+    put(int(has_dm), 1), put(int(use_prev), 1)
+    if use_prev:
+        ue(0)  # prev_vdr_rpu_id
+    else:
+        ue(0), ue(0), ue(0)
+        pieces = []
+        for c in range(3):
+            k = pivot_count if c == pivot_comp else 0
+            ue(k)
+            n = k + 2 if k <= 7 else 2
+            pieces.append(n - 1)
+            for p in range(n):
+                put(0 if p == 0 else 100, 10)
+        ue(0), ue(0)
+        for n in pieces:
+            for _ in range(n):
+                ue(0), ue(0), put(0, 1)
+                se(0), put(0, 23), se(1), put(0, 23)
+    if has_dm:
+        ue(0), ue(0), ue(0)  # affected/current_dm_metadata_id, scene_refresh_flag
+        if not compressed:
+            ycc, off, lms = dm
+            for v in ycc:
+                put(v & 0xFFFF, 16)
+            for v in off:
+                put(v, 32)
+            for v in lms:
+                put(v & 0xFFFF, 16)
+            put(65535, 16), put(0, 16), put(0, 16), put(0, 32)  # signal_eotf and params
+            put(10, 5), put(0, 2), put(0, 2), put(0, 2)  # bit depth, color space, chroma, range
+            put(62, 12), put(3696, 12), put(42, 10)  # source min/max PQ, diagonal
+        ue(2)  # CM v2.9 extension blocks: L1 and L6
+        bits += [0] * (-len(bits) % 8)  # dm_alignment_zero_bit
+        ue(5), put(1, 8), put(7, 12), put(2900, 12), put(1500, 12), put(0, 4)  # L1 min/max/avg PQ
+        ue(8), put(6, 8), put(1000, 16), put(1, 16), put(1000, 16), put(400, 16)  # L6
+    bits += [0] * (-len(bits) % 8)
+    raw = bytearray(int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+    raw += _crc32_mpeg2(raw[1:]).to_bytes(4, "big") + b"\x80"
+    out = bytearray()
+    for i, b in enumerate(raw):
+        if i > 2 and len(out) >= 2 and out[-2] == 0 and out[-1] == 0 and b <= 3:
+            out.append(3)
+        out.append(b)
+    return bytes(out)
+
+
+def test_malformed_pivot_counts_are_catchable():
+    """CRC-correct RPUs whose pivot count is out of range (one past the
+    limit, and the Exp-Golomb extremes that once overflowed `count + 2`)
+    must fail as a catchable filter error with src_csp=3 and be ignored with
+    src_csp=1, never abort the host; valid counts 0 and 7 decode. Run in a
+    child process, so a regression can't take the test run down."""
+    cases = [(c, k) for c in range(3) for k in (0, 7, 8, 2**64 - 3, 2**64 - 2)]
+    body = "".join(f"""
+s = base.std.SetFrameProps(DolbyVisionRPU={_rpu_pivot_count(c, k)!r})
+for mode in (3, 1):
+    try:
+        with s.vszip.Tonemap(src_csp=mode, **kw).get_frame(0) as f:
+            out = 'same' if all(bytes(f[p]) == bytes(plain[p]) for p in range(3)) else 'differs'
+    except vs.Error as e:
+        out = 'error: ' + str(e)
+    print({c}, {k}, mode, out, flush=True)
+""" for c, k in cases)
+    script = f"""
+import sys
+sys.path.insert(0, {str(os.path.dirname(os.path.abspath(__file__)))!r})
+import vapoursynth as vs
+from conftest import _load_vszip
+core = _load_vszip()
+base = core.std.BlankClip(width=64, height=64, format=vs.YUV444P16, length=1, color=[30000, 32768, 32768])
+kw = dict(dynamic_peak_detection=0, gamut_mapping=0)
+plain = base.vszip.Tonemap(src_csp=1, **kw).get_frame(0)
+""" + body
+    import subprocess
+    import sys
+    proc = subprocess.run([sys.executable, "-"], input=script, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    got = {}
+    for line in proc.stdout.splitlines():
+        c, k, mode, out = line.split(" ", 3)
+        got[(int(c), int(k), int(mode))] = out
+    for c, k in cases:
+        valid = k <= 7
+        dv, hdr = got[(c, k, 3)], got[(c, k, 1)]
+        if valid:
+            assert not dv.startswith("error"), (c, k, dv)
+        else:
+            assert "invalid `DolbyVisionRPU`" in dv, (c, k, dv)
+            # no DM data in these packets, so a bad one changes nothing
+            assert hdr == "same", (c, k, hdr)
+
+
+def _dv(src, rpu):
+    return src.std.SetFrameProps(DolbyVisionRPU=rpu)
+
+
+def _pq_eotf(x):
+    m1, m2, c1, c2, c3 = 2610 / 16384, 2523 / 4096 * 128, 3424 / 4096, 2413 / 4096 * 32, 2392 / 4096 * 32
+    p = np.clip(x, 0, 1) ** (1 / m2)
+    return (np.maximum(p - c1, 0) / (c2 - c3 * p)) ** (1 / m1)
+
+
+def _pq_oetf(y):
+    m1, m2, c1, c2, c3 = 2610 / 16384, 2523 / 4096 * 128, 3424 / 4096, 2413 / 4096 * 32, 2392 / 4096 * 32
+    yp = np.maximum(y, 0) ** m1
+    return ((c1 + c2 * yp) / (1 + c3 * yp)) ** m2
+
+
+def test_dovi_decode_matches_numpy_model(make_hdr):
+    """Independent float64 model of libplacebo's Dolby Vision decode for
+    this profile 8.1 RPU (identity reshaping, checked by the kernel tests):
+    codes / 2^16, the RPU's YCbCr matrix and offsets to PQ LMS, PQ EOTF, its
+    RGB->LMS inverted through libplacebo's BT.2020 LMS->RGB, then (DoVi to
+    a 10000-nit PQ target with clip gamut mapping: no tone or gamut change)
+    PQ OETF and BT.2020 limited-range encode. Measured: identical codes."""
+    src = _dv(make_hdr(vs.YUV444P16), RPU_P8)
+    out = src.vszip.Tonemap(src_csp=3, dst_csp=1, dynamic_peak_detection=0, gamut_mapping=0)
+    _, _, _, ycc, off, lms = _rpu_fields(RPU_P8)
+    lms2rgb = np.array([[3.06441879, -2.16597676, 0.10155818],
+                        [-0.65612108, 1.78554118, -0.12943749],
+                        [0.01736321, -0.04725154, 1.03004253]]) @ lms
+    with src.get_frame(0) as f:
+        v = np.stack([np.asarray(f[p], dtype=np.float64) for p in range(3)])
+    s = np.minimum(v / 65536, 1023 / 1024)  # clamped to the pivot range
+    lin = np.einsum("ij,jhw->ihw", lms2rgb, _pq_eotf(np.einsum("ij,jhw->ihw", ycc, s - off[:, None, None])))
+    rgb = _pq_oetf(np.maximum(lin, 0))
+    y = 0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2]
+    want = np.stack([4096 + 56064 * y, 32768 + 57344 * (rgb[2] - y) / 1.8814, 32768 + 57344 * (rgb[0] - y) / 1.4746])
+    with out.get_frame(0) as f:
+        got = np.stack([np.asarray(f[p], dtype=np.float64) for p in range(3)])
+    d = np.abs(got - np.clip(np.round(want), 4096, [[[60160]], [[61440]], [[61440]]]))
+    assert d.mean() <= 1.5, d.mean()
+    assert d.max() <= 48, d.max()
+
+
+@pytest.mark.parametrize("detect", [0, 1])
+def test_dovi_mixed_rpu_chain_any_request_order(make_hdr, detect):
+    """Frames whose RPU is only partial (use_prev_vdr_rpu_flag, no DM data,
+    compressed DM data) continue the last complete one before them, in frame
+    order, so concurrent out-of-order requests (with peak detection, whose
+    window frames are resolved too) give the sequential result; and a chain
+    after anchor A differs from the same chain after anchor B."""
+    base = make_hdr(vs.YUV420P16)
+    # use_prev RPUs carry DM data in practice (without it they are shorter
+    # than the 25 bytes libdovi accepts); their matrices are ignored, as in
+    # vs-placebo's create_dovi_meta
+    seq = [dict(dm=_DM_A), dict(use_prev=True, dm=_DM_B), dict(), dict(compressed=True),
+           dict(use_prev=True, compressed=True), dict(dm=_DM_B), dict(), dict(use_prev=True, dm=_DM_A),
+           dict(compressed=True), dict(dm=_DM_A), dict(use_prev=True, compressed=True), dict()]
+    clip = vs.core.std.Splice([_dv(base, _rpu_build(**f)) for f in seq])
+    kw = dict(src_csp=3, dynamic_peak_detection=detect, smoothing_period=2.0)
+    n = clip.num_frames
+    want = _frame_arrays(clip.vszip.Tonemap(**kw), range(n))
+    got = _frame_arrays(clip.vszip.Tonemap(**kw), list(reversed(range(n))) * 2, threads=8)
+    for k in range(n):
+        for p in range(3):
+            assert np.array_equal(want[k][p], got[k][p]), (k, p)
+    # the partial frames after B (6..8) decode with B's matrices, not A's
+    alt = vs.core.std.Splice([_dv(base, _rpu_build(**f)) for f in seq[:5] + [dict(dm=_DM_A)] + seq[6:]])
+    alt_out = _frame_arrays(alt.vszip.Tonemap(**kw), [6])
+    assert any(not np.array_equal(want[6][p], alt_out[6][p]) for p in range(3))
+    # a use_prev RPU's own matrices are ignored: frame 1 (carrying B's, after
+    # A) decodes exactly as if it carried A's (same DM metadata otherwise)
+    same = vs.core.std.Splice([_dv(base, _rpu_build(**f)) for f in [seq[0], dict(use_prev=True, dm=_DM_A)] + seq[2:]])
+    same_out = _frame_arrays(same.vszip.Tonemap(**kw), [1])
+    for p in range(3):
+        assert np.array_equal(want[1][p], same_out[1][p]), p
+
+
+def test_dovi_rpu_chain_cap():
+    """A partial RPU resolves up to 300 frames after its complete one; one
+    frame further is a catchable error, not a hang."""
+    blank = vs.core.std.BlankClip(width=64, height=64, format=vs.YUV420P16, length=1, color=[30000, 32768, 32768])
+    clip = _dv(blank, _rpu_build(dm=_DM_A)) + _dv(blank, _rpu_build()) * 301
+    out = clip.vszip.Tonemap(src_csp=3, dynamic_peak_detection=0)
+    out.get_frame(300)
+    with pytest.raises(vs.Error, match="no complete DolbyVisionRPU within 300 frames"):
+        out.get_frame(301)
+
+
+def _fel_pair(make_hdr, rpu, el_fmt=vs.YUV420P10):
+    """A 640x320 BL and a half-size EL (made from the picture's own
+    luma/chroma, so its codes vary around mid-scale), with the RPU on the
+    EL clip, where vs-placebo reads it when an EL is given."""
+    bl = make_hdr(vs.YUV420P16)
+    el = bl.resize.Bicubic(bl.width // 2, bl.height // 2, format=el_fmt)
+    return bl, _dv(el, rpu)
+
+
+def test_dovi_fel_composes(make_hdr):
+    """A FEL RPU composes the EL (and is read from the EL clip: the BL has
+    none); a MEL RPU signals no residual, so the EL changes nothing."""
+    kw = dict(src_csp=3, dynamic_peak_detection=0)
+    bl, el = _fel_pair(make_hdr, RPU_FEL)
+    fel = bl.vszip.Tonemap(dovi_el=el, **kw)
+    base = _dv(bl, RPU_FEL).vszip.Tonemap(**kw)
+    assert max_abs_diff_all_planes(fel, base) > 100
+    bl, el = _fel_pair(make_hdr, RPU_MEL)
+    assert_same_clip(bl.vszip.Tonemap(dovi_el=el, **kw), _dv(bl, RPU_MEL).vszip.Tonemap(**kw))
+
+
+def test_dovi_fel_with_detection_any_request_order(make_hdr):
+    """With detection, the window frames are measured with their own EL
+    frames too (requested with them): concurrent out-of-order requests give
+    the sequential result."""
+    bl, el = _fel_pair(make_hdr, RPU_FEL)
+    # frames that differ, so the window matters
+    bl = vs.core.std.Splice([bl.std.Expr(f"x {k * 900} +") for k in range(6)])
+    el = vs.core.std.Splice([el.std.Expr(f"x {k * 9} +") for k in range(6)])
+    kw = dict(src_csp=3, smoothing_period=2.0)
+    n = bl.num_frames
+    want = _frame_arrays(bl.vszip.Tonemap(dovi_el=el, **kw), range(n))
+    got = _frame_arrays(bl.vszip.Tonemap(dovi_el=el, **kw), list(reversed(range(n))) * 2, threads=8)
+    for k in range(n):
+        for p in range(3):
+            assert np.array_equal(want[k][p], got[k][p]), (k, p)
+
+
+@pytest.mark.parametrize("detect", [0, 1])
+def test_dovi_el_rpu_chain_any_request_order(make_hdr, detect):
+    """With an EL, the RPU chain is the EL clip's (the BL has none): FEL, MEL
+    and profile 8 anchors, each followed by use_prev RPUs, which keep the
+    anchor's NLQ state. Concurrent out-of-order requests give the sequential
+    result; without detection, exactly the frames after a FEL anchor depend
+    on the EL's samples."""
+    bl, el = _fel_pair(make_hdr, RPU_FEL)
+    prev, p8 = _rpu_build(use_prev=True, dm=_DM_A), _rpu_build(dm=_DM_A)
+    rpus = [RPU_FEL, prev, prev, RPU_MEL, prev, RPU_FEL, prev, p8, prev, RPU_FEL, prev, prev]
+    fel = [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1]
+    n = len(rpus)
+    bl = vs.core.std.Splice([bl.std.Expr(f"x {k * 900} +") for k in range(n)])
+    el = vs.core.std.Splice([_dv(el.std.Expr(f"x {k * 9} +"), r) for k, r in enumerate(rpus)])
+    kw = dict(src_csp=3, dynamic_peak_detection=detect, smoothing_period=2.0)
+    want = _frame_arrays(bl.vszip.Tonemap(dovi_el=el, **kw), range(n))
+    got = _frame_arrays(bl.vszip.Tonemap(dovi_el=el, **kw), list(reversed(range(n))) * 2, threads=8)
+    for k in range(n):
+        for p in range(3):
+            assert np.array_equal(want[k][p], got[k][p]), (k, p)
+    if detect:
+        return
+    # the same RPUs on other EL samples
+    other = _frame_arrays(bl.vszip.Tonemap(dovi_el=el.std.Expr("1023 x -"), **kw), range(n))
+    for k in range(n):
+        same = all(np.array_equal(want[k][p], other[k][p]) for p in range(3))
+        assert same != bool(fel[k]), k
+
+
+def test_dovi_el_source_error_is_catchable():
+    """An EL frame that fails, needed by a later frame's use_prev walk (and,
+    with detection, by every window that reaches it), is a catchable error
+    for each such request, never an abort or a hang; a frame that needs
+    neither still decodes. Run in a child process."""
+    script = f"""
+import sys
+sys.path.insert(0, {str(os.path.dirname(os.path.abspath(__file__)))!r})
+import vapoursynth as vs
+from conftest import _load_vszip
+core = _load_vszip()
+bl = core.std.BlankClip(width=128, height=64, format=vs.YUV420P16, length=4, color=[30000, 32768, 32768])
+el = core.std.BlankClip(width=64, height=32, format=vs.YUV420P10, length=1, color=[512, 500, 520])
+rpus = [{RPU_FEL!r}, {_rpu_build(use_prev=True, dm=_DM_A)!r}, {_rpu_build(use_prev=True, dm=_DM_A)!r}, {RPU_FEL!r}]
+el = core.std.Splice([el.std.SetFrameProps(DolbyVisionRPU=r) for r in rpus])
+
+def sel(n):
+    if n == 0:
+        raise ValueError("EL frame unavailable")
+    return el
+
+bad = el.std.FrameEval(sel)
+for detect in (0, 1):
+    out = bl.vszip.Tonemap(dovi_el=bad, src_csp=3, dynamic_peak_detection=detect, smoothing_period=2.0)
+    for n in (2, 2, 0, 1, 3):
+        try:
+            out.get_frame(n)
+            res = 'ok'
+        except vs.Error as e:
+            res = 'error' if 'EL frame unavailable' in str(e) else 'other: ' + str(e)
+        print(detect, n, res, flush=True)
+"""
+    import subprocess
+    import sys
+    proc = subprocess.run([sys.executable, "-"], input=script, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    got = [tuple(line.split(" ", 2)) for line in proc.stdout.splitlines()]
+    want = [(d, n, "ok" if (d, n) == ("0", "3") else "error") for d in "01" for n in "22013"]
+    assert got == want, got
+
+
+@pytest.mark.parametrize("kw", [dict(), dict(contrast_recovery=0.3), dict(dynamic_peak_detection=0, contrast_recovery=0.3)], ids=str)
+def test_cache_frame_keeps_the_output(make_hdr, kw):
+    """cache_frame (default 1) keeps a frame's linear RGB from the detection
+    pass (or contrast recovery's feature pass) for the output pass; 0
+    decodes it again. Identical output either way: HDR10 and Dolby Vision
+    with a FEL, sequential against concurrent out-of-order requests (a
+    request reuses only its own frame's measurement)."""
+    bl, el = _fel_pair(make_hdr, RPU_FEL)
+    n = 6
+    bl = vs.core.std.Splice([bl.std.Expr(f"x {k * 900} +") for k in range(n)])
+    el = vs.core.std.Splice([el.std.Expr(f"x {k * 9} +") for k in range(n)])
+    for src in (dict(), dict(src_csp=3, dovi_el=el)):
+        args = dict(smoothing_period=2.0, **src, **kw)
+        want = _frame_arrays(bl.vszip.Tonemap(cache_frame=0, **args), range(n))
+        got = _frame_arrays(bl.vszip.Tonemap(**args), list(reversed(range(n))) * 2, threads=8)
+        for k in range(n):
+            for p in range(3):
+                assert np.array_equal(want[k][p], got[k][p]), (src.keys(), k, p)
+    with pytest.raises(vs.Error):
+        bl.vszip.Tonemap(cache_frame=2)
+
+
+def test_dovi_fel_native_10bit_matches_16bit(make_hdr):
+    """The EL code scale is 2^(EL depth - bits): a 10-bit EL clip and its
+    codes shifted to 16 bit compose identically."""
+    kw = dict(src_csp=3, dynamic_peak_detection=0)
+    bl, el = _fel_pair(make_hdr, RPU_FEL)
+    assert_same_clip(bl.vszip.Tonemap(dovi_el=el, **kw), bl.vszip.Tonemap(dovi_el=el.resize.Point(format=vs.YUV420P16), **kw))
+
+
+@pytest.mark.parametrize("kw", [dict(dst_csp=1), dict(dst_csp=0), dict(dst_csp=0, gamut_mapping=0)], ids=str)
+def test_dovi_fel_matches_vs_placebo(core, make_hdr, kw):
+    """FEL composition parity on 4:4:4 BL (the EL itself is 4:2:0). The GPU
+    stores each EL plane's vertical lanczos pass in half float, round toward
+    zero: at these 16-bit EL samples that is up to half a 10-bit code, which
+    flips the EL code's rounding on many pixels of this synthetic EL (its
+    codes are spread over the whole range, unlike a real FEL around its
+    offset), each flip a full deadzone step; vszip keeps f32. Measured:
+    mean 4.3 / 14.4 / 12.3, p99.9 29 / 162 / 317; with that store emulated
+    in a test build all three are within 10. Without the EL vszip is
+    600-1300 off (p99.9 3800-12300), so the bounds still catch a missing or
+    misplaced EL."""
+    pl = _placebo(core)
+    bl, el = _fel_pair(make_hdr, RPU_FEL, vs.YUV420P16)
+    bl = bl.resize.Point(format=vs.YUV444P16)
+    kw = dict(src_csp=3, dynamic_peak_detection=0, **kw)
+    with bl.vszip.Tonemap(dovi_el=el, **kw).get_frame(0) as fa, pl.Tonemap(bl, dovi_el=el, **kw).get_frame(0) as fb:
+        d = np.abs(np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+                   - np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64))
+    assert d.mean() <= 25, d.mean()
+    assert np.percentile(d, 99.9) <= 600, np.percentile(d, 99.9)
+
+
+_EL_SIZES = {"same": (1, 1), "half_w": (2, 1), "half_h": (1, 2), "half": (2, 2)}
+_EL_FORMATS = {"444": vs.YUV444P16, "422": vs.YUV422P16, "440": vs.YUV440P16, "420": vs.YUV420P16}
+
+
+@pytest.mark.parametrize("fmt", list(_EL_FORMATS))
+@pytest.mark.parametrize("size", list(_EL_SIZES))
+def test_dovi_fel_geometry_matches_vs_placebo(core, size, fmt):
+    """Every accepted EL layer size and subsampling, against vs-placebo, on a
+    flat BL (so the output follows the EL alone) and an EL pattern whose
+    neighbours differ by odd codes. A plane enlarged on one axis only is
+    read bilinearly on the other (pl_shader_sample_ortho2), which matters
+    where the top-left chroma shift starts that axis half a texel in (4:2:2
+    and 4:4:0 chroma): nearest sampling there was 73-105 off (max 864).
+    Measured: mean <= 5, max 17 (one deadzone step: exact half-code ties
+    the GPU's float noise breaks either way, and its half-float store
+    between two lanczos passes)."""
+    pl = _placebo(core)
+    w, h = 132, 68
+    fw, fh = _EL_SIZES[size]
+    bl = core.std.BlankClip(width=w, height=h, format=vs.YUV444P16, length=1, color=[24000, 32768, 32768])
+    bl = bl.std.SetFrameProps(_Transfer=16, _Primaries=9, _Matrix=9, _Range=0)
+
+    def fill(n, f):
+        out = f.copy()
+        for p in range(3):
+            a = np.asarray(out[p])
+            y, x = np.indices(a.shape)
+            a[:] = (512 + (7 * x + 11 * y + p * 13) % 97 - 48) * 64
+        return out
+
+    el = core.std.BlankClip(width=w // fw, height=h // fh, format=_EL_FORMATS[fmt], length=1)
+    el = _dv(el.std.ModifyFrame(el, fill), RPU_FEL)
+    kw = dict(src_csp=3, dst_csp=1, dynamic_peak_detection=0, gamut_mapping=0)
+    with bl.vszip.Tonemap(dovi_el=el, **kw).get_frame(0) as fa, pl.Tonemap(bl, dovi_el=el, **kw).get_frame(0) as fb:
+        d = np.abs(np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+                   - np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64))
+    assert d.mean() <= 8, d.mean()
+    assert d.max() <= 34, d.max()
+
+
+@pytest.mark.parametrize("kw", [dict(dst_csp=1), dict(dst_csp=0)], ids=str)
+def test_dovi_fel_real_matches_vs_placebo(core, kw):
+    """The LG profile 4 demo with its FEL (extracted by
+    bench/tonemap/dovi_el_demux.py) when present: 4:4:4 BL, center crop
+    (BL by multiples of 8, EL by half, keeping the 4x chroma aligned)."""
+    pl = _placebo(core)
+    if not all(os.path.exists(p) for p in LG_DEMOS) or not hasattr(core, "ffms2"):
+        pytest.skip("LG Dolby Vision demo and its EL not available")
+    bl0, el0 = core.ffms2.Source(LG_DEMOS[0]), core.ffms2.Source(LG_DEMOS[1])
+    frames = [bl0.num_frames * k // 6 for k in (1, 3, 5)]
+    bl = core.std.Splice([bl0[k] for k in frames]).resize.Point(format=vs.YUV444P16)
+    bl = bl.std.Crop(left=1440, right=1440, top=808, bottom=808)
+    el = core.std.Splice([el0[k] for k in frames]).resize.Point(format=vs.YUV420P16)
+    el = el.std.Crop(left=720, right=720, top=404, bottom=404)
+    kw = dict(src_csp=3, dynamic_peak_detection=0, **kw)
+    a, b = bl.vszip.Tonemap(dovi_el=el, **kw), pl.Tonemap(bl, dovi_el=el, **kw)
+    d = []
+    for n in range(bl.num_frames):
+        with a.get_frame(n) as fa, b.get_frame(n) as fb:
+            d.append(np.abs(np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+                            - np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64)))
+    d = np.stack(d)
+    # measured on the full frames: -> PQ mean 1.5, p99.9 22; -> SDR mean
+    # 6.5, p99.9 76 (the perceptual gamut LUT on the FEL's saturated detail)
+    assert d.mean() <= 10, d.mean()
+    assert np.percentile(d, 99.9) <= 150, np.percentile(d, 99.9)
+
+
+def test_dovi_profile5_is_full_range_and_differs(make_hdr):
+    """Profile 5 (IPTPQc2, full range): a different decode, full-range YUV out."""
+    src = make_hdr(vs.YUV420P16)
+    p5 = _dv(src, RPU_P5).vszip.Tonemap(src_csp=3, dynamic_peak_detection=0)
+    p8 = _dv(src, RPU_P8).vszip.Tonemap(src_csp=3, dynamic_peak_detection=0)
+    assert props(p5)["_Range"] == 1
+    assert props(p8)["_Range"] == 0
+    assert max_abs_diff_all_planes(p5, p8) > 1000
+
+
+def test_rpu_metadata_applies_to_hdr10_too(make_hdr):
+    """As in vs-placebo, the RPU's source range and L1/L6 metadata replace
+    the props whenever DolbyVisionRPU is present, whatever src_csp is; a
+    bad RPU is ignored there (it only errors with src_csp=3)."""
+    src = make_hdr(vs.YUV420P16)
+    kw = dict(dynamic_peak_detection=0)
+    plain = src.vszip.Tonemap(**kw)
+    assert max_abs_diff_all_planes(_dv(src, RPU_P8).vszip.Tonemap(**kw), plain) > 0
+    bad = bytearray(RPU_P8)
+    bad[60] ^= 0x10
+    assert_same_clip(_dv(src, bytes(bad)).vszip.Tonemap(**kw), plain)
+    with pytest.raises(vs.Error, match="invalid `DolbyVisionRPU`"):
+        _dv(src, bytes(bad)).vszip.Tonemap(src_csp=3, **kw).get_frame(0)
+    with pytest.raises(vs.Error, match="missing `DolbyVisionRPU`"):
+        src.vszip.Tonemap(src_csp=3, **kw).get_frame(0)
+
+
+def test_dovi_rpu_chain_follows_frame_order(make_hdr):
+    """An RPU without DM data keeps the previous frame's matrices; frame n
+    folds the RPUs back to the last complete one, in frame order, whatever
+    order frames are requested in, and fetches those frames itself."""
+    base = make_hdr(vs.YUV420P16)
+    partial = _rpu_strip_dm(RPU_P8)
+    kw = dict(dynamic_peak_detection=0)
+    # frames: complete P8, then two partial ones; and the same after a
+    # complete P5 (whose matrices differ)
+    after_p8 = _dv(base, RPU_P8) + _dv(base, partial) * 2
+    after_p5 = _dv(base, RPU_P5) + _dv(base, partial) * 2
+    seq = _frame_arrays(after_p8.vszip.Tonemap(**kw, src_csp=3), [0, 1, 2])
+    # frame 2 first, in a fresh filter: it walks back to frame 0 itself
+    alone = _frame_arrays(after_p8.vszip.Tonemap(**kw, src_csp=3), [2, 1, 0])
+    for k in range(3):
+        for p in range(3):
+            assert np.array_equal(seq[k][p], alone[k][p]), (k, p)
+    # the partial frames take the matrices of the complete frame before them
+    assert max_abs_diff_all_planes(after_p5.vszip.Tonemap(**kw, src_csp=3), after_p8.vszip.Tonemap(**kw, src_csp=3), n=2) > 1000
+    assert_same_clip(after_p8.vszip.Tonemap(**kw, src_csp=3)[1], after_p8.vszip.Tonemap(**kw, src_csp=3)[2])
+    # with no complete RPU before it, a chain starts from the zeroed state
+    # (vs-placebo's static on its first call): no reshaping, zero matrices
+    lone = _dv(base, partial).vszip.Tonemap(**kw, src_csp=3)
+    with lone.get_frame(0) as f:
+        assert np.isfinite(np.asarray(f[0], dtype=np.float64)).all()
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(dynamic_peak_detection=0),
+        dict(dynamic_peak_detection=0, dst_csp=1),
+        dict(dynamic_peak_detection=0, gamut_mapping=2, tone_mapping_function=3),
+    ],
+    ids=str,
+)
+@pytest.mark.parametrize("rpu", [RPU_P8, RPU_P5], ids=["p8", "p5"])
+def test_dovi_matches_vs_placebo(core, make_hdr, rpu, kw):
+    """Parity of the Dolby Vision decode on 4:4:4 input (on 4:2:0 the GPU
+    truncates the vertically upsampled chroma to half float, round toward
+    zero, which the RPU's chroma mapping amplifies; see tonemap-port.md).
+    Detection is left out for the half-float FBO reason given in
+    test_matches_vs_placebo."""
+    pl = _placebo(core)
+    src = _dv(make_hdr(vs.YUV444P16), rpu)
+    try:
+        ref = pl.Tonemap(src, src_csp=3, **kw)
+        ref.get_frame(0)
+    except vs.Error as e:
+        pytest.skip(f"vs-placebo unusable here: {e}")
+    out = src.vszip.Tonemap(src_csp=3, **kw)
+    with out.get_frame(0) as fa, ref.get_frame(0) as fb:
+        a = np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+        b = np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64)
+    d = np.abs(a - b)
+    # the saturation gamut map with reinhard measured 8.8 on this image
+    assert d.mean() <= 10, d.mean()
+    assert np.percentile(d, 99.9) <= 400, np.percentile(d, 99.9)
+
+
+DV_CLIPS = {
+    # profile 8.1, identity reshaping
+    "p81": (DV_SAMPLE, [2000, 9000, 33000]),
+    # Dolby's Sol Levante test content: profile 5 (IPTPQc2, full range,
+    # 9-pivot luma polynomials) and 8.4 (HLG base, chroma MMR)
+    "p5": (r"D:\dovi\contents2\BL_RPU_dvhe-05_1920x1080@24fps_0_6313.mp4", [631, 3157, 5682]),
+    "p84": (r"D:\dovi\contents2\BL_RPU_dvhe-08-84_1920x1080@24fps_0_6313.mp4", [631, 3157, 5682]),
+}
+
+
+@pytest.mark.parametrize("clip", list(DV_CLIPS))
+@pytest.mark.parametrize("fmt", [vs.YUV444P16, vs.YUV420P16])
+def test_dovi_sample_matches_vs_placebo(core, fmt, clip):
+    """Real Dolby Vision clips on this machine, when present. ffms2, not
+    BestSource: BestSource R18 drops DolbyVisionRPU on every 48th frame of
+    the Sol Levante MP4s, which ffms2 5.1 keeps."""
+    pl = _placebo(core)
+    path, frames = DV_CLIPS[clip]
+    if not os.path.exists(path) or not hasattr(core, "ffms2"):
+        pytest.skip("Dolby Vision sample or ffms2 not available")
+    src = core.ffms2.Source(path).resize.Point(format=fmt)
+    # center 960x544
+    x, y = (src.width - 960) // 4 * 2, (src.height - 544) // 4 * 2
+    src = src.std.Crop(left=x, right=src.width - 960 - x, top=y, bottom=src.height - 544 - y)
+    src = core.std.Splice([src[n] for n in frames])
+    kw = dict(src_csp=3, dynamic_peak_detection=0)
+    a, b = src.vszip.Tonemap(**kw), pl.Tonemap(src, **kw)
+    d = []
+    for n in range(src.num_frames):
+        with a.get_frame(n) as fa, b.get_frame(n) as fb:
+            d.append(np.abs(np.stack([np.asarray(fa[p]) for p in range(3)]).astype(np.int64)
+                            - np.stack([np.asarray(fb[p]) for p in range(3)]).astype(np.int64)))
+    d = np.stack(d)
+    # measured, worst clip: 4:4:4 mean 2.3, p99.9 24; 4:2:0 mean 19, p99.9
+    # 171: the GPU's round-toward-zero half-float store of the vertically
+    # upsampled chroma (emulating it gave mean 1.9; see tonemap-port.md)
+    limit = (4, 40) if fmt == vs.YUV444P16 else (25, 220)
+    assert d.mean() <= limit[0], d.mean()
+    assert np.percentile(d, 99.9) <= limit[1], np.percentile(d, 99.9)
+
+
 # --- vs-placebo parity (optional) -------------------------------------------
 
 
@@ -675,15 +1442,15 @@ def test_matches_vs_placebo(core, src_rgb, kw):
 @pytest.mark.parametrize(
     ("fmt", "kw", "message"),
     [
-        (vs.YUV420P10, {}, "16-bit integer or 32-bit float"),
         (vs.YUV420P8, {}, "16-bit integer or 32-bit float"),
         (vs.GRAY16, {}, "16-bit integer or 32-bit float"),
         (vs.YUV420PH, {}, "16-bit integer or 32-bit float"),
         (vs.YUV410P16, {}, "16-bit integer or 32-bit float"),
         (vs.YUV420P16, dict(src_csp=0), "src_csp"),
-        (vs.YUV420P16, dict(src_csp=3), "Dolby Vision"),
-        (vs.YUV420P16, dict(use_dovi=1), "Dolby Vision"),
-        (vs.YUV420P16, dict(dst_csp=3), "Dolby Vision"),
+        (vs.YUV420P16, dict(src_csp=3), "missing `DolbyVisionRPU`"),
+        (vs.YUV420PS, dict(src_csp=3), "integer YUV"),
+        (vs.RGB48, dict(src_csp=3), "integer YUV"),
+        (vs.YUV420P16, dict(dst_csp=3), "Dolby Vision output"),
         (vs.YUV420P16, dict(dst_csp=4), "dst_csp"),
         (vs.YUV420P16, dict(src_csp=-1), "src_csp"),
         (vs.YUV420P16, dict(dst_prim=18), "dst_prim"),
@@ -723,6 +1490,20 @@ def test_rejects(core, fmt, kw, message):
     clip = core.std.BlankClip(width=96, height=96, format=fmt, length=1)
     with pytest.raises(vs.Error, match=message):
         clip.vszip.Tonemap(**kw).get_frame(0)
+
+
+def test_dovi_el_arguments(core):
+    """dovi_el must be integer YUV of the BL's size or half of it; like
+    vs-placebo, it is ignored without use_dovi."""
+    bl = core.std.BlankClip(width=128, height=96, format=vs.YUV420P16, length=1)
+    for el in (core.std.BlankClip(width=96, height=64, format=vs.YUV420P10, length=1),
+               core.std.BlankClip(width=64, height=48, format=vs.YUV420PS, length=1),
+               core.std.BlankClip(width=64, height=48, format=vs.RGB48, length=1)):
+        with pytest.raises(vs.Error, match="dovi_el must be"):
+            bl.vszip.Tonemap(src_csp=3, dovi_el=el)
+    odd = core.std.BlankClip(width=96, height=64, format=vs.YUV420P10, length=1)
+    bl.vszip.Tonemap(use_dovi=0, dovi_el=odd).get_frame(0)
+    bl.vszip.Tonemap(use_dovi=1).get_frame(0)
 
 
 @pytest.mark.parametrize(("w", "h"), [(62, 64), (64, 62)])
