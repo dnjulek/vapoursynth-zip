@@ -23,6 +23,7 @@ const common = @import("../common.zig");
 const simd = @import("simd.zig");
 const vcl = @import("../vcl.zig");
 pub const tc = @import("tonemap_color.zig");
+pub const dovi = @import("dovi.zig");
 
 const allocator = common.kernel_allocator;
 const io = common.io;
@@ -135,6 +136,12 @@ pub const FrameMeta = struct {
     prim_x: ?[3]f32 = null,
     prim_y: ?[3]f32 = null,
     white: tc.Xy = .{},
+    /// DolbyVisionRPU: its DM data (when signalled) and guessed profile,
+    /// used whatever src_csp is, as vs-placebo does
+    dovi_dm: ?dovi.DmData = null,
+    dovi_profile: u8 = 0,
+    /// the frame's resolved reshaping/matrix state (src_csp dovi)
+    dovi_meta: ?*const dovi.Meta = null,
 };
 
 /// The renderer's view of one frame: inferred source and target spaces.
@@ -144,6 +151,8 @@ pub const Setup = struct {
     full: bool,
     chroma_loc: i64,
     peak_active: bool,
+    /// Dolby Vision decode (src_csp dovi)
+    dovi: ?*const dovi.Meta = null,
 
     pub fn init(cfg: *const Config, m: *const FrameMeta) Setup {
         var src: tc.Csp = .{ .prim = .bt2020, .trc = if (cfg.src_csp == .hlg) .hlg else .pq };
@@ -184,6 +193,33 @@ pub const Setup = struct {
         dst.hdr.max_luma = cfg.dst_max;
         dst.hdr.min_luma = cfg.dst_min;
 
+        // vs-placebo's DolbyVisionRPU metadata, over the props
+        if (m.dovi_dm) |*dm| {
+            const pq4095 = struct {
+                fn f(v: u16) f32 {
+                    return @as(f32, @floatFromInt(v)) / 4095.0;
+                }
+            }.f;
+            // DoVi -> PQ keeps the source black: the RPU's minimum is not
+            // necessarily what the coded values hold
+            if (cfg.src_csp == .dovi and cfg.dst_csp == .hdr10) {
+                dst.hdr.min_luma = src.hdr.min_luma;
+            } else if (!dm.compressed) {
+                src.hdr.min_luma = tc.hdrRescale(.pq, .nits, pq4095(dm.source_min_pq));
+            }
+            // compressed DM data carries no source range (libdovi leaves it
+            // zero, which vs-placebo would take as the peak): keep the props'
+            if (!dm.compressed) src.hdr.max_luma = tc.hdrRescale(.pq, .nits, pq4095(dm.source_max_pq));
+            if (dm.level1) |l1| {
+                src.hdr.avg_pq_y = pq4095(l1.avg_pq);
+                src.hdr.max_pq_y = pq4095(l1.max_pq);
+            }
+            if (dm.level6) |l6| if (src.hdr.max_cll == 0 or src.hdr.max_fall == 0) {
+                src.hdr.max_cll = @floatFromInt(l6.max_cll);
+                src.hdr.max_fall = @floatFromInt(l6.max_fall);
+            };
+        }
+
         tc.inferMap(&src, &dst);
 
         // hdr_update_peak's conditions: detection also runs alongside
@@ -192,12 +228,15 @@ pub const Setup = struct {
         const active = cfg.peak_detect and src.isHdr() and max_peak > dst.hdr.max_luma + 1e-6 and
             !(src.hdr.hasHdr10Plus() and src.hdr.hasCieY()) and (cfg.metadata == .any or cfg.metadata == .cie_y);
 
+        const dv = if (cfg.src_csp == .dovi) m.dovi_meta else null;
         return .{
             .src = src,
             .dst = dst,
-            .full = m.full_range orelse cfg.rgb,
+            // profile 5 output is full range
+            .full = if (dv != null and m.dovi_profile == 5) true else m.full_range orelse cfg.rgb,
             .chroma_loc = m.chroma_loc orelse 0,
             .peak_active = active,
+            .dovi = dv,
         };
     }
 };
@@ -588,11 +627,113 @@ const Decode = struct {
     hx: Phases,
     hy: Phases,
     lin: Transfer,
+    /// Dolby Vision: replaces m/c and the PQ linearization
+    dovi: ?DoviDecode = null,
 
     fn init(cfg: *const Config, s: *const Setup) Decode {
         const d = decodeTransform(cfg.rgb, cfg.float, s.full, .bt2020);
         const sh = chromaShift(s.chroma_loc);
-        return .{ .m = d.m, .c = d.c, .hx = .init(sh[0]), .hy = .init(sh[1]), .lin = .init(&s.src, false) };
+        return .{
+            .m = d.m,
+            .c = d.c,
+            .hx = .init(sh[0]),
+            .hy = .init(sh[1]),
+            .lin = .init(&s.src, false),
+            .dovi = if (s.dovi) |m| .init(m) else null,
+        };
+    }
+};
+
+/// pl_shader_decode_color's Dolby Vision path for one frame: the RPU's
+/// per-component reshaping of the base-layer codes (polynomial or MMR
+/// pieces between pivots), its YCbCr -> nonlinear RGB matrix, then PQ LMS
+/// -> linear BT.2020 RGB. Integer input only (16-bit codes of the 10-bit
+/// BL, as vs-placebo requires).
+const DoviDecode = struct {
+    comp: [3]Comp,
+    /// reshaped -> nonlinear (PQ) LMS: m * v + c
+    m: tc.Mat3,
+    c: [3]f32,
+    /// linear LMS -> linear BT.2020 RGB
+    lms2rgb: tc.Mat3,
+
+    /// constant, then 7 coefficients per MMR order
+    const ncoef = 1 + 3 * dovi.mmr_coeffs;
+    const Comp = struct {
+        /// pieces; 0: no reshaping
+        pieces: u32 = 0,
+        /// pivot range, which also clamps the inputs MMR reads
+        lo: f32 = 0,
+        hi: f32 = 1,
+        /// piece p > 0 starts at bounds[p - 1]
+        bounds: [dovi.max_pieces - 1]f32 = @splat(0),
+        mmr: bool = false,
+        /// the highest MMR order (lower-order pieces have zero coefficients)
+        order: u32 = 0,
+        /// polynomial: x0 + x1 s + x2 s^2
+        coef: [dovi.max_pieces][ncoef]f32 = @splat(@splat(0)),
+    };
+
+    /// Dolby Vision's BT.2020 HPE LMS -> RGB (pl_shader_decode_color_ex)
+    const lms2rgb_bt2020: tc.Mat3 = .{
+        .{ 3.06441879, -2.16597676, 0.10155818 },
+        .{ -0.65612108, 1.78554118, -0.12943749 },
+        .{ 0.01736321, -0.04725154, 1.03004253 },
+    };
+
+    fn init(meta: *const dovi.Meta) DoviDecode {
+        var d: DoviDecode = .{ .comp = @splat(.{}), .m = meta.nonlinear, .c = undefined, .lms2rgb = undefined };
+        for (&d.comp, &meta.comp) |*o, *r| {
+            if (r.num_pivots == 0) continue;
+            o.pieces = r.num_pivots - 1;
+            o.lo = r.pivots[0];
+            o.hi = r.pivots[r.num_pivots - 1];
+            for (0..o.pieces - 1) |i| o.bounds[i] = r.pivots[i + 1];
+            o.mmr = r.mmr;
+            for (0..o.pieces) |i| {
+                if (!r.mmr) {
+                    o.coef[i][0..3].* = r.poly_coeffs[i];
+                } else {
+                    o.order = @max(o.order, r.mmr_order[i]);
+                    o.coef[i][0] = r.mmr_constant[i];
+                    for (0..3) |j| o.coef[i][1 + j * dovi.mmr_coeffs ..][0..dovi.mmr_coeffs].* = r.mmr_coeffs[i][j];
+                }
+            }
+        }
+        // the signalled offsets are in units of the composed signal; the
+        // matrix already includes the levels (pl_color_repr_decode_ex)
+        for (0..3) |i| {
+            var c: f64 = 0;
+            for (0..3) |j| c -= @as(f64, meta.nonlinear[i][j]) * meta.nonlinear_offset[j];
+            d.c[i] = @floatCast(c);
+        }
+        d.lms2rgb = tc.mul(lms2rgb_bt2020, meta.linear);
+        return d;
+    }
+
+    /// The reshaped component `s` (clamped to its pivots in `sig`).
+    inline fn reshape(o: *const Comp, sig: [3]V, s: V) V {
+        const used = if (o.mmr) 1 + o.order * dovi.mmr_coeffs else 3;
+        // each lane's piece: the coefficients of the last pivot <= s
+        var k: [ncoef]V = undefined;
+        for (0..used) |j| k[j] = sp(o.coef[0][j]);
+        for (1..o.pieces) |p| {
+            const in = s >= sp(o.bounds[p - 1]);
+            for (0..used) |j| k[j] = @select(f32, in, sp(o.coef[p][j]), k[j]);
+        }
+        if (!o.mmr) return madd(madd(k[2], s, k[1]), s, k[0]);
+        // MMR: the components and their cross products, up to the cube
+        const x = [7]V{ sig[0], sig[1], sig[2], sig[0] * sig[1], sig[0] * sig[2], sig[1] * sig[2], sig[0] * sig[1] * sig[2] };
+        var r = k[0];
+        var t = x;
+        for (0..o.order) |j| {
+            if (j > 0) {
+                for (&t, x) |*v, b| v.* *= b;
+            }
+            const kj = k[1 + j * dovi.mmr_coeffs ..];
+            for (0..dovi.mmr_coeffs) |i| r = madd(kj[i], t[i], r);
+        }
+        return r;
     }
 };
 
@@ -733,6 +874,7 @@ fn decodeRow(comptime T: type, cfg: *const Config, dec: *const Decode, src: Plan
 /// Decode matrix and transfer: rows a/b/c become linear RGB (SDR-white
 /// relative, source primaries).
 fn linearizeRow(dec: *const Decode, rows: *Rows, n: usize) void {
+    if (dec.dovi) |*d| return doviRow(d, rows, n);
     // one loop per transfer (comptime): a runtime switch would inline every
     // variant into the loop body
     switch (dec.lin.trc) {
@@ -746,6 +888,34 @@ fn linearizeRow(dec: *const Decode, rows: *Rows, n: usize) void {
                 storeRow3(rows, x, rgb);
             }
         },
+    }
+}
+
+/// Dolby Vision decode: raw 16-bit codes in rows a/b/c become linear
+/// BT.2020 RGB (SDR-white relative).
+fn doviRow(d: *const DoviDecode, rows: *Rows, n: usize) void {
+    var x: usize = 0;
+    while (x < n) : (x += VL) {
+        const raw = loadRow3(rows, x);
+        // the reshaping reads code / 2^bl_depth: 16-bit samples of the
+        // 10-bit BL carry it shifted by 6 (pl_color_repr_code_scale)
+        var s: [3]V = undefined;
+        var sig: [3]V = undefined;
+        inline for (0..3) |c| {
+            s[c] = raw[c] * sp(1.0 / 65536.0);
+            sig[c] = simd.clampV(VL, s[c], sp(d.comp[c].lo), sp(d.comp[c].hi));
+        }
+        inline for (0..3) |c| {
+            if (d.comp[c].pieces > 0) s[c] = simd.clampV(VL, DoviDecode.reshape(&d.comp[c], sig, sig[c]), sp(0), sp(1));
+        }
+        var lms = mat3(d.m, s[0], s[1], s[2]);
+        // PQ LMS -> linear; pqEotf clamps the signal to [0, 1] as upstream
+        inline for (&lms, d.c) |*v, c| v.* = pqEotf(v.* + sp(c));
+        var rgb = mat3(d.lms2rgb, lms[0], lms[1], lms[2]);
+        // upstream re-encodes max(rgb, 0) to PQ, which the next
+        // linearization undoes
+        inline for (&rgb) |*v| v.* = @max(v.*, sp(0)) * sp(10000.0 / tc.sdr_white);
+        storeRow3(rows, x, rgb);
     }
 }
 
@@ -973,7 +1143,9 @@ pub const Plan = struct {
         tc.inferMap(&src, &dst);
 
         plan.dec = .init(cfg, s);
-        plan.passthrough = src.eql(&dst);
+        // the Dolby Vision decode always runs (process' passthrough skips
+        // linearizeRow)
+        plan.passthrough = src.eql(&dst) and s.dovi == null;
         plan.map = .none;
         plan.mat = tc.identity;
         plan.space = null;

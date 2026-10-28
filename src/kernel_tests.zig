@@ -38,6 +38,7 @@ const kernels = .{
     @import("filters/mosquito_nr.zig"),
     @import("filters/mosquito_nr_float.zig"),
     @import("filters/nlmeans.zig"),
+    @import("filters/dovi.zig"),
     @import("filters/planeaverage.zig"),
     @import("filters/planeminmax.zig"),
     @import("filters/simd.zig"),
