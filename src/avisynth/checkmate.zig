@@ -9,6 +9,7 @@ const math = std.math;
 const avs = @import("avisynth");
 
 const filter = @import("../filters/checkmate.zig");
+const common = @import("../common.zig");
 const hz = @import("helper.zig");
 
 pub const filter_name = "avszip_Checkmate";
@@ -25,16 +26,15 @@ const F = avs.Filter(Data, filter_name);
 fn Checkmate(comptime use_tthr2: bool) type {
     return struct {
         fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
-            const last = d.num_frames - 1;
             const src_p1 = try ctx.childFrame(@max(0, n - 1));
             defer src_p1.release();
             const src = try ctx.childFrame(n);
             defer src.release();
-            const src_n1 = try ctx.childFrame(@min(n + 1, last));
+            const src_n1 = try ctx.childFrame(common.clampFrame(n, 1, d.num_frames));
             defer src_n1.release();
             const src_p2 = if (use_tthr2) try ctx.childFrame(@max(0, n - 2));
             defer if (use_tthr2) src_p2.release();
-            const src_n2 = if (use_tthr2) try ctx.childFrame(@min(n + 2, last));
+            const src_n2 = if (use_tthr2) try ctx.childFrame(common.clampFrame(n, 2, d.num_frames));
             defer if (use_tthr2) src_n2.release();
 
             const dst = try ctx.newFrame(src);

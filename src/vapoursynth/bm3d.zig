@@ -139,7 +139,7 @@ fn Temporal(comptime final: bool, comptime name: []const u8) type {
                     for (0..e.p.n_planes) |i| {
                         const pl = e.planes[i];
                         for (0..tw) |z| {
-                            const f = math.clamp(m - r + @as(i32, @intCast(z)), 0, d.vi.numFrames - 1);
+                            const f = bc.clampFrame(m, @as(i64, @intCast(z)) - r, d.vi.numFrames);
                             const k: usize = @intCast(f - self.fr.lo);
                             const sf = self.fr.src[k];
                             srcs[i * tw + z] = .{ .data = sf.getReadSlice2(f32, pl).ptr, .stride = sf.getStride2(f32, pl) };
@@ -182,8 +182,8 @@ fn Temporal(comptime final: bool, comptime name: []const u8) type {
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
             const span: i32 = 2 * @as(i32, @intCast(d.radius));
-            const lo = @max(n - span, 0);
-            const hi = @min(n + span, d.vi.numFrames - 1);
+            const lo = bc.clampFrame(n, -span, d.vi.numFrames);
+            const hi = bc.clampFrame(n, span, d.vi.numFrames);
             if (activation_reason == .Initial) {
                 var i = lo;
                 while (i <= hi) : (i += 1) {
@@ -445,7 +445,7 @@ pub const VAggregate = struct {
         const nf = d.src_vi.numFrames;
         if (activation_reason == .Initial) {
             var i = @max(n - r, 0);
-            while (i <= @min(n + r, nf - 1)) : (i += 1) zapi.requestFrameFilter(i, d.node);
+            while (i <= bc.clampFrame(n, r, nf)) : (i += 1) zapi.requestFrameFilter(i, d.node);
             zapi.requestFrameFilter(n, d.src_node);
             return null;
         }
@@ -455,7 +455,7 @@ pub const VAggregate = struct {
         defer src.deinit();
         const tw: usize = @intCast(2 * r + 1);
         var stack: [2 * filter.max_radius + 1]ZAPI.ZFrame(*const vs.Frame) = undefined;
-        for (0..tw) |i| stack[i] = zapi.initZFrame(d.node, math.clamp(n - r + @as(i32, @intCast(i)), 0, nf - 1));
+        for (0..tw) |i| stack[i] = zapi.initZFrame(d.node, bc.clampFrame(n, @as(i64, @intCast(i)) - r, nf));
         defer for (stack[0..tw]) |f| f.deinit();
 
         const dst = src.newVideoFrame2(d.process);
@@ -474,7 +474,7 @@ pub const VAggregate = struct {
                     rows[i] = sp[base..].ptr;
                     wts[i] = sp[base + h * sstride ..].ptr;
                 }
-                aggRow(out[y * stride ..][0..w], rows[0..tw], wts[0..tw]);
+                bc.aggRow(out[y * stride ..][0..w], rows[0..tw], wts[0..tw]);
             }
         }
         return dst.frame;
@@ -543,29 +543,3 @@ pub const VAggregate = struct {
         zapi.createVideoFilter(out, "VAggregate", d.src_vi, getFrame, free, .Parallel, &deps, data);
     }
 };
-
-/// Ascending-t sums of the stacked numerators and weights, then a correctly
-/// rounded divide (the GPU's vaggregate kernel).
-fn aggRow(out: []f32, rows: []const [*]const f32, wts: []const [*]const f32) void {
-    const VF = bc.VF;
-    const n = bc.vf_len;
-    var x: usize = 0;
-    while (x + n <= out.len) : (x += n) {
-        var sv: VF = @splat(0);
-        var sw: VF = @splat(0);
-        for (rows, wts) |rp, wp| {
-            sv += @as(VF, rp[x..][0..n].*);
-            sw += @as(VF, wp[x..][0..n].*);
-        }
-        out[x..][0..n].* = sv / sw;
-    }
-    while (x < out.len) : (x += 1) {
-        var sv: f32 = 0;
-        var sw: f32 = 0;
-        for (rows, wts) |rp, wp| {
-            sv += rp[x];
-            sw += wp[x];
-        }
-        out[x] = sv / sw;
-    }
-}

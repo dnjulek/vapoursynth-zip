@@ -138,10 +138,12 @@ pub fn contribs(n: i32, nf: i32, r: i32, out: []Contrib) []Contrib {
     const k: usize = @intCast(2 * r + 1);
     for (0..k) |i_| {
         const i: i32 = @intCast(i_);
-        out[i_] = .{ .m = std.math.clamp(n - r + i, 0, nf - 1), .slot = @intCast(aggZ(i, n, nf, r)) };
+        out[i_] = .{ .m = clampFrame(n, i - r, nf), .slot = @intCast(aggZ(i, n, nf, r)) };
     }
     return out[0..k];
 }
+
+pub const clampFrame = common.clampFrame;
 
 pub const max_window = 33;
 
@@ -354,8 +356,9 @@ pub const TemporalCache = struct {
     pub fn fold(self: *TemporalCache, m: i32, slot: u32, p: usize, y: u32, num: []const f32, den: []const f32) void {
         if (!self.process[p]) return;
         const span = 2 * self.radius;
-        var n = @max(m - span, 0);
-        while (n <= @min(m + span, self.num_frames - 1)) : (n += 1) {
+        var n = clampFrame(m, -span, self.num_frames);
+        const hi = clampFrame(m, span, self.num_frames);
+        while (n <= hi) : (n += 1) {
             if (!self.feeds(n, m, slot)) continue;
             const t = self.pinFor(n) orelse continue;
             t.lock.lockUncancelable(io);
@@ -506,5 +509,32 @@ pub const TemporalCache = struct {
 /// Stack slot of window entry i for output frame n (vszipcu's VAggregate):
 /// the slot of stage clamp(n - r + i) that holds frame n.
 pub fn aggZ(i: i32, n: i32, nf: i32, r: i32) i32 {
-    return @min(@max(2 * r - i, n - nf + 1 + r), n + r);
+    // in i64 (see clampFrame); the result is a slot in 0 .. 2r
+    const n64: i64 = n;
+    return @intCast(@min(@max(2 * @as(i64, r) - i, n64 - nf + 1 + r), n64 + r));
+}
+
+/// One output row of VAggregate (stacked clips of the GPU plugins):
+/// ascending-t sums of the stacked numerators and weights, then a correctly
+/// rounded divide (the GPU's vaggregate kernel).
+pub fn aggRow(out: []f32, rows: []const [*]const f32, wts: []const [*]const f32) void {
+    var x: usize = 0;
+    while (x + vf_len <= out.len) : (x += vf_len) {
+        var sv: VF = @splat(0);
+        var sw: VF = @splat(0);
+        for (rows, wts) |rp, wp| {
+            sv += @as(VF, rp[x..][0..vf_len].*);
+            sw += @as(VF, wp[x..][0..vf_len].*);
+        }
+        out[x..][0..vf_len].* = sv / sw;
+    }
+    while (x < out.len) : (x += 1) {
+        var sv: f32 = 0;
+        var sw: f32 = 0;
+        for (rows, wts) |rp, wp| {
+            sv += rp[x];
+            sw += wp[x];
+        }
+        out[x] = sv / sw;
+    }
 }

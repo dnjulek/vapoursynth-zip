@@ -50,6 +50,14 @@ pub fn scratchAlignmentT(div: u32) u32 {
     return @divExact(vec_len, div);
 }
 
+/// Frame `n + k` clamped to `0 .. nf - 1`, for temporal windows. Summed in
+/// i64: hosts accept clips of up to 2^31 - 1 frames, where `n + k`
+/// overflows i32 near the end.
+pub fn clampFrame(n: i32, k: i64, nf: i32) i32 {
+    std.debug.assert(nf > 0);
+    return @intCast(std.math.clamp(@as(i64, n) + k, 0, @as(i64, nf) - 1));
+}
+
 pub fn absDiff(x: anytype, y: anytype) @TypeOf(x) {
     return if (x > y) (x - y) else (y - x);
 }

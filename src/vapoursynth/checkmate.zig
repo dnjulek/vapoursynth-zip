@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/checkmate.zig");
+const common = @import("../common.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
@@ -29,18 +30,18 @@ fn Checkmate(comptime use_tthr2: bool) type {
             if (activation_reason == .Initial) {
                 zapi.requestFrameFilter(@max(0, n - 1), d.node);
                 zapi.requestFrameFilter(n, d.node);
-                zapi.requestFrameFilter(@min(n + 1, d.vi.numFrames - 1), d.node);
+                zapi.requestFrameFilter(common.clampFrame(n, 1, d.vi.numFrames), d.node);
 
                 if (use_tthr2) {
                     zapi.requestFrameFilter(@max(0, n - 2), d.node);
-                    zapi.requestFrameFilter(@min(n + 2, d.vi.numFrames - 1), d.node);
+                    zapi.requestFrameFilter(common.clampFrame(n, 2, d.vi.numFrames), d.node);
                 }
             } else if (activation_reason == .AllFramesReady) {
                 const src_p1 = zapi.initZFrame(d.node, @max(0, n - 1));
                 const src = zapi.initZFrame(d.node, n);
-                const src_n1 = zapi.initZFrame(d.node, @min(n + 1, d.vi.numFrames - 1));
+                const src_n1 = zapi.initZFrame(d.node, common.clampFrame(n, 1, d.vi.numFrames));
                 const src_p2 = if (use_tthr2) zapi.initZFrame(d.node, @max(0, n - 2));
-                const src_n2 = if (use_tthr2) zapi.initZFrame(d.node, @min(n + 2, d.vi.numFrames - 1));
+                const src_n2 = if (use_tthr2) zapi.initZFrame(d.node, common.clampFrame(n, 2, d.vi.numFrames));
                 const dst = src.newVideoFrame();
 
                 var plane: u32 = 0;

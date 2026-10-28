@@ -117,7 +117,7 @@ fn Wnnm(comptime BS: ?u32) type {
                     const any = self.fr.src[0];
                     const w, const h, const stride = any.getDimensions2(f32, plane);
                     for (0..nf) |z| {
-                        const f = math.clamp(m - r + @as(i32, @intCast(z)), 0, d.vi.numFrames - 1);
+                        const f = bc.clampFrame(m, @as(i64, @intCast(z)) - r, d.vi.numFrames);
                         const k: usize = @intCast(f - self.fr.lo);
                         srcps[z] = self.fr.src[k].getReadSlice2(f32, plane);
                         refps[z] = self.fr.ref[k].getReadSlice2(f32, plane);
@@ -163,8 +163,8 @@ fn Wnnm(comptime BS: ?u32) type {
             const d: *Data = @ptrCast(@alignCast(instance_data));
             const zapi = ZAPI.init(vsapi, core, frame_ctx);
             const span: i32 = 2 * @as(i32, @intCast(d.cfg.radius));
-            const lo = @max(n - span, 0);
-            const hi = @min(n + span, d.vi.numFrames - 1);
+            const lo = bc.clampFrame(n, -span, d.vi.numFrames);
+            const hi = bc.clampFrame(n, span, d.vi.numFrames);
 
             if (activation_reason == .Initial) {
                 var i = lo;

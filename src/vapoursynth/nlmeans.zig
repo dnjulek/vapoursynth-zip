@@ -2,6 +2,7 @@ const std = @import("std");
 const math = std.math;
 
 const filter = @import("../filters/nlmeans.zig");
+const common = @import("../common.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
 
@@ -54,12 +55,12 @@ fn NLMeans(comptime T: type, comptime ref: Ref, comptime wmode: u32) type {
             // KNLMeansCL's window: radius min(d, n) on both sides, the far
             // side clamped to the last frame.
             const m: i32 = @min(@as(i32, @intCast(d.cfg.d)), n);
-            const last = d.vi.numFrames - 1;
+            const nf = d.vi.numFrames;
 
             if (activation_reason == .Initial) {
                 var k: i32 = -m;
                 while (k <= m) : (k += 1) {
-                    const fid = math.clamp(n + k, 0, last);
+                    const fid = common.clampFrame(n, k, nf);
                     zapi.requestFrameFilter(fid, d.node);
                     if (d.ref_node != null) zapi.requestFrameFilter(fid, d.ref_node);
                 }
@@ -72,7 +73,7 @@ fn NLMeans(comptime T: type, comptime ref: Ref, comptime wmode: u32) type {
             var refs: [2 * filter.max_d + 1]ZF = undefined;
             const count: usize = @intCast(2 * m + 1);
             for (0..count) |i| {
-                const fid = math.clamp(n - m + @as(i32, @intCast(i)), 0, last);
+                const fid = common.clampFrame(n, @as(i64, @intCast(i)) - m, nf);
                 srcs[i] = zapi.initZFrame(d.node, fid);
                 if (d.ref_node != null) refs[i] = zapi.initZFrame(d.ref_node, fid);
             }

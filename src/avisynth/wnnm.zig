@@ -19,6 +19,7 @@ const avs = @import("avisynth");
 const c = avs.c;
 
 const filter = @import("../filters/wnnm.zig");
+const bc = @import("../filters/bm3d_common.zig");
 const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
@@ -126,7 +127,7 @@ fn Wnnm(comptime BS: ?u32) type {
                 refs[i].release();
             };
             for (0..num_frames) |i| {
-                const fid = math.clamp(n - radius + @as(i32, @intCast(i)), 0, d.num_frames - 1);
+                const fid = bc.clampFrame(n, @as(i64, @intCast(i)) - radius, d.num_frames);
                 const s = try ctx.childFrame(fid);
                 const r = if (d.ref.clip) |rc| ctx.getFrame(rc, fid) catch |e| {
                     s.release();
@@ -217,7 +218,7 @@ fn vagGetFrame(d: *VagData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
     var got: usize = 0;
     defer for (raws[0..got]) |f| f.release();
     for (0..num_frames) |i| {
-        const fid = math.clamp(n - radius + @as(i32, @intCast(i)), 0, d.num_frames - 1);
+        const fid = bc.clampFrame(n, @as(i64, @intCast(i)) - radius, d.num_frames);
         raws[i] = try ctx.getFrame(d.raw.get(), fid);
         got += 1;
     }
@@ -244,11 +245,8 @@ fn vagGetFrame(d: *VagData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
             @memset(den, 0.0);
             for (0..num_frames) |i| {
                 const rp = raws[i].plane(f32, id);
-                const slab = math.clamp(
-                    2 * radius - @as(i32, @intCast(i)),
-                    n - d.num_frames + 1 + radius,
-                    n + radius,
-                );
+                // clamp(2r - i, n - nf + 1 + r, n + r), in i64
+                const slab = bc.aggZ(@intCast(i), n, d.num_frames, radius);
                 const base_row = @as(usize, @intCast(slab)) * 2 * h + y;
                 filter.vagAccumulate(num, rp.row(base_row));
                 filter.vagAccumulate(den, rp.row(base_row + h));

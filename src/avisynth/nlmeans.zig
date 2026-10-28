@@ -82,7 +82,7 @@ fn NLMeans(comptime T: type, comptime ref: Ref, comptime wmode: u32) type {
                 for (refs[0..got_ref]) |f| f.release();
             }
             for (0..count) |i| {
-                const fid = math.clamp(n - m + @as(i32, @intCast(i)), 0, d.num_frames - 1);
+                const fid = common.clampFrame(n, @as(i64, @intCast(i)) - m, d.num_frames);
                 srcs[i] = try ctx.childFrame(fid);
                 got_src += 1;
                 if (d.ref.clip) |rc| {
