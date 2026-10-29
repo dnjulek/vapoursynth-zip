@@ -212,6 +212,7 @@ fn Impl(comptime horizontal: bool) type {
         }
 
         pub fn create(ctx: *avs.Create) !avs.Value {
+            const arg = ctx.named(shared_params);
             const clip = try ctx.clip(0, "clip");
             defer clip.release();
             const vi_in = clip.videoInfo();
@@ -220,25 +221,25 @@ fn Impl(comptime horizontal: bool) type {
             const big = math.maxInt(i32);
             const fmax = math.floatMax(f32);
             const eargs: core.Data.Args = .{
-                .field = try ctx.int(i32, 1, "field", null, -big, big),
-                .dh = try ctx.boolean(2, "dh", false),
-                .alpha = try ctx.float(f32, 3, "alpha", 0.2, -fmax, fmax),
-                .beta = try ctx.float(f32, 4, "beta", 0.25, -fmax, fmax),
-                .gamma = try ctx.float(f32, 5, "gamma", 20.0, -fmax, fmax),
-                .nrad = try ctx.int(i32, 6, "nrad", 2, -big, big),
-                .mdis = try ctx.int(i32, 7, "mdis", 20, -big, big),
-                .hp = try ctx.boolean(8, "hp", false),
-                .vcheck = try ctx.int(i32, 9, "vcheck", 2, -big, big),
-                .vthresh0 = try ctx.float(f32, 10, "vthresh0", 32.0, -fmax, fmax),
-                .vthresh1 = try ctx.float(f32, 11, "vthresh1", 64.0, -fmax, fmax),
-                .vthresh2 = try ctx.float(f32, 12, "vthresh2", 4.0, -fmax, fmax),
+                .field = try arg.int(i32, "field", null, -big, big),
+                .dh = try arg.boolean("dh", false),
+                .alpha = try arg.float(f32, "alpha", 0.2, -fmax, fmax),
+                .beta = try arg.float(f32, "beta", 0.25, -fmax, fmax),
+                .gamma = try arg.float(f32, "gamma", 20.0, -fmax, fmax),
+                .nrad = try arg.int(i32, "nrad", 2, -big, big),
+                .mdis = try arg.int(i32, "mdis", 20, -big, big),
+                .hp = try arg.boolean("hp", false),
+                .vcheck = try arg.int(i32, "vcheck", 2, -big, big),
+                .vthresh0 = try arg.float(f32, "vthresh0", 32.0, -fmax, fmax),
+                .vthresh1 = try arg.float(f32, "vthresh1", 64.0, -fmax, fmax),
+                .vthresh2 = try arg.float(f32, "vthresh2", 4.0, -fmax, fmax),
             };
             const field = eargs.field;
             const vcheck = eargs.vcheck;
             if (core.Data.check(eargs, horizontal, if (horizontal) vi.width else vi.height)) |msg| return ctx.fail("{s}", .{msg});
             if (eargs.dh and format.has_alpha) return ctx.fail("dh=true is not supported for clips with an alpha plane.", .{});
 
-            var mclip: ?avs.Clip = try ctx.optClip(14, "mclip");
+            var mclip: ?avs.Clip = try arg.optClip("mclip");
             errdefer if (mclip) |m| m.release();
             if (mclip) |m| {
                 const mvi = m.videoInfo();
@@ -270,7 +271,7 @@ fn Impl(comptime horizontal: bool) type {
             }
             c.avs_set_field_based(&vi, 0);
 
-            const sclip: ?avs.Clip = if (vcheck > 0) try ctx.optClip(13, "sclip") else null;
+            const sclip: ?avs.Clip = if (vcheck > 0) try arg.optClip("sclip") else null;
             errdefer if (sclip) |s| s.release();
             if (sclip) |s| {
                 const svi = s.videoInfo();

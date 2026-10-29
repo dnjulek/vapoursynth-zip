@@ -53,6 +53,7 @@ fn Bilateral(comptime T: type, comptime join: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -63,7 +64,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     // sigmaS: hand-parsed for the derived chroma default.
     var sbuf: [3]f64 = undefined;
-    const sigma_given = (try ctx.floatArray(f64, 2, "sigmaS", &sbuf, -math.floatMax(f64), math.floatMax(f64))) orelse sbuf[0..0];
+    const sigma_given = (try arg.floatArray(f64, "sigmaS", &sbuf, -math.floatMax(f64), math.floatMax(f64))) orelse sbuf[0..0];
     var sigma_s: [3]f64 = undefined;
     for (0..3) |i| {
         sigma_s[i] = if (i < sigma_given.len) sigma_given[i] else filter.Data.sigmaSDefault(&sigma_s, i, yuv, format.ssw, format.ssh);
@@ -73,10 +74,10 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         if (sigma_s[i] > max_sigma_s) return ctx.fail("Invalid \"sigmaS\" assigned, must be at most {d}", .{max_sigma_s});
     }
 
-    const sigma_r = try ctx.perPlaneFloat(f64, 3, "sigmaR", 0.02, 0, math.floatMax(f64));
-    const algorithm = try ctx.perPlaneInt(i32, 5, "algorithm", 0, 0, 2);
-    const pbfic_num = try ctx.perPlaneInt(u32, 6, "PBFICnum", 0, 0, 256);
-    const planes4 = try ctx.planes(4, format.color_planes, true);
+    const sigma_r = try arg.perPlaneFloat(f64, "sigmaR", 0.02, 0, math.floatMax(f64));
+    const algorithm = try arg.perPlaneInt(i32, "algorithm", 0, 0, 2);
+    const pbfic_num = try arg.perPlaneInt(u32, "PBFICnum", 0, 0, 256);
+    const planes4 = try arg.planes("planes", format.color_planes, true);
 
     var plane_w: [3]u32 = undefined;
     var plane_h: [3]u32 = undefined;
@@ -85,7 +86,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         plane_h[p] = format.planeHeight(@intCast(vi.height), p);
     }
 
-    const ref = try ctx.optClip(1, "ref");
+    const ref = try arg.optClip("ref");
     errdefer if (ref) |r| r.release();
     if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, .color_only);
 

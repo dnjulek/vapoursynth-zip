@@ -49,13 +49,14 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
     if (format.family != .gray or format.sample != .u8) return ctx.fail("only Gray8 format is supported.", .{});
 
-    const icolor = try ctx.int(i64, 1, "color", 20, math.minInt(i64), math.maxInt(i64));
+    const icolor = try arg.int(i64, "color", 20, math.minInt(i64), math.maxInt(i64));
     if (icolor < 0 or icolor > 21) return ctx.fail("\"color\" should be between 0 and 21.", .{});
 
     const d: Data = .{ .lut = filter.buildLut(@fromBackingInt(@intCast(@as(i32, @intCast(icolor))))) };

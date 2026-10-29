@@ -42,14 +42,15 @@ fn CombMaskMT(comptime same_thr: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
     if (format.sample != .u8) return ctx.fail("only 8 bit int format supported.", .{});
 
-    const thy1 = try ctx.int(i64, 1, "thY1", 30, math.minInt(i64), math.maxInt(i64));
-    const thy2 = try ctx.int(i64, 2, "thY2", 30, math.minInt(i64), math.maxInt(i64));
+    const thy1 = try arg.int(i64, "thY1", 30, math.minInt(i64), math.maxInt(i64));
+    const thy2 = try arg.int(i64, "thY2", 30, math.minInt(i64), math.maxInt(i64));
     if (thy1 > 255 or thy1 < 0) return ctx.fail("thY1 value should be in range [0;255]", .{});
     if (thy2 > 255 or thy2 < 0) return ctx.fail("thY2 value should be in range [0;255]", .{});
     if (thy1 > thy2) return ctx.fail("thY1 can't be greater than thY2", .{});

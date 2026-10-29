@@ -223,14 +223,15 @@ fn selectGetFrame(in: avs.SampleType, out: avs.SampleType, mode: Mode, upconv: b
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
 
-    const bitdepth = try ctx.int(i64, 1, "bitdepth", null, math.minInt(i64), math.maxInt(i64));
+    const bitdepth = try arg.int(i64, "bitdepth", null, math.minInt(i64), math.maxInt(i64));
     const dst_float_default = bitdepth == 32;
-    const st = try ctx.int(i64, 3, "sample_type", if (dst_float_default) 1 else 0, math.minInt(i64), math.maxInt(i64));
+    const st = try arg.int(i64, "sample_type", if (dst_float_default) 1 else 0, math.minInt(i64), math.maxInt(i64));
     const dst_float = st != 0;
 
     const bits_ok = if (dst_float) bitdepth == 32 else (bitdepth >= 8 and bitdepth <= 16);
@@ -241,7 +242,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     if (!dst_float and bitdepth != 8 and bitdepth != 10 and bitdepth != 12 and bitdepth != 14 and bitdepth != 16)
         return ctx.fail("AviSynth+ integer formats are 8, 10, 12, 14 or 16 bit.", .{});
 
-    const imode = try ctx.int(i64, 2, "dither_type", @backingInt(Mode.zimg_random), math.minInt(i64), math.maxInt(i64));
+    const imode = try arg.int(i64, "dither_type", @backingInt(Mode.zimg_random), math.minInt(i64), math.maxInt(i64));
     if (imode < 0 or imode > @backingInt(Mode.fmtc_quasirnd)) return ctx.fail("dither_type must be 0-11.", .{});
     const mode: Mode = @fromBackingInt(@intCast(@as(i32, @intCast(imode))));
 
@@ -254,8 +255,8 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     d.format_in = format;
     d.num_planes = format.color_planes;
 
-    const fulls_opt: ?bool = if (ctx.defined(4)) try ctx.boolean(4, "fulls", false) else null;
-    const fulld_opt: ?bool = if (ctx.defined(5)) try ctx.boolean(5, "fulld", false) else null;
+    const fulls_opt: ?bool = if (arg.defined("fulls")) try arg.boolean("fulls", false) else null;
+    const fulld_opt: ?bool = if (arg.defined("fulld")) try arg.boolean("fulld", false) else null;
     const range_default = format.family == .rgb;
     const fulls = fulls_opt orelse range_default;
     const fulld = fulld_opt orelse fulls;

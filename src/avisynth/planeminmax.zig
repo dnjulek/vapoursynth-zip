@@ -74,8 +74,8 @@ fn PlaneMinMax(comptime T: type, comptime refb: bool, comptime no_thr: bool) typ
     };
 }
 
-fn getThr(ctx: *avs.Create, i: usize, comptime key: []const u8) !f32 {
-    const v = ctx.arg(i);
+fn getThr(ctx: *avs.Create, arg: anytype, comptime key: []const u8) !f32 {
+    const v = arg.arg(key);
     if (!v.isDefined()) return 0;
     const thr = v.asFloat();
     if (!math.isFinite(thr)) return ctx.fail(key ++ " value {d} is not a finite number.", .{thr});
@@ -84,26 +84,27 @@ fn getThr(ctx: *avs.Create, i: usize, comptime key: []const u8) !f32 {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clipa");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
 
-    const ref = try ctx.optClip(3, "clipb");
+    const ref = try arg.optClip("clipb");
     errdefer if (ref) |r| r.release();
-    var planes = try ctx.planes(4, format.numPlanes(), false);
-    if (!ctx.defined(4)) planes[0] = true; // vszip default: planes=[0]
+    var planes = try arg.planes("planes", format.numPlanes(), false);
+    if (!arg.defined("planes")) planes[0] = true; // vszip default: planes=[0]
     // A selected alpha plane is read from clipb too.
     if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, if (planes[3]) .same else .color_only);
 
-    const maxthr = try getThr(ctx, 2, "maxthr");
-    const minthr = try getThr(ctx, 1, "minthr");
+    const maxthr = try getThr(ctx, arg, "maxthr");
+    const minthr = try getThr(ctx, arg, "minthr");
 
     const no_thr = maxthr == 0 and minthr == 0;
     if ((planes[1] or planes[2]) and !no_thr and format.family == .yuv and format.isFloat())
         return ctx.fail("you can't use maxthr/minthr with float chroma, use planes=[0] or maxthr/minthr=0", .{});
 
-    const prop_in = (try ctx.string(5, "prop")) orelse "psm";
+    const prop_in = (try arg.string("prop")) orelse "psm";
     var k = try filter.Data.init(format.isFloat(), format.bits, minthr, maxthr, prop_in);
     errdefer k.deinit();
 

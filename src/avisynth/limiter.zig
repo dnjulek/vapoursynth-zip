@@ -109,9 +109,9 @@ fn getFrameFn(use_rt: bool, tv_range: bool, yuv: bool, np: u8, bps: BPSType, idx
 /// finite. Integer clips truncate toward zero and must land in [0, peak];
 /// float clips must lie in [-floatMax, floatMax]. Checks run in f64 before
 /// any conversion.
-fn parseBounds(ctx: *avs.Create, comptime which: []const u8, i: usize, num_planes: u8, int_clip: bool, peak: f64, out_int: *[3]u32, out_float: *[3]f32) !bool {
+fn parseBounds(ctx: *avs.Create, arg: anytype, comptime which: []const u8, num_planes: u8, int_clip: bool, peak: f64, out_int: *[3]u32, out_float: *[3]f32) !bool {
     var buf: [3]f64 = undefined;
-    const arr = (try ctx.floatArray(f64, i, which, &buf, -math.floatMax(f64), math.floatMax(f64))) orelse return false;
+    const arr = (try arg.floatArray(f64, which, &buf, -math.floatMax(f64), math.floatMax(f64))) orelse return false;
     if (arr.len != num_planes)
         return ctx.fail(which ++ " array must have the same number of elements as planes.", .{});
     for (arr, 0..) |v, p| {
@@ -129,6 +129,7 @@ fn parseBounds(ctx: *avs.Create, comptime which: []const u8, i: usize, num_plane
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -139,11 +140,11 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const int_clip = !format.isFloat();
     const peak: f64 = if (int_clip) format.peak() else math.floatMax(f32);
 
-    const process4 = try ctx.planes(5, num_planes, true);
+    const process4 = try arg.planes("planes", num_planes, true);
     const planes: [3]bool = .{ process4[0], process4[1], process4[2] };
 
-    const has_min = try parseBounds(ctx, "min", 1, num_planes, int_clip, peak, &d.min, &d.minf);
-    const has_max = try parseBounds(ctx, "max", 2, num_planes, int_clip, peak, &d.max, &d.maxf);
+    const has_min = try parseBounds(ctx, arg, "min", num_planes, int_clip, peak, &d.min, &d.minf);
+    const has_max = try parseBounds(ctx, arg, "max", num_planes, int_clip, peak, &d.max, &d.maxf);
     if (has_min and !has_max) return ctx.fail("min array is set but max array is not.", .{});
     if (!has_min and has_max) return ctx.fail("max array is set but min array is not.", .{});
     if (has_min) {
@@ -153,8 +154,8 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         }
     }
 
-    const tv_range = try ctx.boolean(3, "tv_range", false);
-    const mask = try ctx.boolean(4, "mask", false);
+    const tv_range = try arg.boolean("tv_range", false);
+    const mask = try arg.boolean("mask", false);
     const bps = BPSType.fromFormat(format);
 
     // Default args on an 8/16-bit clip clamp to the carrier's full range: the

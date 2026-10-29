@@ -56,16 +56,17 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clipa");
     defer clip.release();
-    const other = try ctx.clip(1, "clipb");
+    const other = try arg.clip("clipb");
     errdefer other.release();
 
     const vi = clip.videoInfo().*;
     const vi2 = other.videoInfo();
     const format = try hz.planarFormat(ctx, &vi);
     const format2 = try hz.planarFormat(ctx, vi2);
-    const mismatch = try ctx.boolean(3, "mismatch", false);
+    const mismatch = try arg.boolean("mismatch", false);
 
     if (vi.width != vi2.width or vi.height != vi2.height) {
         if (mismatch) return ctx.fail("clip dimensions don't match; AviSynth clips cannot have variable dimensions.", .{});
@@ -81,9 +82,9 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     // planes: only meaningful for multi-plane clips (vszip ignores it on gray).
     var planes: [4]bool = @splat(true);
     const np = format.numPlanes();
-    if (np > 1 and ctx.defined(4)) {
+    if (np > 1 and arg.defined("planes")) {
         planes = @splat(false);
-        const v = ctx.arg(4);
+        const v = arg.arg("planes");
         for (0..v.len()) |k| {
             const e = v.at(k);
             if (!e.isInt()) return ctx.fail("planes[{d}] must be an integer.", .{k});
@@ -93,11 +94,11 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         }
     }
 
-    if (!ctx.defined(2)) return ctx.fail("frames is required.", .{});
+    if (!arg.defined("frames")) return ctx.fail("frames is required.", .{});
     const replace = try allocator.alloc(bool, @intCast(vi.num_frames));
     errdefer allocator.free(replace);
     @memset(replace, false);
-    const frames = ctx.arg(2);
+    const frames = arg.arg("frames");
     for (0..frames.len()) |k| {
         const e = frames.at(k);
         if (!e.isInt()) return ctx.fail("frames[{d}] must be an integer.", .{k});

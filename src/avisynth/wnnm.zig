@@ -261,12 +261,13 @@ fn vagGetFrame(d: *VagData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
 // Create
 // --------------------------------------------------------------------------
 
-fn intArg(ctx: *avs.Create, i: usize, comptime key: []const u8, default: i64) !i64 {
-    return ctx.int(i64, i, key, default, math.minInt(i64), math.maxInt(i64));
+fn intArg(arg: anytype, comptime key: []const u8, default: i64) !i64 {
+    return arg.int(i64, key, default, math.minInt(i64), math.maxInt(i64));
 }
 
 /// Parsed config, or null when every plane is skipped (pass-through).
 fn parse(ctx: *avs.Create, vi: *const c.AVS_VideoInfo, format: avs.Format) !?Config {
+    const arg = ctx.named(shared_params);
     const fmax = math.floatMax(f32);
     var plane_w: [3]u32 = @splat(0);
     var plane_h: [3]u32 = @splat(0);
@@ -275,16 +276,16 @@ fn parse(ctx: *avs.Create, vi: *const c.AVS_VideoInfo, format: avs.Format) !?Con
         plane_h[i] = format.planeHeight(@intCast(vi.height), i);
     }
     return Config.init(.{
-        .sigma = try ctx.perPlaneFloat(f32, 1, "sigma", 3.0, -fmax, fmax),
-        .block_size = try intArg(ctx, 2, "block_size", 8),
-        .block_step = if (ctx.defined(3)) try intArg(ctx, 3, "block_step", 0) else null,
-        .group_size = try intArg(ctx, 4, "group_size", 8),
-        .bm_range = try intArg(ctx, 5, "bm_range", 7),
-        .radius = try intArg(ctx, 6, "radius", 0),
-        .ps_num = try intArg(ctx, 7, "ps_num", 2),
-        .ps_range = try intArg(ctx, 8, "ps_range", 4),
-        .residual = try ctx.boolean(9, "residual", false),
-        .adaptive = try ctx.boolean(10, "adaptive_aggregation", true),
+        .sigma = try arg.perPlaneFloat(f32, "sigma", 3.0, -fmax, fmax),
+        .block_size = try intArg(arg, "block_size", 8),
+        .block_step = if (arg.defined("block_step")) try intArg(arg, "block_step", 0) else null,
+        .group_size = try intArg(arg, "group_size", 8),
+        .bm_range = try intArg(arg, "bm_range", 7),
+        .radius = try intArg(arg, "radius", 0),
+        .ps_num = try intArg(arg, "ps_num", 2),
+        .ps_range = try intArg(arg, "ps_range", 4),
+        .residual = try arg.boolean("residual", false),
+        .adaptive = try arg.boolean("adaptive_aggregation", true),
         .num_planes = format.color_planes,
         .plane_w = plane_w,
         .plane_h = plane_h,
@@ -292,7 +293,8 @@ fn parse(ctx: *avs.Create, vi: *const c.AVS_VideoInfo, format: avs.Format) !?Con
 }
 
 fn openRef(ctx: *avs.Create, vi: *const c.AVS_VideoInfo) !?avs.Clip {
-    const ref = try ctx.optClip(11, "rclip");
+    const arg = ctx.named(shared_params);
+    const ref = try arg.optClip("rclip");
     if (ref) |r| {
         const rvi = r.videoInfo();
         if (rvi.pixel_type != vi.pixel_type or rvi.width != vi.width or rvi.height != vi.height or

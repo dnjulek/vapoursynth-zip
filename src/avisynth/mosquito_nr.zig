@@ -76,14 +76,15 @@ fn Filter(comptime T: type) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
     if (format.family == .rgb) return ctx.fail("input must be YUV or Gray.", .{});
 
-    var planes = try ctx.planes(4, format.color_planes, false);
-    if (!ctx.defined(4)) planes[0] = true; // vszip default: luma only
+    var planes = try arg.planes("planes", format.color_planes, false);
+    if (!arg.defined("planes")) planes[0] = true; // vszip default: luma only
 
     for (0..format.color_planes) |p| {
         if (!planes[p]) continue;
@@ -91,9 +92,9 @@ pub fn create(ctx: *avs.Create) !avs.Value {
             return ctx.fail("input is too small (need at least 4x4 per processed plane).", .{});
     }
 
-    const strength = try ctx.perPlaneInt(i32, 1, "strength", 16, 0, 32);
-    const restore = try ctx.perPlaneInt(i32, 2, "restore", 128, 0, 128);
-    const radius = try ctx.perPlaneInt(u32, 3, "radius", 2, 1, 2);
+    const strength = try arg.perPlaneInt(i32, "strength", 16, 0, 32);
+    const restore = try arg.perPlaneInt(i32, "restore", 128, 0, 128);
+    const radius = try arg.perPlaneInt(u32, "radius", 2, 1, 2);
 
     const d: Data = .{ .format = format, .strength = strength, .restore = restore, .radius = radius, .planes = planes };
     const gf = switch (format.sample) {

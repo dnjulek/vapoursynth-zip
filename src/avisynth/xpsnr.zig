@@ -148,9 +148,10 @@ fn raiseDepth(ctx: *avs.Create, clip: avs.Clip, bits: u8) !avs.Clip {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const ref_in = try ctx.clip(0, "reference");
     defer ref_in.release();
-    const dist_in = try ctx.clip(1, "distorted");
+    const dist_in = try arg.clip("distorted");
     defer dist_in.release();
 
     const f1 = try hz.planarFormat(ctx, ref_in.videoInfo());
@@ -172,8 +173,8 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const format = try hz.planarFormat(ctx, vi);
 
     var d: Data = .{ .format = format, .reference = .{ .clip = reference }, .results = undefined };
-    d.temporal = try ctx.boolean(2, "temporal", true);
-    d.verbose = try ctx.boolean(3, "verbose", true);
+    d.temporal = try arg.boolean("temporal", true);
+    d.verbose = try arg.boolean("verbose", true);
     d.depth = @intCast(format.bits);
     d.max_error_64 = filter.maxError64(d.depth);
     d.frame_rate = if (vi2.fps_denominator != 0)

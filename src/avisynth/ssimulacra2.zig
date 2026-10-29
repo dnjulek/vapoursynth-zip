@@ -363,9 +363,10 @@ fn prepare(ctx: *avs.Create, clip: avs.Clip, src: *Source) !avs.Clip {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const ref_in = try ctx.clip(0, "reference");
     defer ref_in.release();
-    const dist_in = try ctx.clip(1, "distorted");
+    const dist_in = try arg.clip("distorted");
     defer dist_in.release();
     const vi1 = ref_in.videoInfo();
     const vi2 = dist_in.videoInfo();

@@ -108,23 +108,20 @@ fn selectGetFrame(comptime T: type, mode: Mode, blur_first: bool, add_grain: [3]
     };
 }
 
-fn floatArg(ctx: *avs.Create, i: usize, comptime key: []const u8, default: f64, min: f64, max: f64) !f64 {
-    return ctx.float(f64, i, key, default, min, max);
-}
 
 /// vszip's Maps.getArray: up to `max_len` values, the last one repeating;
 /// `default` when absent.
-fn arrayArg(ctx: *avs.Create, i: usize, comptime key: []const u8, comptime max_len: usize, default: [3]f64, min: f64, max: f64) ![3]f64 {
+fn arrayArg(arg: anytype, comptime key: []const u8, comptime max_len: usize, default: [3]f64, min: f64, max: f64) ![3]f64 {
     var buf: [max_len]f64 = undefined;
-    const got = (try ctx.floatArray(f64, i, key, &buf, min, max)) orelse return default;
+    const got = (try arg.floatArray(f64, key, &buf, min, max)) orelse return default;
     if (got.len == 0) return default;
     var out: [3]f64 = undefined;
     for (0..3) |k| out[k] = got[@min(k, got.len - 1)];
     return out;
 }
 
-fn intArg(ctx: *avs.Create, i: usize, comptime key: []const u8, default: i64, min: i64, max: i64) !i32 {
-    return @intCast(try ctx.int(i64, i, key, default, min, max));
+fn intArg(arg: anytype, comptime key: []const u8, default: i64, min: i64, max: i64) !i32 {
+    return @intCast(try arg.int(i64, key, default, min, max));
 }
 
 /// Call another script function from create; returns an owned clip.
@@ -155,29 +152,30 @@ fn ditherTo(ctx: *avs.Create, clip: avs.Clip, bits: c_int, dither_type: c_int, r
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const input = try ctx.clip(0, "clip");
     defer input.release();
     const vi_in = input.videoInfo();
     const format_in = try hz.planarFormat(ctx, vi_in);
 
-    const thr_in = try arrayArg(ctx, 2, "thr", 3, .{ 0.99, 0.99, 0.99 }, 0, 255);
+    const thr_in = try arrayArg(arg, "thr", 3, .{ 0.99, 0.99, 0.99 }, 0, 255);
     const inputs: setup.Data.Inputs = .{
-        .range = try intArg(ctx, 1, "range", 15, 0, 255),
+        .range = try intArg(arg, "range", 15, 0, 255),
         .thr = thr_in,
-        .grain = try arrayArg(ctx, 3, "grain", 2, .{ 0, 0, 0 }, 0, 127),
-        .sample_mode = try intArg(ctx, 4, "sample_mode", 2, 1, 7),
-        .seed = try intArg(ctx, 5, "seed", 0, math.minInt(i32), math.maxInt(i32)),
-        .blur_first = try ctx.boolean(6, "blur_first", true),
-        .dynamic_grain = try ctx.boolean(7, "dynamic_grain", false),
-        .keep_tv_range = try ctx.boolean(8, "keep_tv_range", false),
-        .random_algo_ref = try intArg(ctx, 9, "random_algo_ref", 1, 0, 2),
-        .random_algo_grain = try intArg(ctx, 10, "random_algo_grain", 1, 0, 2),
-        .random_param_ref = try floatArg(ctx, 11, "random_param_ref", 1.0, 0, 255),
-        .random_param_grain = try floatArg(ctx, 12, "random_param_grain", 1.0, 0, 255),
-        .thr1 = try arrayArg(ctx, 13, "thr1", 3, thr_in, 0, 255),
-        .thr2 = try arrayArg(ctx, 14, "thr2", 3, thr_in, 0, 255),
-        .angle_boost = @floatCast(try floatArg(ctx, 15, "angle_boost", 1.5, 0, math.maxInt(u16))),
-        .max_angle = @floatCast(try floatArg(ctx, 16, "max_angle", 0.15, 0, 1)),
+        .grain = try arrayArg(arg, "grain", 2, .{ 0, 0, 0 }, 0, 127),
+        .sample_mode = try intArg(arg, "sample_mode", 2, 1, 7),
+        .seed = try intArg(arg, "seed", 0, math.minInt(i32), math.maxInt(i32)),
+        .blur_first = try arg.boolean("blur_first", true),
+        .dynamic_grain = try arg.boolean("dynamic_grain", false),
+        .keep_tv_range = try arg.boolean("keep_tv_range", false),
+        .random_algo_ref = try intArg(arg, "random_algo_ref", 1, 0, 2),
+        .random_algo_grain = try intArg(arg, "random_algo_grain", 1, 0, 2),
+        .random_param_ref = try arg.float(f64, "random_param_ref", 1.0, 0, 255),
+        .random_param_grain = try arg.float(f64, "random_param_grain", 1.0, 0, 255),
+        .thr1 = try arrayArg(arg, "thr1", 3, thr_in, 0, 255),
+        .thr2 = try arrayArg(arg, "thr2", 3, thr_in, 0, 255),
+        .angle_boost = try arg.float(f32, "angle_boost", 1.5, 0, math.maxInt(u16)),
+        .max_angle = try arg.float(f32, "max_angle", 0.15, 0, 1),
     };
 
     // Integer clips below 16 bit are processed at 16 bit (vszip's path).

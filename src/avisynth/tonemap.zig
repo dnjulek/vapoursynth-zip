@@ -38,15 +38,6 @@ pub const params = "c[src_csp]i[dst_csp]i[dst_prim]i[src_max]f[src_min]f[dst_max
     "[perceptual_deadzone]f[perceptual_strength]f[colorimetric_gamma]f[softclip_knee]f[softclip_desat]f" ++
     "[cache_frame]b";
 
-/// Argument index of `key` in `params`.
-fn ix(comptime key: []const u8) usize {
-    const names = comptime avs.filter.paramNames(params);
-    inline for (names, 0..) |n, i| {
-        if (n) |s| if (comptime std.mem.eql(u8, s, key)) return i;
-    }
-    @compileError("no parameter " ++ key);
-}
-
 const Data = struct {
     /// output format (YUV444 / RGB, 16-bit or float)
     out_format: avs.Format,
@@ -321,33 +312,22 @@ fn Tonemap(comptime T: type) type {
     };
 }
 
-fn intArg(ctx: *avs.Create, comptime key: []const u8, default: i64, min: i64, max: i64) !i64 {
-    return ctx.int(i64, ix(key), key, default, min, max);
-}
-
-fn floatArg(ctx: *avs.Create, comptime key: []const u8, default: f64, min: f64, max: f64) !f32 {
-    return @floatCast(try ctx.float(f64, ix(key), key, default, min, max));
-}
-
-fn boolArg(ctx: *avs.Create, comptime key: []const u8, default: bool) !bool {
-    return ctx.boolean(ix(key), key, default);
-}
-
 /// Whether the tone constant that `tone_mapping_param` sets for `f`
 /// (pl_tone_map_params_infer) was passed explicitly.
-fn paramConstantGiven(ctx: *const avs.Create, f: tc.ToneFn) bool {
+fn paramConstantGiven(arg: anytype, f: tc.ToneFn) bool {
     return switch (f) {
-        .st2094_40, .st2094_10 => ctx.defined(ix("knee_adaptation")),
-        .bt2390 => ctx.defined(ix("knee_offset")),
-        .spline => ctx.defined(ix("spline_contrast")),
-        .reinhard => ctx.defined(ix("reinhard_contrast")),
-        .mobius, .gamma => ctx.defined(ix("linear_knee")),
-        .linear, .linear_light => ctx.defined(ix("exposure")),
+        .st2094_40, .st2094_10 => arg.defined("knee_adaptation"),
+        .bt2390 => arg.defined("knee_offset"),
+        .spline => arg.defined("spline_contrast"),
+        .reinhard => arg.defined("reinhard_contrast"),
+        .mobius, .gamma => arg.defined("linear_knee"),
+        .linear, .linear_light => arg.defined("exposure"),
         .clip, .bt2446a, .hable => false,
     };
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -362,33 +342,33 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     }
     if (vi.width < filter.min_size or vi.height < filter.min_size) return ctx.fail("input must be at least 64x64.", .{});
 
-    const src_csp = try intArg(ctx, "src_csp", 1, 0, 3);
-    const dst_csp = try intArg(ctx, "dst_csp", 0, 0, 3);
+    const src_csp = try arg.int(i64, "src_csp", 1, 0, 3);
+    const dst_csp = try arg.int(i64, "dst_csp", 0, 0, 3);
     if (src_csp == 0) return ctx.fail("src_csp must be 1 (HDR10), 2 (HLG) or 3 (Dolby Vision).", .{});
     if (dst_csp == 3) return ctx.fail("Dolby Vision output (dst_csp=3) is not supported.", .{});
     // use_dovi only selects the enhancement layer, as in vs-placebo (the
     // RPU metadata applies whenever the prop is present)
-    const use_dovi = try boolArg(ctx, "use_dovi", src_csp == 3);
+    const use_dovi = try arg.boolean("use_dovi", src_csp == 3);
     if (src_csp == 3 and !(fmt.family == .yuv and int_in)) return ctx.fail("Dolby Vision input must be an integer YUV clip.", .{});
 
-    const tone_index = try intArg(ctx, "tone_mapping_function", @intFromEnum(tc.ToneFn.spline), 0, tc.ToneFn.names.len - 1);
+    const tone_index = try arg.int(i64, "tone_mapping_function", @intFromEnum(tc.ToneFn.spline), 0, tc.ToneFn.names.len - 1);
     var tone_fn: tc.ToneFn = @enumFromInt(tone_index);
-    if (try ctx.string(ix("tone_mapping_function_s"), "tone_mapping_function_s")) |name| {
+    if (try arg.string("tone_mapping_function_s")) |name| {
         tone_fn = tc.ToneFn.fromName(name) orelse return ctx.fail("unknown tone_mapping_function_s '{s}'.", .{name});
     }
 
     const fmax = 10000.0;
-    const dst_prim: ?tc.Prim = if (try ctx.optInt(i64, ix("dst_prim"), "dst_prim", 0, tc.Prim.count - 1)) |v| @enumFromInt(v) else null;
+    const dst_prim: ?tc.Prim = if (try arg.optInt(i64, "dst_prim", 0, tc.Prim.count - 1)) |v| @enumFromInt(v) else null;
 
     // vs-placebo always passes tone_mapping_param (param_def when absent),
     // which overrides the function's tone constant; keep that default, but
     // not over an explicitly passed constant
-    const param_def: f64 = if (paramConstantGiven(ctx, tone_fn)) 0 else tone_fn.paramDef();
+    const param_def: f32 = if (paramConstantGiven(arg, tone_fn)) 0 else tone_fn.paramDef();
 
     // lut3d_size: (I, C, h); 0 keeps that axis' default, like PL_DEF
     var lut3d: [3]u32 = .{ 48, 32, 256 };
     var lut_buf: [3]i64 = undefined;
-    if (try ctx.intArray(i64, ix("lut3d_size"), "lut3d_size", &lut_buf, math.minInt(i64), math.maxInt(i64))) |a| {
+    if (try arg.intArray(i64, "lut3d_size", &lut_buf, math.minInt(i64), math.maxInt(i64))) |a| {
         if (a.len != 3) return ctx.fail("lut3d_size must have 3 values (I, C, h).", .{});
         for (a, &lut3d) |v, *o| {
             if (v == 0) continue;
@@ -405,53 +385,53 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         .src_csp = @enumFromInt(src_csp),
         .dst_csp = @enumFromInt(dst_csp),
         .dst_prim = dst_prim,
-        .src_max = try floatArg(ctx, "src_max", 0, 0, fmax),
-        .src_min = try floatArg(ctx, "src_min", 0, 0, fmax),
-        .dst_max = try floatArg(ctx, "dst_max", 0, 0, fmax),
-        .dst_min = try floatArg(ctx, "dst_min", 0, 0, fmax),
-        .peak_detect = try boolArg(ctx, "dynamic_peak_detection", true),
+        .src_max = try arg.float(f32, "src_max", 0, 0, fmax),
+        .src_min = try arg.float(f32, "src_min", 0, 0, fmax),
+        .dst_max = try arg.float(f32, "dst_max", 0, 0, fmax),
+        .dst_min = try arg.float(f32, "dst_min", 0, 0, fmax),
+        .peak_detect = try arg.boolean("dynamic_peak_detection", true),
         .peak = .{
             // capped so that five periods fit Config.max_window
-            .smoothing_period = try floatArg(ctx, "smoothing_period", 20, 0, filter.Config.max_smoothing_period),
-            .scene_threshold_low = try floatArg(ctx, "scene_threshold_low", 1, 0, 100),
-            .scene_threshold_high = try floatArg(ctx, "scene_threshold_high", 3, 0, 100),
-            .percentile = try floatArg(ctx, "percentile", 100, 0, 100),
-            .black_cutoff = try floatArg(ctx, "black_cutoff", 1, 0, 100),
+            .smoothing_period = try arg.float(f32, "smoothing_period", 20, 0, filter.Config.max_smoothing_period),
+            .scene_threshold_low = try arg.float(f32, "scene_threshold_low", 1, 0, 100),
+            .scene_threshold_high = try arg.float(f32, "scene_threshold_high", 3, 0, 100),
+            .percentile = try arg.float(f32, "percentile", 100, 0, 100),
+            .black_cutoff = try arg.float(f32, "black_cutoff", 1, 0, 100),
         },
-        .gamut_fn = @enumFromInt(try intArg(ctx, "gamut_mapping", @intFromEnum(tc.GamutFn.perceptual), 0, tc.GamutFn.count - 1)),
+        .gamut_fn = @enumFromInt(try arg.int(i64, "gamut_mapping", @intFromEnum(tc.GamutFn.perceptual), 0, tc.GamutFn.count - 1)),
         .tone_fn = tone_fn,
-        .tone_param = try floatArg(ctx, "tone_mapping_param", param_def, 0, 10),
-        .metadata = @enumFromInt(try intArg(ctx, "metadata", 0, 0, 4)),
-        .show_clipping = try boolArg(ctx, "show_clipping", false),
-        .contrast_recovery = try floatArg(ctx, "contrast_recovery", 0, 0, 10),
-        .contrast_smoothness = try floatArg(ctx, "contrast_smoothness", 3.5, 1, 32),
-        .lut_size = @intCast(try intArg(ctx, "lut_size", 256, 2, 4096)),
-        .mastering_clip = try floatArg(ctx, "mastering_clip", 1, 0, 1),
-        .film_strength = try floatArg(ctx, "film_strength", 0.3, 0, 2),
-        .inverse_tone_mapping = try boolArg(ctx, "inverse_tone_mapping", false),
+        .tone_param = try arg.float(f32, "tone_mapping_param", param_def, 0, 10),
+        .metadata = @enumFromInt(try arg.int(i64, "metadata", 0, 0, 4)),
+        .show_clipping = try arg.boolean("show_clipping", false),
+        .contrast_recovery = try arg.float(f32, "contrast_recovery", 0, 0, 10),
+        .contrast_smoothness = try arg.float(f32, "contrast_smoothness", 3.5, 1, 32),
+        .lut_size = @intCast(try arg.int(i64, "lut_size", 256, 2, 4096)),
+        .mastering_clip = try arg.float(f32, "mastering_clip", 1, 0, 1),
+        .film_strength = try arg.float(f32, "film_strength", 0.3, 0, 2),
+        .inverse_tone_mapping = try arg.boolean("inverse_tone_mapping", false),
         // ranges as documented on pl_tone_map_constants / pl_gamut_map_constants
         .tone_constants = .{
-            .knee_adaptation = try floatArg(ctx, "knee_adaptation", 0.4, 0, 1),
-            .knee_minimum = try floatArg(ctx, "knee_minimum", 0.1, 0, 0.5),
-            .knee_maximum = try floatArg(ctx, "knee_maximum", 0.8, 0.5, 1),
-            .knee_default = try floatArg(ctx, "knee_default", 0.4, 0, 1),
-            .knee_offset = try floatArg(ctx, "knee_offset", 1, 0.5, 2),
-            .slope_tuning = try floatArg(ctx, "slope_tuning", 1.5, 0, 10),
-            .slope_offset = try floatArg(ctx, "slope_offset", 0.2, 0, 1),
-            .spline_contrast = try floatArg(ctx, "spline_contrast", 0.5, 0, 1.5),
-            .reinhard_contrast = try floatArg(ctx, "reinhard_contrast", 0.5, 0, 1),
-            .linear_knee = try floatArg(ctx, "linear_knee", 0.3, 0, 1),
-            .exposure = try floatArg(ctx, "exposure", 1, 0, 10),
+            .knee_adaptation = try arg.float(f32, "knee_adaptation", 0.4, 0, 1),
+            .knee_minimum = try arg.float(f32, "knee_minimum", 0.1, 0, 0.5),
+            .knee_maximum = try arg.float(f32, "knee_maximum", 0.8, 0.5, 1),
+            .knee_default = try arg.float(f32, "knee_default", 0.4, 0, 1),
+            .knee_offset = try arg.float(f32, "knee_offset", 1, 0.5, 2),
+            .slope_tuning = try arg.float(f32, "slope_tuning", 1.5, 0, 10),
+            .slope_offset = try arg.float(f32, "slope_offset", 0.2, 0, 1),
+            .spline_contrast = try arg.float(f32, "spline_contrast", 0.5, 0, 1.5),
+            .reinhard_contrast = try arg.float(f32, "reinhard_contrast", 0.5, 0, 1),
+            .linear_knee = try arg.float(f32, "linear_knee", 0.3, 0, 1),
+            .exposure = try arg.float(f32, "exposure", 1, 0, 10),
         },
-        .gamut_expansion = try boolArg(ctx, "gamut_expansion", false),
+        .gamut_expansion = try arg.boolean("gamut_expansion", false),
         .lut3d_size = lut3d,
-        .lut3d_tricubic = try boolArg(ctx, "lut3d_tricubic", false),
+        .lut3d_tricubic = try arg.boolean("lut3d_tricubic", false),
         .gamut_constants = .{
-            .perceptual_deadzone = try floatArg(ctx, "perceptual_deadzone", 0.3, 0, 1),
-            .perceptual_strength = try floatArg(ctx, "perceptual_strength", 0.8, 0, 1),
-            .colorimetric_gamma = try floatArg(ctx, "colorimetric_gamma", 1.8, 0, 10),
-            .softclip_knee = try floatArg(ctx, "softclip_knee", 0.7, 0, 1),
-            .softclip_desat = try floatArg(ctx, "softclip_desat", 0.35, 0, 1),
+            .perceptual_deadzone = try arg.float(f32, "perceptual_deadzone", 0.3, 0, 1),
+            .perceptual_strength = try arg.float(f32, "perceptual_strength", 0.8, 0, 1),
+            .colorimetric_gamma = try arg.float(f32, "colorimetric_gamma", 1.8, 0, 10),
+            .softclip_knee = try arg.float(f32, "softclip_knee", 0.7, 0, 1),
+            .softclip_desat = try arg.float(f32, "softclip_desat", 0.35, 0, 1),
         },
         .width = @intCast(vi.width),
         .height = @intCast(vi.height),
@@ -463,12 +443,12 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     };
     // cache_frame (vszip's own): keep the frame's linear RGB from the
     // detection or contrast-recovery pass for the output pass
-    const cache_frame = try boolArg(ctx, "cache_frame", true);
+    const cache_frame = try arg.boolean("cache_frame", true);
 
     // Dolby Vision FEL; vs-placebo ignores it without use_dovi
     var el: ?avs.Clip = null;
     errdefer if (el) |e| e.release();
-    if (try ctx.optClip(ix("dovi_el"), "dovi_el")) |e| {
+    if (try arg.optClip("dovi_el")) |e| {
         if (!use_dovi) {
             e.release();
         } else {

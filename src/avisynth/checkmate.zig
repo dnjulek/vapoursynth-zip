@@ -63,6 +63,7 @@ fn Checkmate(comptime use_tthr2: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -72,9 +73,9 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     const big = math.maxInt(i32);
     var d: Data = .{ .format = format, .num_frames = vi.num_frames };
     d.p = filter.Params.init(
-        try ctx.int(i32, 1, "thr", 12, -big, big),
-        try ctx.int(i32, 2, "tmax", 12, -big, big),
-        try ctx.int(i32, 3, "tthr2", 0, -big, big),
+        try arg.int(i32, "thr", 12, -big, big),
+        try arg.int(i32, "tmax", 12, -big, big),
+        try arg.int(i32, "tthr2", 0, -big, big),
         @as(u32, @intCast(vi.width)) >> format.ssw,
         @as(u32, @intCast(vi.height)) >> format.ssh,
     ) catch |e| return ctx.fail("{s}", .{filter.Params.message(e)});

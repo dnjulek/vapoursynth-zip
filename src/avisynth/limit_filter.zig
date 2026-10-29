@@ -62,11 +62,12 @@ fn LimitFilter(comptime T: type, comptime refb: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const flt = try ctx.clip(0, "flt");
     defer flt.release();
-    const src = try ctx.clip(1, "src");
+    const src = try arg.clip("src");
     errdefer src.release();
-    const ref = try ctx.optClip(2, "ref");
+    const ref = try arg.optClip("ref");
     errdefer if (ref) |r| r.release();
 
     const vi = flt.videoInfo();
@@ -77,11 +78,11 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         .format = format,
         .src = .{ .clip = src },
         .ref = .{ .clip = ref },
-        .planes = try ctx.planes(6, format.color_planes, true),
+        .planes = try arg.planes("planes", format.color_planes, true),
     };
-    d.dark_thr = try ctx.perPlaneFloat(f32, 3, "dark_thr", 1, 0, 255);
-    d.bright_thr = try ctx.perPlaneFloat(f32, 4, "bright_thr", 1, 0, 255);
-    d.elast = try ctx.perPlaneFloat(f32, 5, "elast", 2, 0, math.maxInt(u16));
+    d.dark_thr = try arg.perPlaneFloat(f32, "dark_thr", 1, 0, 255);
+    d.bright_thr = try arg.perPlaneFloat(f32, "bright_thr", 1, 0, 255);
+    d.elast = try arg.perPlaneFloat(f32, "elast", 2, 0, math.maxInt(u16));
 
     const range = hz.getRange(ctx.env, flt, format);
     for (0..3) |i| {

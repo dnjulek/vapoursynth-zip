@@ -8,8 +8,8 @@
         .avisynth = .{
             // zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
             // (re-add `.lazy = true` after a fetch: only -Davisynth=true builds need it)
-            .url = "git+https://github.com/dnjulek/avisynth-zig.git#9baa17a8d5d8dc025d883d7eaadff822f346f1ce",
-            .hash = "avisynth-0.2.0-o4p8CzZdAgBBhSVZnu0NVVNubl9aOKH_pwGE1fz_kvfF",
+            .url = "git+https://github.com/dnjulek/avisynth-zig.git#bd441827460e5589fe05540320ef3b022186ee4b",
+            .hash = "avisynth-0.2.0-o4p8CwyIAgCQCCNI2CVmizyRWUL7fErMzA1-w4SpS5LI",
             .lazy = true,
         },
 

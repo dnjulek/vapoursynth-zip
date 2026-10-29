@@ -141,7 +141,8 @@ fn validatePaths(ctx: *avs.Create, paths: []const [:0]u8, image_0: Image) !void 
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
-    const pv = ctx.arg(0);
+    const arg = ctx.named(params);
+    const pv = arg.arg("path");
     if (!pv.isDefined() or pv.len() == 0) return ctx.fail("path is required.", .{});
     const paths = try allocator.alloc([:0]u8, pv.len());
     var filled: usize = 0;
@@ -160,7 +161,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     var image_0 = loadImage(paths[0], &png_color) catch |err| return ctx.fail("Couldn't open '{s}' ({any})", .{ paths[0], err });
     defer image_0.deinit(allocator);
 
-    if ((try ctx.boolean(1, "validate", false)) and paths.len > 1) try validatePaths(ctx, paths, image_0);
+    if ((try arg.boolean("validate", false)) and paths.len > 1) try validatePaths(ctx, paths, image_0);
 
     const pf = image_0.pixelFormat();
     if (!ir.supported(pf)) return ctx.fail("Unsupported pixel format '{s}'", .{@tagName(pf)});

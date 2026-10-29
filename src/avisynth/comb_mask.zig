@@ -48,16 +48,17 @@ fn CombMask(comptime metric_1: bool, comptime expand: bool, comptime motion: boo
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
     if (format.sample != .u8) return ctx.fail("only 8 bit int format supported.", .{});
 
-    const cthresh = try ctx.int(i64, 1, "cthresh", 6, math.minInt(i64), math.maxInt(i64));
-    const mthresh = try ctx.int(i64, 2, "mthresh", 9, math.minInt(i64), math.maxInt(i64));
-    const expand = try ctx.boolean(3, "expand", true);
-    const metric_1 = (try ctx.int(i64, 4, "metric", 0, math.minInt(i64), math.maxInt(i64))) != 0;
+    const cthresh = try arg.int(i64, "cthresh", 6, math.minInt(i64), math.maxInt(i64));
+    const mthresh = try arg.int(i64, "mthresh", 9, math.minInt(i64), math.maxInt(i64));
+    const expand = try arg.boolean("expand", true);
+    const metric_1 = (try arg.int(i64, "metric", 0, math.minInt(i64), math.maxInt(i64))) != 0;
     const cth_max: i32 = if (metric_1) 65025 else 255;
 
     if (cthresh > cth_max or cthresh < 0)

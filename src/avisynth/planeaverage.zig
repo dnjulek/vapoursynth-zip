@@ -79,27 +79,28 @@ fn PlaneAverage(comptime T: type, comptime refb: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clipa");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
 
-    if (!ctx.defined(1)) return ctx.fail("exclude is required (use exclude=[-1] to exclude nothing).", .{});
+    if (!arg.defined("exclude")) return ctx.fail("exclude is required (use exclude=[-1] to exclude nothing).", .{});
 
-    const ref = try ctx.optClip(2, "clipb");
+    const ref = try arg.optClip("clipb");
     errdefer if (ref) |r| r.release();
-    var planes = try ctx.planes(3, format.numPlanes(), false);
-    if (!ctx.defined(3)) planes[0] = true; // vszip default: planes=[0]
+    var planes = try arg.planes("planes", format.numPlanes(), false);
+    if (!arg.defined("planes")) planes[0] = true; // vszip default: planes=[0]
     // A selected alpha plane is read from clipb too.
     if (ref) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .BIGGER_THAN, if (planes[3]) .same else .color_only);
 
-    const prop_in = (try ctx.string(4, "prop")) orelse "psm";
+    const prop_in = (try arg.string("prop")) orelse "psm";
     const prop_d = try hz.dupeSuffix(prop_in, "Diff");
     errdefer allocator.free(prop_d);
     const prop_a = try hz.dupeSuffix(prop_in, "Avg");
     errdefer allocator.free(prop_a);
 
-    const ex = ctx.arg(1);
+    const ex = arg.arg("exclude");
     var exclude: filter.Exclude = undefined;
     if (format.isFloat()) {
         const f = try allocator.alloc(f32, ex.len());

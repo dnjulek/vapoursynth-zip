@@ -48,6 +48,7 @@ fn CLAHE(comptime T: type, comptime clamp: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -55,10 +56,10 @@ pub fn create(ctx: *avs.Create) !avs.Value {
 
     var d: Data = .{ .format = format };
     d.bits = if (format.isFloat()) 16 else @intCast(format.bits);
-    d.limit = try ctx.int(u32, 1, "limit", 7, 0, math.maxInt(u32));
+    d.limit = try arg.int(u32, "limit", 7, 0, math.maxInt(u32));
 
     var tbuf: [2]i64 = undefined;
-    const tiles_arr = (try ctx.intArray(i64, 2, "tiles", &tbuf, math.minInt(i64), math.maxInt(i64))) orelse blk: {
+    const tiles_arr = (try arg.intArray(i64, "tiles", &tbuf, math.minInt(i64), math.maxInt(i64))) orelse blk: {
         tbuf = .{ 3, 3 };
         break :blk tbuf[0..2];
     };

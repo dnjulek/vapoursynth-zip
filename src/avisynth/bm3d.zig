@@ -239,9 +239,9 @@ fn selectGetFrame(comptime name: []const u8, final: bool, temporal: bool) avs.fi
 
 /// vszipcu's per-plane string rule: index i given, else the previous value
 /// (the default for plane 0).
-fn perPlaneEnum(comptime T: type, ctx: *avs.Create, i: usize, comptime key: []const u8, base: T) ![3]T {
+fn perPlaneEnum(comptime T: type, ctx: *avs.Create, arg: anytype, comptime key: []const u8, base: T) ![3]T {
     var v: [3]T = .{ base, base, base };
-    const a = ctx.arg(i);
+    const a = arg.arg(key);
     if (!a.isDefined()) return v;
     const len = a.len();
     if (len == 0) return ctx.fail(key ++ " must not be empty.", .{});
@@ -263,13 +263,14 @@ fn checkFloat32(ctx: *avs.Create, vi: *const c.AVS_VideoInfo) !avs.Format {
 }
 
 fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(shared_params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try checkFloat32(ctx, vi);
     if (vi.width < 64 or vi.height < 64) return ctx.fail("clip must be at least 64x64.", .{});
 
-    const ref = try ctx.optClip(1, "ref");
+    const ref = try arg.optClip("ref");
     errdefer if (ref) |r| r.release();
     if (ref) |r| {
         const rvi = r.videoInfo();
@@ -283,7 +284,7 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
     const final = ref != null;
 
     // sigma: validated as f64, used as f32 like the GPU plugin
-    var sigma = try ctx.perPlaneFloat(f32, 2, "sigma", 3.0, 0, math.floatMax(f32));
+    var sigma = try arg.perPlaneFloat(f32, "sigma", 3.0, 0, math.floatMax(f32));
     var process: [3]bool = undefined;
     for (0..3) |i| process[i] = !(sigma[i] < math.floatEps(f32));
     const factor = if (final) filter.sigma_factor_final else filter.sigma_factor_basic;
@@ -291,23 +292,23 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
 
     // larger ranges select the same (clamped) windows; the cap keeps the
     // search arithmetic in i32
-    const block_step = try ctx.perPlaneInt(i64, 3, "block_step", 8, 1, 8);
-    const bm_range = try ctx.perPlaneInt(i64, 4, "bm_range", 9, 1, 1 << 20);
-    const radius = try ctx.int(u32, 5, "radius", 0, 0, filter.max_radius);
-    const ps_num = try ctx.perPlaneInt(i64, 6, "ps_num", 2, 1, 8);
-    const ps_range = try ctx.perPlaneInt(i64, 7, "ps_range", 4, 1, 1 << 20);
+    const block_step = try arg.perPlaneInt(i64, "block_step", 8, 1, 8);
+    const bm_range = try arg.perPlaneInt(i64, "bm_range", 9, 1, 1 << 20);
+    const radius = try arg.int(u32, "radius", 0, 0, filter.max_radius);
+    const ps_num = try arg.perPlaneInt(i64, "ps_num", 2, 1, 8);
+    const ps_range = try arg.perPlaneInt(i64, "ps_range", 4, 1, 1 << 20);
 
-    const chroma = try ctx.boolean(8, "chroma", false);
+    const chroma = try arg.boolean("chroma", false);
     if (chroma and (format.family != .yuv or format.ssw != 0 or format.ssh != 0)) {
         return ctx.fail("clip format must be YUV444 when \"chroma\" is true.", .{});
     }
-    const extractor_exp = try ctx.int(i32, 9, "extractor_exp", 0, -149, 127);
+    const extractor_exp = try arg.int(i32, "extractor_exp", 0, -149, 127);
     const extractor: f32 = if (extractor_exp != 0) math.ldexp(@as(f32, 1.0), extractor_exp) else 0.0;
 
-    const bm_error = try perPlaneEnum(filter.BmError, ctx, 10, "bm_error_s", .ssd);
-    const t2d = try perPlaneEnum(filter.Transform, ctx, 11, "transform_2d_s", .dct);
-    const t1d = try perPlaneEnum(filter.Transform, ctx, 12, "transform_1d_s", .dct);
-    _ = try ctx.boolean(13, "zero_init", true); // stacked-clip option of the GPU plugin; no stacked clip here
+    const bm_error = try perPlaneEnum(filter.BmError, ctx, arg, "bm_error_s", .ssd);
+    const t2d = try perPlaneEnum(filter.Transform, ctx, arg, "transform_2d_s", .dct);
+    const t1d = try perPlaneEnum(filter.Transform, ctx, arg, "transform_1d_s", .dct);
+    _ = try arg.boolean("zero_init", true); // stacked-clip option of the GPU plugin; no stacked clip here
 
     const np: usize = format.color_planes;
     for (np..3) |i| process[i] = false;
@@ -449,9 +450,10 @@ pub const VAggregate = struct {
     }
 
     pub fn create(ctx: *avs.Create) !avs.Value {
+        const arg = ctx.named(params);
         const stack = try ctx.clip(0, "clip");
         defer stack.release();
-        const src = try ctx.clip(1, "src");
+        const src = try arg.clip("src");
         defer src.release();
         const vi = stack.videoInfo();
         const svi = src.videoInfo();
@@ -477,9 +479,9 @@ pub const VAggregate = struct {
             return ctx.fail("\"clip\" is not a BM3D stacked clip of \"src\" (radius >= 1).", .{});
         }
 
-        if (!ctx.defined(2)) return ctx.fail("\"planes\" is required.", .{});
+        if (!arg.defined("planes")) return ctx.fail("\"planes\" is required.", .{});
         var process: [4]bool = @splat(false);
-        const pv = ctx.arg(2);
+        const pv = arg.arg("planes");
         if (pv.len() == 0) return ctx.fail("\"planes\" is required.", .{});
         for (0..pv.len()) |k| {
             const e = pv.at(k);

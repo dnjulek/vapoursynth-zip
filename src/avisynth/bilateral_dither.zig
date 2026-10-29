@@ -52,21 +52,22 @@ fn GetFrame(comptime T: type, comptime has_ref: bool) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
     const is_int = !format.isFloat();
 
-    const radius = try ctx.perPlaneInt(i32, 2, "radius", 16, 2, 16384);
-    const thr = try ctx.perPlaneFloat(f32, 3, "thr", 2.5, 0, 65535);
-    const flat = try ctx.perPlaneFloat(f32, 4, "flat", 0.4, 0, 1);
-    const wmin = try ctx.perPlaneFloat(f32, 5, "wmin", 0, 0, 65535);
-    const subspl_arg = try ctx.perPlaneFloat(f32, 6, "subspl", 0, 0, 4096);
+    const radius = try arg.perPlaneInt(i32, "radius", 16, 2, 16384);
+    const thr = try arg.perPlaneFloat(f32, "thr", 2.5, 0, 65535);
+    const flat = try arg.perPlaneFloat(f32, "flat", 0.4, 0, 1);
+    const wmin = try arg.perPlaneFloat(f32, "wmin", 0, 0, 65535);
+    const subspl_arg = try arg.perPlaneFloat(f32, "subspl", 0, 0, 4096);
 
     filter.Config.checkSize(vi.width, vi.height) catch |e| return ctx.fail("{s}", .{filter.Config.message(e)});
 
-    var d: Data = .{ .format = format, .planes = try ctx.planes(7, format.color_planes, true) };
+    var d: Data = .{ .format = format, .planes = try arg.planes("planes", format.color_planes, true) };
     var plane_w: [3]i32 = @splat(0);
     var plane_h: [3]i32 = @splat(0);
     for (0..format.color_planes) |p| {
@@ -88,7 +89,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
     }) catch |e| return ctx.fail("{s}", .{filter.Config.message(e)});
     errdefer d.cfg.deinit();
 
-    const ref = try ctx.optClip(1, "ref");
+    const ref = try arg.optClip("ref");
     errdefer if (ref) |r| r.release();
     if (ref) |r| {
         const rvi = r.videoInfo();

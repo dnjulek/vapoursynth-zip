@@ -70,6 +70,7 @@ fn AdaptiveGrainMask(comptime T: type) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -84,7 +85,7 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         d.peak = @floatCast(format.peak());
         d.shift = @intCast(if (format.bits > 8) format.bits - 8 else 0);
     }
-    d.luma_scaling = try ctx.float(f32, 1, "luma_scaling", 10.0, -math.floatMax(f32), math.floatMax(f32));
+    d.luma_scaling = try arg.float(f32, "luma_scaling", 10.0, -math.floatMax(f32), math.floatMax(f32));
 
     const gf = switch (format.sample) {
         inline else => |s| F.getFrame(AdaptiveGrainMask(s.Type()).getFrame),

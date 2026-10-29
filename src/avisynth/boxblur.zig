@@ -82,6 +82,7 @@ fn BoxBlurRT(comptime T: type) type {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -91,13 +92,13 @@ pub fn create(ctx: *avs.Create) !avs.Value {
         .format = format,
         .width = @intCast(vi.width),
         .tmp_size = @intCast(@max(vi.width, vi.height)),
-        .planes = try ctx.planes(1, format.color_planes, true),
+        .planes = try arg.planes("planes", format.color_planes, true),
     };
     d.p = .{
-        .hradius = try ctx.int(u32, 2, "hradius", 1, 0, math.maxInt(i32)),
-        .hpasses = try ctx.int(i32, 3, "hpasses", 1, math.minInt(i32), math.maxInt(i32)),
-        .vradius = try ctx.int(u32, 4, "vradius", 1, 0, math.maxInt(i32)),
-        .vpasses = try ctx.int(i32, 5, "vpasses", 1, math.minInt(i32), math.maxInt(i32)),
+        .hradius = try arg.int(u32, "hradius", 1, 0, math.maxInt(i32)),
+        .hpasses = try arg.int(i32, "hpasses", 1, math.minInt(i32), math.maxInt(i32)),
+        .vradius = try arg.int(u32, "vradius", 1, 0, math.maxInt(i32)),
+        .vpasses = try arg.int(i32, "vpasses", 1, math.minInt(i32), math.maxInt(i32)),
     };
 
     const np = format.color_planes;

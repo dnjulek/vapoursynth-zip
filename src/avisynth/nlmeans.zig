@@ -167,31 +167,32 @@ fn parseChannels(ctx: *avs.Create, format: avs.Format, str: []const u8) !struct 
     }
 }
 
-fn intArg(ctx: *avs.Create, i: usize, comptime key: []const u8, default: i64) !i64 {
-    return ctx.int(i64, i, key, default, math.minInt(i64), math.maxInt(i64));
+fn intArg(arg: anytype, comptime key: []const u8, default: i64) !i64 {
+    return arg.int(i64, key, default, math.minInt(i64), math.maxInt(i64));
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
     const format = try hz.planarFormat(ctx, vi);
 
-    const ref, const plane0 = try parseChannels(ctx, format, (try ctx.string(5, "channels")) orelse "auto");
+    const ref, const plane0 = try parseChannels(ctx, format, (try arg.string("channels")) orelse "auto");
     const fmax: f64 = math.floatMax(f32);
     const cfg = filter.Config.init(.{
-        .d = try intArg(ctx, 1, "d", 1),
-        .a = try intArg(ctx, 2, "a", 2),
-        .s = try intArg(ctx, 3, "s", 4),
-        .h = try ctx.float(f64, 4, "h", 1.2, 0, fmax),
-        .wmode = try intArg(ctx, 6, "wmode", 0),
-        .wref = try ctx.float(f64, 7, "wref", 1.0, 0, fmax),
+        .d = try intArg(arg, "d", 1),
+        .a = try intArg(arg, "a", 2),
+        .s = try intArg(arg, "s", 4),
+        .h = try arg.float(f64, "h", 1.2, 0, fmax),
+        .wmode = try intArg(arg, "wmode", 0),
+        .wref = try arg.float(f64, "wref", 1.0, 0, fmax),
         .ref = ref,
         .width = format.planeWidth(@intCast(vi.width), plane0),
         .height = format.planeHeight(@intCast(vi.height), plane0),
     }) catch |e| return ctx.fail("{s}", .{filter.Config.message(e)});
 
-    const rclip = try ctx.optClip(8, "rclip");
+    const rclip = try arg.optClip("rclip");
     errdefer if (rclip) |r| r.release();
     if (rclip) |r| try hz.compareClips(ctx, &.{ vi, r.videoInfo() }, .SAME_LEN, .color_only);
 

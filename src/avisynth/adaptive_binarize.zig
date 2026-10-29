@@ -64,16 +64,17 @@ fn getFrame(d: *Data, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
 }
 
 pub fn create(ctx: *avs.Create) !avs.Value {
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
-    const other = try ctx.clip(1, "clip2");
+    const other = try arg.clip("clip2");
     errdefer other.release();
     const vi = clip.videoInfo();
     try hz.compareClips(ctx, &.{ vi, other.videoInfo() }, .BIGGER_THAN, .color_only);
     const format = try hz.planarFormat(ctx, vi);
     if (format.sample != .u8) return ctx.fail("only 8 bit int format supported.", .{});
 
-    const c_param = try ctx.int(i64, 2, "c", 3, math.minInt(i64), math.maxInt(i64));
+    const c_param = try arg.int(i64, "c", 3, math.minInt(i64), math.maxInt(i64));
     const d: Data = .{ .format = format, .other = .{ .clip = other }, .c = @intCast(math.clamp(c_param, -256, 256)) };
     const out = try F.create(ctx.env, clip, d, F.getFrame(getFrame), .{ .mt_mode = .nice });
     return avs.Create.returnClip(out);
