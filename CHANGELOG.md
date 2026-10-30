@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 24.0.0
 
 Changes since 23.1.0.
 
