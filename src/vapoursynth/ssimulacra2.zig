@@ -147,8 +147,11 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
         return;
     }
 
-    prepare(&d.node1, &d.src1, &zapi);
-    prepare(&d.node2, &d.src2, &zapi);
+    // frame 0 is read now for its props; an upstream error there must become
+    // this filter's error (it used to be dereferenced as a null frame)
+    var err_buf: [512]u8 = @splat(0);
+    prepare(&d.node1, &d.src1, &zapi, &err_buf) catch return upstreamError(&map_out, &zapi, &d, &err_buf);
+    prepare(&d.node2, &d.src2, &zapi, &err_buf) catch return upstreamError(&map_out, &zapi, &d, &err_buf);
 
     const vi_out = zapi.getVideoInfo(d.node1);
     const data: *Data = allocator.create(Data) catch unreachable;
@@ -160,6 +163,17 @@ pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core
     };
 
     zapi.createVideoFilter(out, filter_name, vi_out, ssimulacra2GetFrame, ssimulacraFree, .Parallel, &deps, data);
+}
+
+fn upstreamError(map_out: anytype, zapi: *const ZAPI, d: *Data, err_buf: *const [512]u8) void {
+    var buf: [640]u8 = undefined;
+    const upstream = std.mem.sliceTo(err_buf, 0);
+    const msg = std.mem.printSentinel(&buf, filter_name ++ ": frame 0 failed: {s}", .{upstream}, 0) catch filter_name ++ ": frame 0 failed.";
+    map_out.setError(msg);
+    d.src1.deinit();
+    d.src2.deinit();
+    zapi.freeNode(d.node1);
+    zapi.freeNode(d.node2);
 }
 
 /// RGB clips are read natively (8-16 bit int through a sample -> linear LUT,
@@ -180,17 +194,18 @@ fn badMatrix(zapi: *const ZAPI, dst: anytype, n: c_int) ?*const vs.Frame {
 /// 4:1:1, a frame-0 _Matrix the conversion lacks) goes through toRGBS. The
 /// sRGB decode runs inside the filter (libjxl's TF_SRGB, see
 /// filters/srgb.zig) unless frame 0 says the clip is already linear.
-fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI) void {
+fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI, err: []u8) error{UpstreamFailed}!void {
     const vi = zapi.getVideoInfo(node.*);
     const fmt = vi.format;
     const native = fmt.colorFamily == .RGB and
         ((fmt.sampleType == .Integer and fmt.bitsPerSample <= 16) or (fmt.sampleType == .Float and fmt.bitsPerSample == 32));
     const yuv = fmt.colorFamily == .YUV and
         filter_ssim.YuvSetup.supports(@intCast(fmt.subSamplingW), @intCast(fmt.subSamplingH), fmt.sampleType == .Float, @intCast(fmt.bitsPerSample)) and
-        frame0MatrixOk(node.*, zapi);
+        try frame0MatrixOk(node.*, zapi, err);
     if (!native and !yuv) node.* = hz.toRGBS(node.*, zapi);
 
-    const frame = zapi.getFrame(0, node.*, null);
+    // null (with the message in `err`) when frame 0 fails upstream
+    const frame = zapi.getFrame(0, node.*, err) orelse return error.UpstreamFailed;
     defer zapi.freeFrame(frame);
     src.srgb = zapi.initZMap(zapi.getFramePropertiesRO(frame)).getTransfer() != .LINEAR;
 
@@ -211,8 +226,8 @@ fn prepare(node: *?*vs.Node, src: *Source, zapi: *const ZAPI) void {
     }
 }
 
-fn frame0MatrixOk(node: ?*vs.Node, zapi: *const ZAPI) bool {
-    const frame = zapi.getFrame(0, node, null);
+fn frame0MatrixOk(node: ?*vs.Node, zapi: *const ZAPI, err: []u8) error{UpstreamFailed}!bool {
+    const frame = zapi.getFrame(0, node, err) orelse return error.UpstreamFailed;
     defer zapi.freeFrame(frame);
     return filter_ssim.YuvSetup.matrixOk(zapi.initZMap(zapi.getFramePropertiesRO(frame)).getInt(i64, "_Matrix"));
 }

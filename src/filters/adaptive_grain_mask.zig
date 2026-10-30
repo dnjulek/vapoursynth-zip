@@ -54,20 +54,24 @@ inline fn poly(comptime V: type, x: V, cb: anytype) V {
     return simd.madd(V, x, simd.madd(V, x, simd.madd(V, x, simd.madd(V, x, P.get(cb, C4), P.get(cb, C3)), P.get(cb, C2)), P.get(cb, C1)), P.get(cb, C0));
 }
 
-inline fn polyScalar(x: f32) f32 {
-    return simd.madd(f32, x, simd.madd(f32, x, simd.madd(f32, x, simd.madd(f32, x, C4, C3), C2), C1), C0);
-}
-
-pub fn getMaskValueScalar(x: f32, temp: f32) f32 {
-    const base = 1.0 - (x * polyScalar(x));
-    return powf(base, temp);
-}
+/// The integer LUT's bases 1 - x * poly(x), x = i / 255, with poly's steps
+/// fused like the Rust reference's: the integer output is bit-exact with it.
+/// Built at compile time, where @mulAdd is exact on every target. At run
+/// time, simd.madd's unfused fallback (targets without FMA) moved some
+/// entries by one code value, and @mulAdd would call libm's fmaf.
+const lut_bases: [256]f32 = blk: {
+    var t: [256]f32 = undefined;
+    for (&t, 0..) |*b, i| {
+        const x: f32 = @as(f32, @floatFromInt(i)) / 255.0;
+        b.* = 1.0 - x * @mulAdd(f32, x, @mulAdd(f32, x, @mulAdd(f32, x, @mulAdd(f32, x, C4, C3), C2), C1), C0);
+    }
+    break :blk t;
+};
 
 pub fn buildLut(comptime T: type, lut: *[256]T, temp: f32, peak: f32) void {
     const type_max: f32 = @floatFromInt(std.math.maxInt(T));
-    for (lut, 0..) |*e, i| {
-        const x: f32 = @as(f32, @floatFromInt(i)) / 255.0;
-        const v = getMaskValueScalar(x, temp);
+    for (lut, lut_bases) |*e, base| {
+        const v = powf(base, temp);
         e.* = @intFromFloat(@max(@min(v * peak, type_max), 0.0));
     }
 }
@@ -196,13 +200,17 @@ inline fn log2Fast(comptime VL: usize, x_in: @Vector(VL, f32)) @Vector(VL, f32) 
     return simd.madd(V, sv, p, e);
 }
 
-/// Exponent of the mask, temp * log2(base), capped at 127.99 so exp2 stays
-/// finite (~3.4e38; powf would give inf).
+/// Largest exponent passed to exp2Bounded: the float just below 127.5, since
+/// exp2Bounded rounds to the nearest integer and 2^128 is inf. 2^127.5 ~
+/// 2.406e38 is also where 23.1.0's Cephes expf saturated (powf gives inf).
+const max_exponent: f32 = std.math.nextAfter(f32, 127.5, 0.0);
+
+/// Exponent of the mask, temp * log2(base), capped at `max_exponent`.
 inline fn maskExponent(comptime VL: usize, xv: @Vector(VL, f32), temp: @Vector(VL, f32), cb: PowConsts(VL).Base) @Vector(VL, f32) {
     const V = @Vector(VL, f32);
     const x = simd.clampV(VL, xv, @as(V, @splat(0.0)), @as(V, @splat(1.0)));
     const base = @as(V, @splat(1.0)) - (x * poly(V, x, cb));
-    return @min(temp * log2Fast(VL, base), @as(V, @splat(127.99)));
+    return @min(temp * log2Fast(VL, base), @as(V, @splat(max_exponent)));
 }
 
 const FVL: usize = std.simd.suggestVectorLength(f32) orelse 8;

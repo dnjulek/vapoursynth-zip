@@ -180,7 +180,9 @@ pub fn pow(x0: anytype, y: anytype) @TypeOf(x0) {
     return z;
 }
 
-/// 2^y for `-126 <= y <= 127`; below -126 (and NaN) it returns 0. Not a
+/// 2^y for `-126 <= y < 127.5`; below -126 (and NaN) it returns 0. From 127.5
+/// on, y rounds to 128 or more and the scale bits overflow (inf, then
+/// garbage): callers cap y below 127.5. Not a
 /// VCL port: a round-to-nearest split y = r + f (|f| <= 0.5), a near-minimax
 /// polynomial for 2^f, and 2^r built from the integer bits the rounding
 /// magic leaves in the mantissa. Max error against float64 over [-126, 0]:
