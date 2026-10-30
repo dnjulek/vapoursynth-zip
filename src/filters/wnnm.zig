@@ -154,37 +154,39 @@ inline fn distanceVecAt(comptime BS: ?u32, cur: []const f32, refp: []const f32, 
     return acc;
 }
 
-pub fn computeBlockDistancesAt(
+/// Distances at every position of `runs`, appended in candidate order.
+pub fn computeBlockDistancesRuns(
     comptime BS: ?u32,
     errs: *std.ArrayList(f32),
     alloc: std.mem.Allocator,
     cur: []const f32,
     refp: []const f32,
-    locations: []const Loc,
+    runs: []const Run,
     stride: u32,
     bs_rt: u32,
 ) error{OutOfMemory}!void {
     const bs = BS orelse bs_rt;
-    try errs.ensureUnusedCapacity(alloc, locations.len);
+    var total: usize = 0;
+    for (runs) |r| total += r.len;
+    try errs.ensureUnusedCapacity(alloc, total);
     const base = errs.items.len;
-    errs.items.len = base + locations.len;
-    const out = errs.items[base..][0..locations.len];
+    errs.items.len = base + total;
+    const out = errs.items[base..][0..total];
 
     var pend_src: [4]u32 = undefined;
     var pend_dst: [4]u32 = undefined;
     var pend: usize = 0;
 
     var i: usize = 0;
-    while (i < locations.len) {
-        var e = i + 1;
-        while (e < locations.len and locations[e].y == locations[i].y and locations[e].x == locations[e - 1].x + 1) : (e += 1) {}
-        const run = e - i;
+    for (runs) |r| {
+        const x: u32 = @intCast(r.x);
+        const y: u32 = @intCast(r.y);
+        const run: usize = r.len;
         if (run >= VEC) {
             var off: usize = 0;
             while (true) {
                 const a = @min(off, run - VEC);
-                const loc = locations[i + a];
-                pend_src[pend] = @as(u32, @intCast(loc.y)) * stride + @as(u32, @intCast(loc.x));
+                pend_src[pend] = y * stride + x + @as(u32, @intCast(a));
                 pend_dst[pend] = @intCast(i + a);
                 pend += 1;
                 if (pend == 4) {
@@ -196,11 +198,11 @@ pub fn computeBlockDistancesAt(
                 off = a + VEC;
             }
         } else {
-            for (i..e) |j| {
-                out[j] = distanceScalar(cur, refp, stride, @intCast(locations[j].x), @intCast(locations[j].y), bs);
+            for (0..run) |j| {
+                out[i + j] = distanceScalar(cur, refp, stride, x + @as(u32, @intCast(j)), y, bs);
             }
         }
-        i = e;
+        i += run;
     }
     for (0..pend) |k| {
         out[pend_dst[k]..][0..VEC].* = distanceVecAt(BS, cur, refp, pend_src[k], stride, bs);
@@ -246,70 +248,83 @@ inline fn insertIdx(out: []IdxErr, len: usize, e: f32, idx: u32) void {
     out[pos] = .{ .err = e, .idx = idx };
 }
 
-pub fn generateSearchLocations(
+pub const max_search_centers = 256;
+
+/// Search positions `x .. x + len - 1` on row `y`.
+pub const Run = struct { x: i32, y: i32, len: u32 };
+
+/// The union of the clipped (2*ps_range+1)^2 windows around `centers`, as
+/// maximal row runs in (y, x) order: candidate `i` of the search is the i-th
+/// position of the runs taken in order (`runLoc`). Built row by row from the
+/// windows' merged x intervals; merging per-position lists one window at a
+/// time was 22% of the radius-1 time, and the position list itself 11%.
+pub fn generateSearchRuns(
     centers: []const Match,
     num_centers: usize,
     bs: u32,
     width: u32,
     height: u32,
     ps_range: u32,
-    out: *std.ArrayList(Loc),
-    scratch: *std.ArrayList(Loc),
+    out: *std.ArrayList(Run),
     alloc: std.mem.Allocator,
 ) error{OutOfMemory}!void {
+    assert(num_centers <= max_search_centers);
     out.clearRetainingCapacity();
+    const r: i32 = @intCast(ps_range);
+    const max_x: i32 = @intCast(width - bs);
+    const max_y: i32 = @intCast(height - bs);
 
-    for (centers[0..num_centers]) |c| {
-        const left: i32 = @max(c.x - @as(i32, @intCast(ps_range)), 0);
-        const right: i32 = @min(c.x + @as(i32, @intCast(ps_range)), @as(i32, @intCast(width - bs)));
-        const top: i32 = @max(c.y - @as(i32, @intCast(ps_range)), 0);
-        const bottom: i32 = @min(c.y + @as(i32, @intCast(ps_range)), @as(i32, @intCast(height - bs)));
-
-        scratch.clearRetainingCapacity();
-        try scratch.ensureUnusedCapacity(alloc, out.items.len + @as(usize, @intCast(bottom - top + 1)) * @as(usize, @intCast(right - left + 1)));
-
-        var i: usize = 0;
-        var yy = top;
-        var xx = left;
-        while (true) {
-            const have_old = i < out.items.len;
-            const have_new = yy <= bottom;
-            if (!have_old and !have_new) break;
-
-            var take_old = false;
-            var take_new = false;
-            if (have_old and have_new) {
-                const o = out.items[i];
-                if (o.y < yy or (o.y == yy and o.x < xx)) {
-                    take_old = true;
-                } else if (o.y == yy and o.x == xx) {
-                    take_old = true;
-                    take_new = true;
-                } else {
-                    take_new = true;
-                }
-            } else if (have_old) {
-                take_old = true;
-            } else {
-                take_new = true;
-            }
-
-            if (take_old) {
-                scratch.appendAssumeCapacity(out.items[i]);
-                i += 1;
-            }
-            if (take_new) {
-                if (!take_old) scratch.appendAssumeCapacity(.{ .x = xx, .y = yy });
-                xx += 1;
-                if (xx > right) {
-                    xx = left;
-                    yy += 1;
-                }
-            }
+    // windows sorted by left edge, so each row's intervals merge in one pass
+    var lo: [max_search_centers]i32 = undefined;
+    var hi: [max_search_centers]i32 = undefined;
+    var top: [max_search_centers]i32 = undefined;
+    var bot: [max_search_centers]i32 = undefined;
+    var y0: i32 = std.math.maxInt(i32);
+    var y1: i32 = std.math.minInt(i32);
+    for (centers[0..num_centers], 0..) |c, n| {
+        const l = @max(c.x - r, 0);
+        var i = n;
+        while (i > 0 and lo[i - 1] > l) : (i -= 1) {
+            lo[i] = lo[i - 1];
+            hi[i] = hi[i - 1];
+            top[i] = top[i - 1];
+            bot[i] = bot[i - 1];
         }
-
-        std.mem.swap(std.ArrayList(Loc), out, scratch);
+        lo[i] = l;
+        hi[i] = @min(c.x + r, max_x);
+        top[i] = @max(c.y - r, 0);
+        bot[i] = @min(c.y + r, max_y);
+        y0 = @min(y0, top[i]);
+        y1 = @max(y1, bot[i]);
     }
+
+    var yy = y0;
+    while (yy <= y1) : (yy += 1) {
+        try out.ensureUnusedCapacity(alloc, num_centers);
+        const first = out.items.len;
+        for (0..num_centers) |i| {
+            if (yy < top[i] or yy > bot[i]) continue;
+            if (out.items.len > first) {
+                const last = &out.items[out.items.len - 1];
+                const last_hi = last.x + @as(i32, @intCast(last.len)) - 1;
+                if (lo[i] <= last_hi + 1) {
+                    if (hi[i] > last_hi) last.len = @intCast(hi[i] - last.x + 1);
+                    continue;
+                }
+            }
+            out.appendAssumeCapacity(.{ .x = lo[i], .y = yy, .len = @intCast(hi[i] - lo[i] + 1) });
+        }
+    }
+}
+
+/// Position of candidate `idx` of `runs` (see generateSearchRuns).
+pub fn runLoc(runs: []const Run, idx: u32) Loc {
+    var i = idx;
+    for (runs) |r| {
+        if (i < r.len) return .{ .x = r.x + @as(i32, @intCast(i)), .y = r.y };
+        i -= r.len;
+    }
+    unreachable;
 }
 
 pub fn loadPatches(
@@ -989,7 +1004,7 @@ pub const Config = struct {
         d.bm_range = @intCast(a.bm_range);
         if (a.radius < 0 or a.radius > max_radius) return error.Radius;
         d.radius = @intCast(a.radius);
-        if (a.ps_num < 1 or a.ps_num > 256) return error.PsNum;
+        if (a.ps_num < 1 or a.ps_num > max_search_centers) return error.PsNum;
         d.ps_num = @intCast(a.ps_num);
         if (a.ps_range < 0 or a.ps_range > math.maxInt(u32)) return error.PsRange;
         d.ps_range = @intCast(a.ps_range);
@@ -1035,8 +1050,7 @@ pub const Bufs = struct {
     errors: std.ArrayList(Match),
     center: std.ArrayList(Match),
     temporal: std.ArrayList(Match),
-    locs: std.ArrayList(Loc),
-    locs_scratch: std.ArrayList(Loc),
+    runs: std.ArrayList(Run),
     alloc: std.mem.Allocator,
     /// streaming temporal mode: window-frame ring accumulators (see
     /// `processPlane`), all zero between calls; empty until `ensureRing`
@@ -1084,8 +1098,7 @@ pub const Bufs = struct {
         b.errors = .empty;
         b.center = .empty;
         b.temporal = .empty;
-        b.locs = .empty;
-        b.locs_scratch = .empty;
+        b.runs = .empty;
         b.ring = &.{};
         b.alloc = aa;
         return b;
@@ -1199,20 +1212,16 @@ pub fn processPlane(
                         const t_idx = radius + direction * @as(i32, @intCast(i));
 
                         const num_centers = @min(active_ps_num, b.temporal.items.len);
-                        try generateSearchLocations(b.temporal.items, num_centers, bs, w, h, d.ps_range, &b.locs, &b.locs_scratch, b.alloc);
+                        try generateSearchRuns(b.temporal.items, num_centers, bs, w, h, d.ps_range, &b.runs, b.alloc);
 
                         b.errsf.clearRetainingCapacity();
-                        try computeBlockDistancesAt(BS, &b.errsf, b.alloc, b.cur, refps[@intCast(t_idx)], b.locs.items, stride, bs);
+                        try computeBlockDistancesRuns(BS, &b.errsf, b.alloc, b.cur, refps[@intCast(t_idx)], b.runs.items, stride, bs);
                         const cnt_t = selectTopIdx(b.errsf.items, @max(d.gs, d.ps_num), b.selidx);
                         b.temporal.clearRetainingCapacity();
                         try b.temporal.ensureUnusedCapacity(b.alloc, cnt_t);
                         for (b.selidx[0..cnt_t]) |ie| {
-                            b.temporal.appendAssumeCapacity(.{
-                                .err = ie.err,
-                                .x = b.locs.items[ie.idx].x,
-                                .y = b.locs.items[ie.idx].y,
-                                .t = t_idx,
-                            });
+                            const loc = runLoc(b.runs.items, ie.idx);
+                            b.temporal.appendAssumeCapacity(.{ .err = ie.err, .x = loc.x, .y = loc.y, .t = t_idx });
                         }
                         try b.errors.appendSlice(b.alloc, b.temporal.items);
                     }
