@@ -1,26 +1,24 @@
-"""BM3D / BM3Dv2 / VAggregate: the CUDA-output BM3D (vszipcu's API) on the CPU.
+"""BM3D on the CPU (vszipcu's algorithm and arguments).
 
-Contract (src/vapoursynth/bm3d.zig, src/filters/bm3d_cuda.zig):
+Contract (src/vapoursynth/bm3d.zig, src/filters/bm3d.zig):
 - 32-bit float only; output keeps the input format, size, length and props;
-  planes with sigma < FLT_EPSILON are copied from the source.
+  planes with sigma < FLT_EPSILON are copied from the source, and a clip with
+  nothing to process (every sigma 0) is returned unchanged.
 - sigma/block_step/bm_range/ps_num/ps_range/bm_error_s/transform_*_s are
   per-plane arrays (the last given value repeats); chroma=True (CBM3D)
   needs YUV444 and matches on plane 0.
-- radius > 0 aggregates internally (BM3D == BM3Dv2, no stacked clip); the
+- radius > 0 aggregates internally (no stacked clip, no VAggregate step); the
   temporal window is vszipcu's (frames clamped at the clip ends).
-- BM3Dv2 passes a clip with nothing to process through; BM3D rejects it.
 - Same algorithm as vszipcu, not the GPU's rounding: its fast-math
   reciprocal/divide and its order of the separable transform passes are not
-  reproduced. With extractor_exp set the GPU is deterministic and the outputs
-  agree within float rounding, plus a rare pixel one extractor step away.
-- VAggregate aggregates stacked clips made by the GPU plugins.
+  reproduced. There is no extractor_exp (a GPU-only repeatability knob), so
+  the parity test runs the GPU without it too.
 
 Nets:
   1. metamorphic properties (flat input, sigma-0 plane passthrough, crop vs
-     repack, request order and thread count, BM3D == BM3Dv2);
-  2. a numpy oracle for VAggregate;
-  3. optional parity with vszipcu (the CUDA plugin) when it is installed;
-  4. golden snapshots.
+     repack, request order and thread count);
+  2. optional parity with vszipcu (the CUDA plugin) when it is installed;
+  3. golden snapshots.
 """
 
 import random
@@ -62,7 +60,6 @@ CASES = [
     Case(vs.GRAYS, args={"radius": 1}),
     Case(vs.GRAYS, "odd", {"radius": 2, "ps_num": 3, "ps_range": 3}),
     Case(vs.GRAYS, args={"block_step": 3, "bm_range": 5}),
-    Case(vs.GRAYS, args={"extractor_exp": 6}),
     Case(vs.GRAYS, args={"transform_2d_s": "haar", "transform_1d_s": "bior1.5", "radius": 1}),
     Case(vs.GRAYS, args={"bm_error_s": "zsad"}),
     Case(vs.GRAYS, args={"bm_error_s": "ssd/norm"}),
@@ -146,64 +143,15 @@ def test_request_order_and_threads_do_not_matter(core, clip, radius):
         assert np.array_equal(f[0], want[n][0])
 
 
-def test_bm3dv2_is_bm3d(clip):
+@pytest.mark.parametrize("kw", [{}, {"radius": 1}, {"final": True}])
+def test_all_zero_sigma_passes_through(clip, kw):
+    """Nothing to process: the clip itself comes back, as with the other
+    filters (including a given ref, which is then unused)."""
     src = clip(vs.YUV420PS)
-    for kw in ({}, {"radius": 1}):
-        assert_same_clip(src.vszip.BM3Dv2(**kw), src.vszip.BM3D(**kw))
-
-
-def test_all_zero_sigma(clip):
-    src = clip(vs.GRAYS)
-    assert_same_clip(src.vszip.BM3Dv2(sigma=0.0), src)
-    with pytest.raises(vs.Error, match="nothing to process"):
-        src.vszip.BM3D(sigma=0.0)
-
-
-# --- VAggregate --------------------------------------------------------------
-
-
-def _stacked(core, w, h, r, nframes, seed):
-    """A float stacked clip: slot z of frame m holds (num, den) planes."""
-    rng = np.random.default_rng(seed)
-    data = rng.random((nframes, 2 * (2 * r + 1), h, w), dtype=np.float32) + np.float32(0.25)
-    base = core.std.BlankClip(None, w, h * 2 * (2 * r + 1), vs.GRAYS, length=nframes)
-
-    def fill(n, f):
-        fo = f.copy()
-        np.asarray(fo[0])[:] = data[n].reshape(-1, w)
-        return fo
-
-    return base.std.ModifyFrame(base, fill), data
-
-
-def test_vaggregate_oracle(core):
-    r, n_fr, w, h = 2, 6, 67, 64
-    stacked, data = _stacked(core, w, h, r, n_fr, 5)
-    src = core.std.BlankClip(None, w, h, vs.GRAYS, length=n_fr)
-    got = frames(core.vszip.VAggregate(stacked, src=src, planes=[0]))
-    for n in range(n_fr):
-        num = np.zeros((h, w), np.float32)
-        den = np.zeros((h, w), np.float32)
-        for i in range(2 * r + 1):
-            m = min(max(n - r + i, 0), n_fr - 1)
-            z = min(max(2 * r - i, n - n_fr + 1 + r), n + r)
-            num += data[m, 2 * z]
-            den += data[m, 2 * z + 1]
-        assert np.array_equal(got[n][0], num / den), f"frame {n}"
-
-
-def test_vaggregate_validation(core):
-    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=2)
-    st = core.std.BlankClip(None, 64, 64 * 6, vs.GRAYS, length=2)
-    with pytest.raises(vs.Error, match="out-of-range plane index"):
-        core.vszip.VAggregate(st, src=src, planes=[1])
-    with pytest.raises(vs.Error, match="duplicate plane index"):
-        core.vszip.VAggregate(st, src=src, planes=[0, 0])
-    with pytest.raises(vs.Error, match="not a BM3D stacked clip"):
-        core.vszip.VAggregate(src, src=src, planes=[0])
-    small = core.std.BlankClip(None, 64, 48, vs.GRAYS, length=2)
-    with pytest.raises(vs.Error, match="at least 64x64"):
-        core.vszip.VAggregate(core.std.BlankClip(None, 64, 48 * 6, vs.GRAYS, length=2), src=small, planes=[0])
+    if kw.pop("final", False):
+        kw["ref"] = src
+    assert_same_clip(src.vszip.BM3D(sigma=0.0, **kw), src)
+    assert_same_clip(src.vszip.BM3D(sigma=[0.0, 0.0, 0.0], **kw), src)
 
 
 # --- validation --------------------------------------------------------------
@@ -225,7 +173,6 @@ def test_vaggregate_validation(core):
         (dict(bm_error_s="abc"), "invalid \"bm_error_s\""),
         (dict(transform_2d_s="fft"), "invalid \"transform_2d_s\""),
         (dict(transform_1d_s="fft"), "invalid \"transform_1d_s\""),
-        (dict(extractor_exp=200), "extractor_exp"),
     ],
 )
 def test_validation_errors(core, args, msg):
@@ -270,32 +217,29 @@ def test_format_and_ref_errors(core):
 def test_matches_cuda_plugin(clip, fmt, kw):
     """Same algorithm as vszipcu, not the same rounding: the GPU's
     -use_fast_math reciprocal/divide (MUFU.RCP, +-1 ulp) and its order of the
-    separable transform passes are not reproduced. With extractor_exp the GPU
-    is deterministic, so the outputs can be compared: almost every pixel
-    within float rounding, and the rare one that crosses an extractor
-    rounding step moves by one step."""
+    separable transform passes are not reproduced. The GPU sums with atomics
+    in no fixed order, so its own output varies at float-rounding level from
+    run to run (its extractor_exp, which makes it repeatable, quantizes the
+    output far more than that, and vszip has no extractor). Both final
+    estimates use the same basic estimate as ref."""
     src = clip(fmt)
-    kw = dict(kw, extractor_exp=10)
     if kw.pop("final", False):
-        kw["ref"] = src.vszipcu.BM3Dv2(radius=kw.get("radius", 0), extractor_exp=10)
+        kw["ref"] = src.vszip.BM3D(radius=kw.get("radius", 0))
     a = frames(src.vszip.BM3D(**kw))
     b = frames(src.vszipcu.BM3Dv2(**kw))
     for n, (fa, fb) in enumerate(zip(a, b)):
         d = np.concatenate([np.abs(pa.astype(np.float64) - pb).ravel() for pa, pb in zip(fa, fb)])
-        # measured: mean <= 3e-7, max <= 4.3e-3 (one extractor step), at most
-        # ~1 pixel in 15000 above 1e-5
-        assert d.mean() < 1e-5, f"frame {n}: mean diff {d.mean():.3g}"
-        assert d.max() < 1e-2, f"frame {n}: max diff {d.max():.3g}"
-        assert np.mean(d > 1e-5) <= 1e-3, f"frame {n}: {np.mean(d > 1e-5):.3g} of the pixels differ"
+        # measured over these 27 frames: mean <= 4.1e-8, max <= 6.0e-7
+        assert d.mean() < 1e-6, f"frame {n}: mean diff {d.mean():.3g}"
+        assert d.max() < 1e-5, f"frame {n}: max diff {d.max():.3g}"
 
 
 @pytest.mark.parametrize("call", [
     "{c}.vszip.BM3D(radius=1)",
     "{c}.vszip.BM3D(radius=2)",
-    "{c}.vszip.BM3Dv2(radius=1, ref={c})",
-    "core.std.StackVertical([{c}] * 10).vszip.VAggregate({c}, planes=[0])",
+    "{c}.vszip.BM3D(radius=1, ref={c})",
 ])
 def test_last_frames_of_the_longest_clip(call):
     """Frame windows near frame 2^31 - 1 (radius 1 and 2, the final
-    estimate, VAggregate) are formed without i32 overflow."""
+    estimate) are formed without i32 overflow."""
     assert_long_clip_edges(call)

@@ -1,12 +1,11 @@
-//! BM3D / BM3Dv2 / VAggregate: the CUDA-output BM3D (vszipcu's arguments and
-//! output; `filters/bm3d_cuda.zig`). radius > 0 aggregates internally (no
-//! stacked clip), so BM3D and BM3Dv2 return the same clip; VAggregate
-//! aggregates stacked clips made by the GPU plugins.
+//! BM3D on the CPU (vszipcu's algorithm and arguments; `filters/bm3d.zig`).
+//! radius > 0 aggregates internally, so the
+//! returned clip is the final one (no stacked clip, no VAggregate step).
 
 const std = @import("std");
 const math = std.math;
 
-const filter = @import("../filters/bm3d_cuda.zig");
+const filter = @import("../filters/bm3d.zig");
 const bc = @import("../filters/bm3d_common.zig");
 const hz = @import("../helper.zig");
 const vszip = @import("../vszip.zig");
@@ -17,21 +16,10 @@ const ZAPI = vapoursynth.ZAPI;
 
 const allocator = std.heap.c_allocator;
 
-pub const BM3D = Entry(false);
-pub const BM3Dv2 = Entry(true);
-
-fn Entry(comptime v2: bool) type {
-    return struct {
-        pub const filter_name = if (v2) "BM3Dv2" else "BM3D";
-        pub const params = "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_step:int[]:opt;bm_range:int[]:opt;" ++
-            "radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;extractor_exp:int:opt;" ++
-            "bm_error_s:data[]:opt;transform_2d_s:data[]:opt;transform_1d_s:data[]:opt;zero_init:int:opt;";
-
-        pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-            createImpl(v2, filter_name, in, out, core, vsapi);
-        }
-    };
-}
+pub const filter_name = "BM3D";
+pub const params = "clip:vnode;ref:vnode:opt;sigma:float[]:opt;block_step:int[]:opt;bm_range:int[]:opt;" ++
+    "radius:int:opt;ps_num:int[]:opt;ps_range:int[]:opt;chroma:int:opt;" ++
+    "bm_error_s:data[]:opt;transform_2d_s:data[]:opt;transform_1d_s:data[]:opt;";
 
 const PlaneEntry = struct {
     p: filter.Params,
@@ -248,7 +236,8 @@ fn perPlaneStr(comptime T: type, map_in: anytype, comptime key: [:0]const u8, ba
     return v;
 }
 
-fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map, out: ?*vs.Map, core: ?*vs.Core, vsapi: ?*const vs.API) void {
+pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
+    const name = filter_name;
     var d: Data = .{};
     const zapi = ZAPI.init(vsapi, core, null);
     const map_in = zapi.initZMap(in);
@@ -323,11 +312,6 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
     if (chroma and (fmt.colorFamily != .YUV or fmt.subSamplingW != 0 or fmt.subSamplingH != 0)) {
         return fail(map_out, "clip format must be YUV444 when \"chroma\" is true.");
     }
-    _ = map_in.getValue(i64, "zero_init"); // stacked-clip option of the GPU plugin; no stacked clip here
-
-    const extractor_exp = map_in.getValue(i64, "extractor_exp") orelse 0;
-    if (extractor_exp < -149 or extractor_exp > 127) return fail(map_out, "\"extractor_exp\" must be in range [-149, 127].");
-    const extractor: f32 = if (extractor_exp != 0) math.ldexp(@as(f32, 1.0), @intCast(extractor_exp)) else 0.0;
 
     const bm_error = perPlaneStr(filter.BmError, map_in, "bm_error_s", .ssd) orelse return fail(map_out, "invalid \"bm_error_s\".");
     const t2d = perPlaneStr(filter.Transform, map_in, "transform_2d_s", .dct) orelse return fail(map_out, "invalid \"transform_2d_s\".");
@@ -338,16 +322,14 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
     var any = false;
     for (0..np) |i| any = any or d.process[i];
     if (!any) {
-        if (v2) {
-            // BM3Dv2 passes such a clip through
-            _ = map_out.setNode("clip", d.node, .Replace);
-            return;
-        }
-        return fail(map_out, "all planes have sigma < FLT_EPSILON (nothing to process).");
+        // nothing to process (every sigma 0): pass the clip through, like the
+        // other filters (setNode adds its own reference; ours are freed below)
+        _ = map_out.setNode("clip", d.node, .Replace);
+        return;
     }
 
     const base = struct {
-        fn f(i: usize, w: u32, h: u32, np_: u32, sg: [3]f32, pr: [3]bool, bs: [3]i64, br: [3]i64, pn: [3]i64, prg: [3]i64, r: u32, be: [3]filter.BmError, a: [3]filter.Transform, b: [3]filter.Transform, ex: f32) filter.Params {
+        fn f(i: usize, w: u32, h: u32, np_: u32, sg: [3]f32, pr: [3]bool, bs: [3]i64, br: [3]i64, pn: [3]i64, prg: [3]i64, r: u32, be: [3]filter.BmError, a: [3]filter.Transform, b: [3]filter.Transform) filter.Params {
             return .{
                 .sigma = sg,
                 .process = pr,
@@ -362,7 +344,6 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
                 .bm_error = be[i],
                 .t2d = a[i],
                 .t1d = b[i],
-                .extractor = ex,
             };
         }
     }.f;
@@ -372,7 +353,7 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
     if (chroma) {
         if (w < 8 or h < 8) return fail(map_out, "every processed plane must be at least 8x8.");
         d.entries[0] = .{
-            .p = base(0, w, h, 3, sigma, d.process, block_step, bm_range, ps_num, ps_range, d.radius, bm_error, t2d, t1d, extractor),
+            .p = base(0, w, h, 3, sigma, d.process, block_step, bm_range, ps_num, ps_range, d.radius, bm_error, t2d, t1d),
             .planes = .{ 0, 1, 2 },
         };
         d.n_entries = 1;
@@ -385,7 +366,7 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
             const ph = h >> ssh;
             if (pw < 8 or ph < 8) return fail(map_out, "every processed plane must be at least 8x8.");
             d.entries[d.n_entries] = .{
-                .p = base(p, pw, ph, 1, .{ sigma[p], sigma[p], sigma[p] }, .{ true, false, false }, block_step, bm_range, ps_num, ps_range, d.radius, bm_error, t2d, t1d, extractor),
+                .p = base(p, pw, ph, 1, .{ sigma[p], sigma[p], sigma[p] }, .{ true, false, false }, block_step, bm_range, ps_num, ps_range, d.radius, bm_error, t2d, t1d),
                 .planes = .{ @intCast(p), 0, 0 },
             };
             d.n_entries += 1;
@@ -423,123 +404,3 @@ fn createImpl(comptime v2: bool, comptime name: [:0]const u8, in: ?*const vs.Map
     };
     zapi.createVideoFilter(out, name, d.vi, gf, bm3dFree, .Parallel, deps[0..if (d.final) 2 else 1], data);
 }
-
-/// Aggregates a stacked clip made by vszipcu / BM3DCUDA `BM3D(radius > 0)`
-/// (vszipcu's VAggregate: same checks, same order of summation).
-pub const VAggregate = struct {
-    pub const filter_name = "VAggregate";
-    pub const params = "clip:vnode;src:vnode;planes:int[];";
-
-    const AggData = struct {
-        node: ?*vs.Node = null,
-        src_node: ?*vs.Node = null,
-        src_vi: *const vs.VideoInfo = undefined,
-        radius: i32 = 0,
-        process: [3]bool = @splat(false),
-    };
-
-    fn getFrame(n: c_int, activation_reason: vs.ActivationReason, instance_data: ?*anyopaque, _: ?*?*anyopaque, frame_ctx: ?*vs.FrameContext, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) ?*const vs.Frame {
-        const d: *AggData = @ptrCast(@alignCast(instance_data));
-        const zapi = ZAPI.init(vsapi, core, frame_ctx);
-        const r = d.radius;
-        const nf = d.src_vi.numFrames;
-        if (activation_reason == .Initial) {
-            var i = @max(n - r, 0);
-            while (i <= bc.clampFrame(n, r, nf)) : (i += 1) zapi.requestFrameFilter(i, d.node);
-            zapi.requestFrameFilter(n, d.src_node);
-            return null;
-        }
-        if (activation_reason != .AllFramesReady) return null;
-
-        const src = zapi.initZFrame(d.src_node, n);
-        defer src.deinit();
-        const tw: usize = @intCast(2 * r + 1);
-        var stack: [2 * filter.max_radius + 1]ZAPI.ZFrame(*const vs.Frame) = undefined;
-        for (0..tw) |i| stack[i] = zapi.initZFrame(d.node, bc.clampFrame(n, @as(i64, @intCast(i)) - r, nf));
-        defer for (stack[0..tw]) |f| f.deinit();
-
-        const dst = src.newVideoFrame2(d.process);
-        for (0..3) |p| {
-            if (!d.process[p]) continue;
-            const w, const h, const stride = dst.getDimensions2(f32, p);
-            const out = dst.getWriteSlice2(f32, p);
-            var rows: [2 * filter.max_radius + 1][*]const f32 = undefined;
-            var wts: [2 * filter.max_radius + 1][*]const f32 = undefined;
-            for (0..h) |y| {
-                for (0..tw) |i| {
-                    const z = bc.aggZ(@intCast(i), n, nf, r);
-                    const sp = stack[i].getReadSlice2(f32, p);
-                    const sstride = stack[i].getStride2(f32, p);
-                    const base = (@as(usize, @intCast(z)) * 2 * h + y) * sstride;
-                    rows[i] = sp[base..].ptr;
-                    wts[i] = sp[base + h * sstride ..].ptr;
-                }
-                bc.aggRow(out[y * stride ..][0..w], rows[0..tw], wts[0..tw]);
-            }
-        }
-        return dst.frame;
-    }
-
-    fn free(instance_data: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-        const d: *AggData = @ptrCast(@alignCast(instance_data));
-        const zapi = ZAPI.init(vsapi, core, null);
-        zapi.freeNode(d.node);
-        zapi.freeNode(d.src_node);
-        allocator.destroy(d);
-    }
-
-    pub fn create(in: ?*const vs.Map, out: ?*vs.Map, _: ?*anyopaque, core: ?*vs.Core, vsapi: ?*const vs.API) callconv(.c) void {
-        const zapi = ZAPI.init(vsapi, core, null);
-        const map_in = zapi.initZMap(in);
-        const map_out = zapi.initZMap(out);
-        var d: AggData = .{};
-        const node, const vi = map_in.getNodeVi("clip").?;
-        d.node = node;
-        d.src_node, d.src_vi = map_in.getNodeVi("src").?;
-        var keep = false;
-        defer if (!keep) {
-            zapi.freeNode(d.node);
-            zapi.freeNode(d.src_node);
-        };
-        const sf = d.src_vi.format;
-        if (!vapoursynth.vshelper.isConstantVideoFormat(d.src_vi) or d.src_vi.height <= 0 or sf.sampleType != .Float or sf.bitsPerSample != 32) {
-            return map_out.setError("VAggregate: \"src\" must be 32 bit float.");
-        }
-        if (d.src_vi.width < 64 or d.src_vi.height < 64) return map_out.setError("VAggregate: \"src\" must be at least 64x64.");
-        const cf = vi.format;
-        if (cf.colorFamily != sf.colorFamily or cf.sampleType != sf.sampleType or cf.bitsPerSample != sf.bitsPerSample or
-            cf.subSamplingW != sf.subSamplingW or cf.subSamplingH != sf.subSamplingH or vi.numFrames != d.src_vi.numFrames)
-        {
-            return map_out.setError("VAggregate: \"clip\" must have the same format and frame count as \"src\".");
-        }
-        const ratio = @divTrunc(vi.height, d.src_vi.height);
-        if (ratio < 6 or @rem(ratio - 2, 4) != 0 or @rem(vi.height, d.src_vi.height) != 0 or vi.width != d.src_vi.width) {
-            return map_out.setError("VAggregate: \"clip\" is not a BM3D stacked clip of \"src\" (radius >= 1).");
-        }
-        d.radius = @divTrunc(ratio - 2, 4);
-        if (d.radius > filter.max_radius) return map_out.setError("VAggregate: radius too large.");
-        // stacked chroma planes must still divide evenly per slot
-        if (@rem(vi.height >> @intCast(cf.subSamplingH), ratio) != 0 and cf.subSamplingH != 0) {
-            return map_out.setError("VAggregate: \"clip\" is not a BM3D stacked clip of \"src\" (radius >= 1).");
-        }
-
-        const np: i64 = sf.numPlanes;
-        const len = map_in.numElements("planes") orelse 0;
-        if (len == 0) return map_out.setError("VAggregate: \"planes\" is required.");
-        for (0..len) |i| {
-            const pl = map_in.getValue2(i64, "planes", i).?;
-            if (pl < 0 or pl >= np) return map_out.setError("VAggregate: \"planes\" contains an out-of-range plane index.");
-            if (d.process[@intCast(pl)]) return map_out.setError("VAggregate: \"planes\" contains a duplicate plane index.");
-            d.process[@intCast(pl)] = true;
-        }
-
-        const data = allocator.create(AggData) catch return map_out.setError("VAggregate: out of memory.");
-        data.* = d;
-        keep = true;
-        var deps = [_]vs.FilterDependency{
-            .{ .source = d.node, .requestPattern = .General },
-            .{ .source = d.src_node, .requestPattern = .StrictSpatial },
-        };
-        zapi.createVideoFilter(out, "VAggregate", d.src_vi, getFrame, free, .Parallel, &deps, data);
-    }
-};

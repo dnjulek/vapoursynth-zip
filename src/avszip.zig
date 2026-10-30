@@ -38,9 +38,7 @@ const modules = .{
     @import("avisynth/wnnm.zig").Main,
     @import("avisynth/wnnm.zig").Raw,
     @import("avisynth/image_read.zig"),
-    @import("avisynth/bm3d.zig").BM3D,
-    @import("avisynth/bm3d.zig").BM3Dv2,
-    @import("avisynth/bm3d.zig").VAggregate,
+    @import("avisynth/bm3d.zig"),
     @import("avisynth/tonemap.zig"),
 };
 

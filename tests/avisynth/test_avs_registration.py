@@ -14,7 +14,7 @@ NAMES = [
     "Limiter", "PlaneAverage", "PlaneMinMax", "RFS", "BoxBlur", "AdaptiveBinarize", "AdaptiveGrainMask",
     "ColorMap", "CombMask", "CombMaskMT", "LimitFilter", "Compress", "Bilateral", "BilateralDither",
     "MosquitoNR", "Dither", "Deband", "Checkmate", "CLAHE", "XPSNR", "SSIMULACRA2", "EEDI3", "EEDI3H", "WNNM",
-    "NLMeans", "BM3D", "BM3Dv2", "VAggregate", "Tonemap",
+    "NLMeans", "BM3D", "Tonemap",
 ]
 
 # Registered too, but take no clip as first argument / are internal.
@@ -32,7 +32,7 @@ def test_dispatches_to_own_callback(env, name):
     # A tiny YV411 clip that most filters refuse inside their own create;
     # whatever create raises must carry this function's own name.
     env.eval('tiny = BlankClip(pixel_type="YV411", width=4, height=2, length=1)', want_clip=False)
-    two = name in ("RFS", "AdaptiveBinarize", "LimitFilter", "XPSNR", "SSIMULACRA2", "VAggregate")
+    two = name in ("RFS", "AdaptiveBinarize", "LimitFilter", "XPSNR", "SSIMULACRA2")
     args = "tiny, tiny" if two else "tiny"
     extra = {"Dither": ", 8", "RFS": ", frames=[0]", "PlaneAverage": ", exclude=[-1]", "EEDI3": ", 0", "EEDI3H": ", 0"}.get(name, "")
     try:

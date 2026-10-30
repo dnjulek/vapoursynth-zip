@@ -1,6 +1,6 @@
-"""BM3D / BM3Dv2 / VAggregate vs vszip: bit-exact across formats, parameters,
-the fused temporal mode (any request order), the final estimate, chroma
-(CBM3D), cropped sources, alpha passthrough and VAggregate."""
+"""BM3D vs vszip: bit-exact across formats, parameters, the fused temporal
+mode (any request order), the final estimate, chroma (CBM3D), cropped
+sources, alpha passthrough and the all-zero-sigma passthrough."""
 
 import random
 
@@ -24,7 +24,6 @@ def same(avs_clip, vs_clip, order=None, planes=None):
     {"sigma": [5.0, 2.0]},
     {"sigma": [3.0, 0.0]},
     {"block_step": [4, 6], "bm_range": [4, 12]},
-    {"extractor_exp": 6},
     {"bm_error_s": "ssd/norm", "transform_2d_s": "haar", "transform_1d_s": ["wht", "bior1.5"]},
     {"bm_error_s": ["sad", "zssd"]},
 ])
@@ -38,7 +37,7 @@ def test_spatial(env, fmt, args):
 @pytest.mark.parametrize("args", [
     {"radius": 1},
     {"radius": 2, "ps_num": 3, "ps_range": 2},
-    {"radius": 1, "extractor_exp": 8, "block_step": 6},
+    {"radius": 1, "block_step": 6, "bm_range": 5},
 ])
 def test_temporal_any_order(env, fmt, args):
     pair = H.Pair(env, fmt, H.make_frames(fmt, w=64, h=64, n=6))
@@ -67,13 +66,13 @@ def test_chroma(env, radius):
     same(a, v)
 
 
-def test_bm3dv2_matches_bm3d_and_passes_through(env):
-    fmt = "Y32"
-    pair = H.Pair(env, fmt, H.make_frames(fmt, w=64, h=64, n=4))
-    a, v = H.run_both(env, pair, "BM3Dv2", {"radius": 1})
-    same(a, v)
+@pytest.mark.parametrize("args", ["sigma=0.0", "sigma=[0.0, 0.0, 0.0], radius=1", "sigma=0.0, ref=src"])
+def test_all_zero_sigma_passes_through(env, args):
+    """Nothing to process: the clip itself comes back, as in vszip."""
+    fmt = "YUV420PS"
+    pair = H.Pair(env, fmt, H.make_frames(fmt, w=64, h=64, n=3))
     env.set_clip("src", pair.avs)
-    same(env.eval("src.avszip_BM3Dv2(sigma=0.0)"), pair.vs)
+    same(env.eval(f"src.avszip_BM3D({args})"), pair.vs)
 
 
 def test_cropped_source(env):
@@ -96,52 +95,10 @@ def test_alpha_passes_through(env):
         assert (a.frame(n).planes[3] == np.float32(0.25)).all()
 
 
-@pytest.mark.parametrize("radius", [1, 2])
-def test_vaggregate(env, radius):
-    fmt = "YUV420PS"
-    w, h, n = 64, 64, 5
-    src = H.Pair(env, fmt, H.make_frames(fmt, w=w, h=h, n=n, seed=3))
-    # a synthetic stacked clip: positive weights, any numerators
-    stacked = H.make_frames(fmt, w=w, h=h * 2 * (2 * radius + 1), n=n, seed=4, kind="noise")
-    for frame in stacked:
-        for p, plane in enumerate(frame):
-            ph = plane.shape[0] // (2 * (2 * radius + 1))
-            for z in range(2 * radius + 1):
-                plane[(2 * z + 1) * ph:(2 * z + 2) * ph] = np.abs(plane[(2 * z + 1) * ph:(2 * z + 2) * ph]) + 0.5
-    st = H.Pair(env, fmt, stacked)
-    env.set_clip("s", src.avs)
-    env.set_clip("st", st.avs)
-    for planes in ([0], [0, 1, 2], [2]):
-        a = env.eval(f"avszip_VAggregate(st, s, planes={planes})")
-        v = H.vszip().VAggregate(st.vs, src.vs, planes=planes)
-        same(a, v)
-
-
-def test_vaggregate_ignores_alpha_presence(env):
-    """Only color planes are aggregated and the output alpha is the source's,
-    so either input may carry alpha without the other."""
-    fmt = "YUV420PS"
-    src = H.Pair(env, fmt, H.make_frames(fmt, w=64, h=64, n=3, seed=3))
-    env.set_clip("s", src.avs)
-    env.eval("st = s.StackVertical(s, s, s, s, s).Expr(\"1\")", want_clip=False)
-    want = env.eval("avszip_VAggregate(st, s, planes=[0, 1, 2])")
-    for call, alpha in (("avszip_VAggregate(st, s.AddAlphaPlane(0.25), planes=[0, 1, 2])", 0.25),
-                        ("avszip_VAggregate(st.AddAlphaPlane(0.5), s, planes=[0, 1, 2])", None),
-                        ("avszip_VAggregate(st.AddAlphaPlane(0.5), s.AddAlphaPlane(0.25), planes=[0, 1, 2])", 0.25)):
-        got = env.eval(call)
-        for n in range(3):
-            g, w = got.frame(n), want.frame(n)
-            H.compare_planes(g, w, planes=[0, 1, 2], what=call)
-            assert len(g.planes) == (4 if alpha is not None else 3), call
-            if alpha is not None:
-                assert (g.planes[3] == np.float32(alpha)).all(), call
-
-
 @pytest.mark.parametrize("call", [
     "{c}.avszip_BM3D(radius=1)",
     "{c}.avszip_BM3D(radius=2)",
-    "{c}.avszip_BM3Dv2(radius=1, ref={c})",
-    "avszip_VAggregate({c}.StackVertical({c}, {c}, {c}, {c}, {c}, {c}, {c}, {c}, {c}), {c}, planes=[0])",
+    "{c}.avszip_BM3D(radius=1, ref={c})",
     "{c}.avszip_WNNM(radius=1, block_size=4)",
 ])
 def test_last_frames_of_the_longest_clip(call):
@@ -158,17 +115,12 @@ def test_last_frames_of_the_longest_clip(call):
     ("g.avszip_BM3D(block_step=9)", "block_step"),
     ("g.avszip_BM3D(ps_num=0)", "ps_num"),
     ("g.avszip_BM3D(sigma=[-1.0])", "sigma"),
-    ("g.avszip_BM3D(sigma=0.0)", "nothing to process"),
     ("g.avszip_BM3D(chroma=true)", "YUV444"),
     ("y420.avszip_BM3D(chroma=true)", "YUV444"),
-    ("g.avszip_BM3D(extractor_exp=128)", "extractor_exp"),
     ("g.avszip_BM3D(bm_error_s=\"nope\")", "invalid \"bm_error_s\""),
     ("g.avszip_BM3D(transform_2d_s=[\"dct\", \"dct\", \"dct\", \"dct\"])", "too many elements"),
     ("g.avszip_BM3D(ref=y420)", "same format"),
     ("g.avszip_BM3D(ref=g.Trim(0, 1))", "same number of frames"),
-    ("avszip_VAggregate(g, g, planes=[0])", "not a BM3D stacked clip"),
-    ("avszip_VAggregate(g.StackVertical(g, g, g, g, g), g)", "planes\" is required"),
-    ("avszip_VAggregate(g.StackVertical(g, g, g, g, g), g, planes=[1])", "out-of-range plane index"),
 ])
 def test_errors(env, call, msg):
     env.eval('g = BlankClip(pixel_type="Y32", length=3, width=64, height=64)\n'
@@ -177,4 +129,4 @@ def test_errors(env, call, msg):
              'y420 = BlankClip(pixel_type="YUV420PS", length=3, width=64, height=64)', want_clip=False)
     with pytest.raises(AvsError, match=msg) as e:
         env.eval(call)
-    assert str(e.value).startswith(("avszip_BM3D:", "avszip_VAggregate:"))
+    assert str(e.value).startswith("avszip_BM3D:")

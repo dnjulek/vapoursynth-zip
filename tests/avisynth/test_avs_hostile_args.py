@@ -21,7 +21,7 @@ def _avs_float_parameters():
     for path in (H.REPO_ROOT / "src" / "avisynth").glob("*.zig"):
         text = path.read_text(encoding="utf-8")
         name = re.search(r'pub const filter_name = "avszip_(\w+)"', text)
-        names = {"eedi3": ["EEDI3", "EEDI3H"], "wnnm": ["WNNM"], "bm3d": ["BM3D", "BM3Dv2"]}.get(
+        names = {"eedi3": ["EEDI3", "EEDI3H"], "wnnm": ["WNNM"]}.get(
             path.stem, [name[1]] if name else [])
         declarations = re.findall(r'(?:pub const params|const shared_params) = ([^;]+);', text)
         signature = "".join(s for d in declarations for s in re.findall(r'"([^"]*)"', d))

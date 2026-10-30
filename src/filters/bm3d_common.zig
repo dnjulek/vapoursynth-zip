@@ -1,4 +1,4 @@
-//! Accumulation and temporal aggregation for BM3D (`bm3d_cuda.zig`), also
+//! Accumulation and temporal aggregation for BM3D (`bm3d.zig`), also
 //! used by the VapourSynth WNNM:
 //!
 //! - `Ring`: per-thread numerator/denominator accumulators that hold only the
@@ -130,8 +130,8 @@ pub const Ring = struct {
 /// Which BM3D pass and stack slot feeds contribution `i` of output frame n.
 pub const Contrib = struct { m: i32, slot: u32 };
 
-/// Contributions of output frame n, in summation order (vszipcu / BM3DCUDA
-/// BM3Dv2): stage m covers frames clamp(m - r + z), z = 0..2r; output n sums
+/// Contributions of output frame n, in summation order (vszipcu / BM3DCUDA's
+/// stacked clip + VAggregate): stage m covers frames clamp(m - r + z), z = 0..2r; output n sums
 /// stage clamp(n - r + i), slot aggZ(i), for i = 0..2r (edge stages count
 /// twice, like VAggregate).
 pub fn contribs(n: i32, nf: i32, r: i32, out: []Contrib) []Contrib {
@@ -512,29 +512,4 @@ pub fn aggZ(i: i32, n: i32, nf: i32, r: i32) i32 {
     // in i64 (see clampFrame); the result is a slot in 0 .. 2r
     const n64: i64 = n;
     return @intCast(@min(@max(2 * @as(i64, r) - i, n64 - nf + 1 + r), n64 + r));
-}
-
-/// One output row of VAggregate (stacked clips of the GPU plugins):
-/// ascending-t sums of the stacked numerators and weights, then a correctly
-/// rounded divide (the GPU's vaggregate kernel).
-pub fn aggRow(out: []f32, rows: []const [*]const f32, wts: []const [*]const f32) void {
-    var x: usize = 0;
-    while (x + vf_len <= out.len) : (x += vf_len) {
-        var sv: VF = @splat(0);
-        var sw: VF = @splat(0);
-        for (rows, wts) |rp, wp| {
-            sv += @as(VF, rp[x..][0..vf_len].*);
-            sw += @as(VF, wp[x..][0..vf_len].*);
-        }
-        out[x..][0..vf_len].* = sv / sw;
-    }
-    while (x < out.len) : (x += 1) {
-        var sv: f32 = 0;
-        var sw: f32 = 0;
-        for (rows, wts) |rp, wp| {
-            sv += rp[x];
-            sw += wp[x];
-        }
-        out[x] = sv / sw;
-    }
 }

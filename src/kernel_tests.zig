@@ -12,7 +12,7 @@ const kernels = .{
     @import("filters/bilateral_dither.zig"),
     @import("filters/bilateral_dither_subspl.zig"),
     @import("filters/bm3d_common.zig"),
-    @import("filters/bm3d_cuda.zig"),
+    @import("filters/bm3d.zig"),
     @import("filters/boxblur_comptime.zig"),
     @import("filters/boxblur_runtime.zig"),
     @import("filters/checkmate.zig"),
@@ -281,6 +281,55 @@ test "nlmeans keeps a flat interior flat" {
     for (2..h - 2) |y| for (2..w - 2) |x| {
         try std.testing.expectEqual(@as(u8, 77), dst[y * w + x]);
     };
+}
+
+const wnnm = @import("filters/wnnm.zig");
+
+test "wnnm search runs are the windows' union in (y, x) order" {
+    const gpa = std.testing.allocator;
+    var runs: std.ArrayList(wnnm.Run) = .empty;
+    defer runs.deinit(gpa);
+    const w = 40;
+    const h = 30;
+    const bs = 8;
+    const cols = w - bs + 1;
+    const rows = h - bs + 1;
+    var prng = std.Random.DefaultPrng.init(7);
+    const rand = prng.random();
+    for (0..500) |_| {
+        const n = rand.intRangeAtMost(usize, 1, 6);
+        const r = rand.intRangeAtMost(i32, 0, 12);
+        var centers: [6]wnnm.Match = undefined;
+        var inside: [rows * cols]bool = @splat(false);
+        for (centers[0..n]) |*c| {
+            c.* = .{ .err = 0, .x = rand.intRangeLessThan(i32, 0, cols), .y = rand.intRangeLessThan(i32, 0, rows), .t = 0 };
+            var y = @max(c.y - r, 0);
+            while (y <= @min(c.y + r, rows - 1)) : (y += 1) {
+                var x = @max(c.x - r, 0);
+                while (x <= @min(c.x + r, cols - 1)) : (x += 1) inside[@intCast(y * cols + x)] = true;
+            }
+        }
+        try wnnm.generateSearchRuns(&centers, n, bs, w, h, @intCast(r), &runs, gpa);
+
+        var total: u32 = 0;
+        var prev: i32 = -1;
+        for (runs.items, 0..) |run, k| {
+            try std.testing.expect(run.len > 0);
+            // maximal: runs on one row never touch
+            if (k > 0 and runs.items[k - 1].y == run.y) {
+                try std.testing.expect(runs.items[k - 1].x + @as(i32, @intCast(runs.items[k - 1].len)) < run.x);
+            }
+            for (0..run.len) |j| {
+                const x = run.x + @as(i32, @intCast(j));
+                const pos = run.y * cols + x;
+                try std.testing.expect(pos > prev and inside[@intCast(pos)]);
+                try std.testing.expectEqual(wnnm.Loc{ .x = x, .y = run.y }, wnnm.runLoc(runs.items, total));
+                prev = pos;
+                total += 1;
+            }
+        }
+        try std.testing.expectEqual(std.mem.count(bool, &inside, &.{true}), total);
+    }
 }
 
 test "nlmeans Scratch.create releases partial construction" {

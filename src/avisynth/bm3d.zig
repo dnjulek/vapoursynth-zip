@@ -1,14 +1,11 @@
-//! avszip_BM3D / avszip_BM3Dv2(clip, clip "ref", float[] "sigma", int[] "block_step",
+//! avszip_BM3D(clip, clip "ref", float[] "sigma", int[] "block_step",
 //!   int[] "bm_range", int "radius", int[] "ps_num", int[] "ps_range", bool "chroma",
-//!   int "extractor_exp", string[] "bm_error_s", string[] "transform_2d_s",
-//!   string[] "transform_1d_s", bool "zero_init")
-//! avszip_VAggregate(clip, clip src, int[] planes)
+//!   string[] "bm_error_s", string[] "transform_2d_s", string[] "transform_1d_s")
 //!
-//! vszipcu's BM3D on the CPU (filters/bm3d_cuda.zig), bit-exact with vszip.
+//! vszipcu's BM3D on the CPU (filters/bm3d.zig), bit-exact with vszip.
 //! 32-bit float only; alpha passes through. radius > 0 aggregates inside the
 //! filter through the same `bm3d_common.TemporalCache` as vszip (no stacked
-//! clip, same summation order), so BM3D and BM3Dv2 return the same clip.
-//! VAggregate aggregates stacked clips made by the GPU plugins.
+//! clip, same summation order), so the returned clip is the final one.
 //!
 //! Planes go to the kernel in place at their own pitch: 8x8 blocks never
 //! read past a plane's width, so cropped sources need no canonical copy.
@@ -21,29 +18,16 @@ const math = std.math;
 const avs = @import("avisynth");
 const c = avs.c;
 
-const filter = @import("../filters/bm3d_cuda.zig");
+const filter = @import("../filters/bm3d.zig");
 const bc = @import("../filters/bm3d_common.zig");
 const hz = @import("helper.zig");
 const common = @import("../common.zig");
 
 const allocator = std.heap.c_allocator;
 
-const shared_params = "c[ref]c[sigma]f*[block_step]i*[bm_range]i*[radius]i[ps_num]i*[ps_range]i*[chroma]b" ++
-    "[extractor_exp]i[bm_error_s]s*[transform_2d_s]s*[transform_1d_s]s*[zero_init]b";
-
-pub const BM3D = Entry(false);
-pub const BM3Dv2 = Entry(true);
-
-fn Entry(comptime v2: bool) type {
-    return struct {
-        pub const filter_name = if (v2) "avszip_BM3Dv2" else "avszip_BM3D";
-        pub const params = shared_params;
-
-        pub fn create(ctx: *avs.Create) !avs.Value {
-            return createImpl(v2, filter_name, ctx);
-        }
-    };
-}
+pub const filter_name = "avszip_BM3D";
+pub const params = "c[ref]c[sigma]f*[block_step]i*[bm_range]i*[radius]i[ps_num]i*[ps_range]i*[chroma]b" ++
+    "[bm_error_s]s*[transform_2d_s]s*[transform_1d_s]s*";
 
 const PlaneEntry = struct {
     p: filter.Params,
@@ -262,8 +246,9 @@ fn checkFloat32(ctx: *avs.Create, vi: *const c.AVS_VideoInfo) !avs.Format {
     return format;
 }
 
-fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !avs.Value {
-    const arg = ctx.named(shared_params);
+pub fn create(ctx: *avs.Create) !avs.Value {
+    const name = filter_name;
+    const arg = ctx.named(params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
     const vi = clip.videoInfo();
@@ -302,29 +287,24 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
     if (chroma and (format.family != .yuv or format.ssw != 0 or format.ssh != 0)) {
         return ctx.fail("clip format must be YUV444 when \"chroma\" is true.", .{});
     }
-    const extractor_exp = try arg.int(i32, "extractor_exp", 0, -149, 127);
-    const extractor: f32 = if (extractor_exp != 0) math.ldexp(@as(f32, 1.0), extractor_exp) else 0.0;
 
     const bm_error = try perPlaneEnum(filter.BmError, ctx, arg, "bm_error_s", .ssd);
     const t2d = try perPlaneEnum(filter.Transform, ctx, arg, "transform_2d_s", .dct);
     const t1d = try perPlaneEnum(filter.Transform, ctx, arg, "transform_1d_s", .dct);
-    _ = try arg.boolean("zero_init", true); // stacked-clip option of the GPU plugin; no stacked clip here
 
     const np: usize = format.color_planes;
     for (np..3) |i| process[i] = false;
     var any = false;
     for (0..np) |i| any = any or process[i];
     if (!any) {
-        if (v2) {
-            // BM3Dv2 passes such a clip through
-            if (ref) |r| r.release();
-            return avs.Create.returnClip(clip.retain());
-        }
-        return ctx.fail("all planes have sigma < FLT_EPSILON (nothing to process).", .{});
+        // nothing to process (every sigma 0): pass the clip through, like the
+        // other filters
+        if (ref) |r| r.release();
+        return avs.Create.returnClip(clip.retain());
     }
 
     const base = struct {
-        fn f(i: usize, w: u32, h: u32, np_: u32, sg: [3]f32, pr: [3]bool, bs: [3]i64, br: [3]i64, pn: [3]i64, prg: [3]i64, r: u32, be: [3]filter.BmError, a: [3]filter.Transform, b: [3]filter.Transform, ex: f32) filter.Params {
+        fn f(i: usize, w: u32, h: u32, np_: u32, sg: [3]f32, pr: [3]bool, bs: [3]i64, br: [3]i64, pn: [3]i64, prg: [3]i64, r: u32, be: [3]filter.BmError, a: [3]filter.Transform, b: [3]filter.Transform) filter.Params {
             return .{
                 .sigma = sg,
                 .process = pr,
@@ -339,7 +319,6 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
                 .bm_error = be[i],
                 .t2d = a[i],
                 .t1d = b[i],
-                .extractor = ex,
             };
         }
     }.f;
@@ -362,7 +341,7 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
     }
     if (chroma) {
         d.entries[0] = .{
-            .p = base(0, w, h, 3, sigma, process, block_step, bm_range, ps_num, ps_range, radius, bm_error, t2d, t1d, extractor),
+            .p = base(0, w, h, 3, sigma, process, block_step, bm_range, ps_num, ps_range, radius, bm_error, t2d, t1d),
             .planes = .{ 0, 1, 2 },
         };
         d.n_entries = 1;
@@ -371,7 +350,7 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
             if (!process[p]) continue;
             if (pw[p] < 8 or ph[p] < 8) return ctx.fail("every processed plane must be at least 8x8.", .{});
             d.entries[d.n_entries] = .{
-                .p = base(p, pw[p], ph[p], 1, .{ sigma[p], sigma[p], sigma[p] }, .{ true, false, false }, block_step, bm_range, ps_num, ps_range, radius, bm_error, t2d, t1d, extractor),
+                .p = base(p, pw[p], ph[p], 1, .{ sigma[p], sigma[p], sigma[p] }, .{ true, false, false }, block_step, bm_range, ps_num, ps_range, radius, bm_error, t2d, t1d),
                 .planes = .{ @intCast(p), 0, 0 },
             };
             d.n_entries += 1;
@@ -391,118 +370,3 @@ fn createImpl(comptime v2: bool, comptime name: []const u8, ctx: *avs.Create) !a
     const out = try Bm3d(false, name).F.create(ctx.env, clip, d, gf, .{ .mt_mode = .nice });
     return avs.Create.returnClip(out);
 }
-
-/// Aggregates a stacked clip made by vszipcu / BM3DCUDA `BM3D(radius > 0)`
-/// (vszipcu's VAggregate: same checks, same order of summation).
-pub const VAggregate = struct {
-    pub const filter_name = "avszip_VAggregate";
-    pub const params = "c[src]c[planes]i*";
-
-    const AggData = struct {
-        format: avs.Format,
-        stack: avs.OwnedClip,
-        num_frames: c_int,
-        radius: i32,
-        process: [4]bool,
-
-        pub fn deinit(self: *AggData) void {
-            self.stack.deinit();
-        }
-    };
-
-    const F = avs.Filter(AggData, filter_name);
-
-    fn getFrame(d: *AggData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
-        const r = d.radius;
-        const nf = d.num_frames;
-        const src = try ctx.childFrame(n);
-        defer src.release();
-        const tw: usize = @intCast(2 * r + 1);
-        var stack: [2 * filter.max_radius + 1]avs.Frame = undefined;
-        var got: usize = 0;
-        defer for (stack[0..got]) |f| f.release();
-        for (0..tw) |i| {
-            stack[i] = try ctx.getFrame(d.stack.get(), bc.clampFrame(n, @as(i64, @intCast(i)) - r, nf));
-            got += 1;
-        }
-
-        const dst = try ctx.newFrame(src);
-        errdefer dst.release();
-        hz.copyUnprocessed(ctx.env(), dst, src, d.format, &d.process);
-        for (0..d.format.color_planes) |p| {
-            if (!d.process[p]) continue;
-            const id = d.format.planeId(p);
-            const dp = dst.planeMut(f32, id);
-            const h = dp.height;
-            var rows: [2 * filter.max_radius + 1][*]const f32 = undefined;
-            var wts: [2 * filter.max_radius + 1][*]const f32 = undefined;
-            for (0..h) |y| {
-                for (0..tw) |i| {
-                    const z: usize = @intCast(bc.aggZ(@intCast(i), n, nf, r));
-                    const sp = stack[i].plane(f32, id);
-                    rows[i] = sp.row(z * 2 * h + y).ptr;
-                    wts[i] = sp.row((z * 2 + 1) * h + y).ptr;
-                }
-                bc.aggRow(dp.row(y), rows[0..tw], wts[0..tw]);
-            }
-        }
-        return dst;
-    }
-
-    pub fn create(ctx: *avs.Create) !avs.Value {
-        const arg = ctx.named(params);
-        const stack = try ctx.clip(0, "clip");
-        defer stack.release();
-        const src = try arg.clip("src");
-        defer src.release();
-        const vi = stack.videoInfo();
-        const svi = src.videoInfo();
-        const sf = hz.planarFormat(ctx, svi) catch return ctx.fail("\"src\" must be 32 bit float.", .{});
-        if (!sf.isFloat()) return ctx.fail("\"src\" must be 32 bit float.", .{});
-        if (svi.width < 64 or svi.height < 64) return ctx.fail("\"src\" must be at least 64x64.", .{});
-        const cf = hz.planarFormat(ctx, vi) catch return ctx.fail("\"clip\" must have the same format and frame count as \"src\".", .{});
-        // color planes only: the stack's alpha is never read (output alpha
-        // comes from `src`), so alpha presence may differ
-        var cf_color = cf;
-        cf_color.has_alpha = sf.has_alpha;
-        if (!cf_color.eql(sf) or vi.num_frames != svi.num_frames) {
-            return ctx.fail("\"clip\" must have the same format and frame count as \"src\".", .{});
-        }
-        const ratio = @divTrunc(vi.height, svi.height);
-        if (ratio < 6 or @rem(ratio - 2, 4) != 0 or @rem(vi.height, svi.height) != 0 or vi.width != svi.width) {
-            return ctx.fail("\"clip\" is not a BM3D stacked clip of \"src\" (radius >= 1).", .{});
-        }
-        const radius = @divTrunc(ratio - 2, 4);
-        if (radius > filter.max_radius) return ctx.fail("radius too large.", .{});
-        // stacked chroma planes must still divide evenly per slot
-        if (cf.ssh != 0 and @rem(vi.height >> cf.ssh, ratio) != 0) {
-            return ctx.fail("\"clip\" is not a BM3D stacked clip of \"src\" (radius >= 1).", .{});
-        }
-
-        if (!arg.defined("planes")) return ctx.fail("\"planes\" is required.", .{});
-        var process: [4]bool = @splat(false);
-        const pv = arg.arg("planes");
-        if (pv.len() == 0) return ctx.fail("\"planes\" is required.", .{});
-        for (0..pv.len()) |k| {
-            const e = pv.at(k);
-            if (!e.isInt()) return ctx.fail("planes[{d}] must be an integer.", .{k});
-            const pl = e.asInt();
-            if (pl < 0 or pl >= sf.color_planes) return ctx.fail("\"planes\" contains an out-of-range plane index.", .{});
-            if (process[@intCast(pl)]) return ctx.fail("\"planes\" contains a duplicate plane index.", .{});
-            process[@intCast(pl)] = true;
-        }
-
-        const d: AggData = .{
-            .format = sf,
-            .stack = .{ .clip = stack.retain() },
-            .num_frames = svi.num_frames,
-            .radius = radius,
-            .process = process,
-        };
-        const out = F.create(ctx.env, src, d, F.getFrame(getFrame), .{ .mt_mode = .nice }) catch |e| {
-            stack.release();
-            return e;
-        };
-        return avs.Create.returnClip(out);
-    }
-};

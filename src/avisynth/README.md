@@ -29,8 +29,7 @@ Every function is registered as `avszip_<Filter>`. AviSynth+ also exposes it as 
 | `avszip_AdaptiveGrainMask(clip, float "luma_scaling")` | returns Gray (Y8..Y32) |
 | `avszip_Bilateral(clip, clip "ref", float[] "sigmaS", float[] "sigmaR", int[] "planes", int[] "algorithm", int[] "PBFICnum")` | |
 | `avszip_BilateralDither(clip, clip "ref", int[] "radius", float[] "thr", float[] "flat", float[] "wmin", float[] "subspl", int[] "planes")` | |
-| `avszip_BM3D(clip, clip "ref", float[] "sigma", int[] "block_step", int[] "bm_range", int "radius", int[] "ps_num", int[] "ps_range", bool "chroma", int "extractor_exp", string[] "bm_error_s", string[] "transform_2d_s", string[] "transform_1d_s", bool "zero_init")` | 32-bit float; vszipcu's BM3D; `radius` > 0 is aggregated inside the filter, as in vszip |
-| `avszip_BM3Dv2(...)` | same parameters and output; passes a clip with nothing to process through |
+| `avszip_BM3D(clip, clip "ref", float[] "sigma", int[] "block_step", int[] "bm_range", int "radius", int[] "ps_num", int[] "ps_range", bool "chroma", string[] "bm_error_s", string[] "transform_2d_s", string[] "transform_1d_s")` | 32-bit float; vszipcu's BM3D; `radius` > 0 is aggregated inside the filter, as in vszip |
 | `avszip_BoxBlur(clip, int[] "planes", int "hradius", int "hpasses", int "vradius", int "vpasses")` | |
 | `avszip_Checkmate(clip, int "thr", int "tmax", int "tthr2")` | 8-bit, temporal |
 | `avszip_CLAHE(clip, int "limit", int[] "tiles")` | output `_ColorRange`=0 |
@@ -52,7 +51,6 @@ Every function is registered as `avszip_<Filter>`. AviSynth+ also exposes it as 
 | `avszip_RFS(clip, clip clipb, int[] frames, bool "mismatch", int[] "planes")` | |
 | `avszip_SSIMULACRA2(clip reference, clip distorted)` | property `SSIMULACRA2` |
 | `avszip_Tonemap(clip, int "src_csp", int "dst_csp", int "dst_prim", float "src_max", float "src_min", float "dst_max", float "dst_min", bool "dynamic_peak_detection", float "smoothing_period", float "scene_threshold_low", float "scene_threshold_high", float "percentile", float "black_cutoff", int "gamut_mapping", int "tone_mapping_function", string "tone_mapping_function_s", float "tone_mapping_param", int "metadata", bool "use_dovi", clip "dovi_el", bool "show_clipping", float "contrast_recovery", float "contrast_smoothness", int "lut_size", float "mastering_clip", float "film_strength", bool "inverse_tone_mapping", float "knee_adaptation", float "knee_minimum", float "knee_maximum", float "knee_default", float "knee_offset", float "slope_tuning", float "slope_offset", float "spline_contrast", float "reinhard_contrast", float "linear_knee", float "exposure", bool "gamut_expansion", int[] "lut3d_size", bool "lut3d_tricubic", float "perceptual_deadzone", float "perceptual_strength", float "colorimetric_gamma", float "softclip_knee", float "softclip_desat", bool "cache_frame")` | 10-16 bit or float RGB / YUV 4:2:0, 4:2:2, 4:4:4; out RGBP16 / YUV444P16 (float: RGBPS / YUV444PS); HDR10, HLG, Dolby Vision (`DolbyVisionRPU` prop, FEL via `dovi_el`) |
-| `avszip_VAggregate(clip, clip src, int[] planes)` | aggregates stacked clips of the GPU BM3D plugins |
 | `avszip_WNNM(clip, float[] "sigma", int "block_size", int "block_step", int "group_size", int "bm_range", int "radius", int "ps_num", int "ps_range", bool "residual", bool "adaptive_aggregation", clip "rclip")` | 32-bit float |
 | `avszip_XPSNR(clip reference, clip distorted, bool "temporal", bool "verbose")` | props `XPSNR_Y/U/V` |
 
