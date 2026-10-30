@@ -62,6 +62,7 @@ c8 = Proxy(env.eval('BlankClip(width=64,height=64,length=1,pixel_type="YV24")'))
 c16 = Proxy(env.eval('BlankClip(width=64,height=64,length=1,pixel_type="YUV444P16")'))
 cs = Proxy(env.eval('BlankClip(width=64,height=64,length=1,pixel_type="YUV444PS")'))
 gs = Proxy(env.eval('BlankClip(width=64,height=64,length=1,pixel_type="Y32")'))
+rgb8 = Proxy(env.eval('BlankClip(width=64,height=64,length=1,pixel_type="RGBP",color=$50789F)'))
 nan, inf = float('nan'), float('inf')
 HOST_SIGNATURE_ERRORS = ("Invalid arguments to function", "had the wrong type", "does not have a named argument", "There is no function named")
 def finite_output(clip):

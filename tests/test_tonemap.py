@@ -10,7 +10,7 @@ the gamut LUT stays f32 and 16-bit output is rounded instead of dithered.
 Observable contract (src/vapoursynth/tonemap.zig, src/filters/tonemap.zig):
 
 - input: 16-bit integer or 32-bit float, RGB or YUV with 2x or no
-  subsampling per axis; at least 64x64. Output: RGB48 / YUV444P16 (float:
+  subsampling per axis. Output: RGB48 / YUV444P16 (float:
   RGBS / YUV444PS), same size and length.
 - YUV is always decoded as BT.2020 NCL; RGB out is full range, YUV out keeps
   the source's range (_Range, else _ColorRange, else limited); float is full.

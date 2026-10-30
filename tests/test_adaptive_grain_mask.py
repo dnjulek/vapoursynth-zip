@@ -94,6 +94,21 @@ def test_rust_parity_float(make_clip, fmt, luma_scaling):
     assert ok.all(), f"max abs {err.max()}, worst rel {(err / np.maximum(np.abs(b), 1e-30)).max()}"
 
 
+@pytest.mark.parametrize("luma_scaling", [-509.6, -510.0, -511.96, -1000.0])
+def test_float_large_mask_saturates_finite(core, luma_scaling):
+    """A constant 0.5 clip has base 1 - 0.5 * poly(0.5) = 0.5 and temp =
+    0.25 * luma_scaling, so the mask is 2^(-luma_scaling / 4): exponents 127.4,
+    127.5, 127.99 and 250. The float path saturates at 2^127.5 (~2.406e38,
+    where 23.1.0's expf saturated) instead of the inf powf gives. Capping the
+    exponent at 127.99 still overflowed: exp2 rounds it to 128 first."""
+    np = pytest.importorskip("numpy")
+    src = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=1, color=0.5)
+    with src.vszip.AdaptiveGrainMask(luma_scaling=luma_scaling).get_frame(0) as f:
+        a = np.asarray(f[0]).astype(np.float64)
+    assert np.isfinite(a).all()
+    assert a == pytest.approx(2.0 ** min(-luma_scaling / 4, 127.5), rel=1e-4)
+
+
 @pytest.mark.skipif(not HAS_ADG, reason="Rust adg plugin not installed")
 def test_rust_parity_default_luma_scaling(make_clip):
     src = make_clip(vs.GRAY8)

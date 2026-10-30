@@ -49,6 +49,11 @@ MANIFEST = {
     "AdaptiveGrainMask": ("c8.vszip.AdaptiveGrainMask({a})", {"luma_scaling": (False, 10.0, 1)}, {}),
     "Bilateral": ("c16.vszip.Bilateral({a})", {"sigmaS": (True, 3.0, 3), "sigmaR": (True, 0.02, 3)}, {}),
     "BM3D": ("gs.vszip.BM3D({a})", {"sigma": (True, 3.0, 3)}, {}),
+    "Butteraugli": (
+        "rgb8.vszip.Butteraugli(rgb8, {a})",
+        {"intensity_target": (False, 80.0, 1), "hf_asymmetry": (False, 1.0, 1), "xmul": (False, 1.0, 1)},
+        {},
+    ),
     "BilateralDither": (
         "c16.vszip.BilateralDither({a})",
         {"thr": (True, 2.5, 3), "flat": (True, 0.4, 3), "wmin": (True, 0.0, 3), "subspl": (True, 0.0, 3)},
@@ -157,6 +162,7 @@ c16 = core.std.BlankClip(None, 64, 64, vs.YUV444P16, length=1, color=[20000, 327
 cs = core.std.BlankClip(None, 64, 64, vs.YUV444PS, length=1, color=[0.3, 0.0, 0.0])
 ch = core.std.BlankClip(None, 64, 64, vs.YUV444PH, length=1, color=[0.3, 0.0, 0.0])
 gs = core.std.BlankClip(None, 64, 64, vs.GRAYS, length=1, color=0.3)
+rgb8 = core.std.BlankClip(None, 64, 64, vs.RGB24, length=1, color=[80, 120, 160])
 nan, inf = float('nan'), float('inf')
 
 def finite_output(clip):

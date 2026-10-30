@@ -1,0 +1,10 @@
+{
+ "RGB24|full|default": 14.952506065368652,
+ "RGB24|full|default|3norm": 6.6733642878545085,
+ "RGB24|odd|default": 14.952506065368652,
+ "RGB24|odd|default|3norm": 6.670841794289902,
+ "RGB48|full|default": 15.034488677978516,
+ "RGB48|full|default|3norm": 6.858147770810508,
+ "RGBS|full|default": 15.03472900390625,
+ "RGBS|full|default|3norm": 6.858898369001369
+}
