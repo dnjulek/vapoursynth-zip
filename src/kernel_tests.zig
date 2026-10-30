@@ -15,6 +15,7 @@ const kernels = .{
     @import("filters/bm3d.zig"),
     @import("filters/boxblur_comptime.zig"),
     @import("filters/boxblur_runtime.zig"),
+    @import("filters/butteraugli.zig"),
     @import("filters/checkmate.zig"),
     @import("filters/clahe.zig"),
     @import("filters/color_map.zig"),

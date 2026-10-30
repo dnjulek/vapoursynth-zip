@@ -33,6 +33,7 @@ const modules = .{
     @import("avisynth/clahe.zig"),
     @import("avisynth/xpsnr.zig"),
     @import("avisynth/ssimulacra2.zig"),
+    @import("avisynth/butteraugli.zig"),
     @import("avisynth/eedi3.zig").V,
     @import("avisynth/eedi3.zig").H,
     @import("avisynth/wnnm.zig").Main,

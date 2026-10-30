@@ -23,6 +23,7 @@ const modules = .{
     @import("vapoursynth/bilateral_dither.zig"),
     @import("vapoursynth/bm3d.zig"),
     @import("vapoursynth/boxblur.zig"),
+    @import("vapoursynth/butteraugli.zig"),
     @import("vapoursynth/checkmate.zig"),
     @import("vapoursynth/clahe.zig"),
     @import("vapoursynth/color_map.zig"),
