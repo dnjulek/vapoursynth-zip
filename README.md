@@ -13,6 +13,7 @@
 - [BilateralDither](https://github.com/dnjulek/vapoursynth-zip/wiki/BilateralDither): Port of `Dither_bilateral16` from [AviSynth's Dither tools](http://avisynth.nl/index.php/Dither_tools#Dither_bilateral16).
 - [BM3D](https://github.com/dnjulek/vapoursynth-zip/wiki/BM3D): CPU port of [BM3DCUDA](https://github.com/WolframRhodium/VapourSynth-BM3DCUDA).
 - [BoxBlur](https://github.com/dnjulek/vapoursynth-zip/wiki/BoxBlur): A faster version of [std.BoxBlur](https://www.vapoursynth.com/doc/functions/video/boxblur.html).
+- [Butteraugli](https://github.com/dnjulek/vapoursynth-zip/wiki/Butteraugli): Image metric [Butteraugli](https://github.com/libjxl/libjxl/tree/main/lib/jxl/butteraugli), port of libjxl's.
 - [Checkmate](https://github.com/dnjulek/vapoursynth-zip/wiki/Checkmate): Spatial and temporal dot crawl reducer [from AviSynth](https://github.com/tp7/checkmate).
 - [CLAHE](https://github.com/dnjulek/vapoursynth-zip/wiki/CLAHE): Contrast Limited Adaptive Histogram Equalization [from OpenCV](https://docs.opencv.org/5.x/d5/daf/tutorial_py_histogram_equalization.html).
 - [ColorMap](https://github.com/dnjulek/vapoursynth-zip/wiki/ColorMap): A port of the [OpenCV ColorMap](https://docs.opencv.org/5.x/d3/d50/group__imgproc__colormap.html).
